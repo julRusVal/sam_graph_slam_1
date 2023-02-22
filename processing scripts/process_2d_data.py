@@ -9,8 +9,8 @@ from sam_slam_utils.sam_slam_proc_classes import process_2d_data
 
 # %% Main
 if __name__ == "__main__":
-
-    path_name = '/Users/julian/Library/CloudStorage/Dropbox/Degree coding/simulated_slam/data'
+    path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data'
+    # path_name = '/Users/julian/Library/CloudStorage/Dropbox/Degree coding/simulated_slam/data'
     process = process_2d_data(path_name)
 
     process.correct_coord_problem()
@@ -21,7 +21,7 @@ if __name__ == "__main__":
     process.construct_graph_2D()
     process.optimize_graph()
 
-    if False:
+    if True:
         process.visualize_clustering()
         process.visualize_raw()
         process.visualize_posterior()

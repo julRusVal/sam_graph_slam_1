@@ -40,11 +40,12 @@ class process_2d_data:
         else:
             self.dr_poses_graph = np.array(input_data.dr_poses_graph)
             self.gt_poses_graph = np.array(input_data.gt_poses_graph)
-            self.detections_graph = np.array(input_data.detection_graph)
+            self.detections_graph = np.array(input_data.detections_graph)
             self.buoys = np.array(input_data.buoys)
 
         # ===== Clustering and data association =====
         self.n_buoys = len(self.buoys)
+        self.n_detections = self.detections_graph.shape[0]
         self.cluster_model = None
         self.cluster_mean_threshold = 2.0  # means within this threshold will cause fewer clusters to be used
         self.n_clusters = -1
@@ -94,7 +95,9 @@ class process_2d_data:
         plt.axis(self.plot_limits)
         plt.grid(True)
 
-        ax.scatter(self.detections_graph[:, 0], self.detections_graph[:, 1], color='k')
+        if self.n_detections > 0:
+            ax.scatter(self.detections_graph[:, 0], self.detections_graph[:, 1], color='k')
+
         ax.scatter(self.gt_poses_graph[:, 0], self.gt_poses_graph[:, 1], color=self.gt_color)
         ax.scatter(self.dr_poses_graph[:, 0], self.dr_poses_graph[:, 1], color=self.dr_color)
 
@@ -339,6 +342,7 @@ class process_2d_data:
                 reader = csv.reader(f)
                 data = [row for row in reader]
 
+            f.close()
             return np.array(data, dtype=np.float64)
         except OSError:
             return -1
@@ -355,6 +359,11 @@ class process_2d_data:
 
     # ===== Clustering and data association methods =====
     def fit_cluster_model(self):
+        # Check for empty detections_graph
+        if self.n_detections < 1:
+            print("No detections were detected, improve detector")
+            return
+
         if self.cluster_model is not None:
             self.detection_clusterings = self.cluster_model.fit_predict(self.detections_graph[:, 0:2])
 
@@ -504,17 +513,18 @@ class process_2d_data:
         # ===== Detection Factors =====
         detection_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.detect_dist_sig, self.detect_ang_sig]))
 
-        for det_id, detection in enumerate(self.detections_graph):
-            dr_id = detection[-1]
-            buoy_id = self.cluster2buoy[self.detection_clusterings[det_id]]
-            # check for a association problem
-            if buoy_id < 0:
-                continue
-            self.graph.add(gtsam.BearingRangeFactor2D(self.x[dr_id],
-                                                      self.b[buoy_id],
-                                                      self.bearings_ranges[det_id].bearing(),
-                                                      self.bearings_ranges[det_id].range(),
-                                                      detection_model))
+        if self.n_detections > 0:
+            for det_id, detection in enumerate(self.detections_graph):
+                dr_id = detection[-1]
+                buoy_id = self.cluster2buoy[self.detection_clusterings[det_id]]
+                # check for a association problem
+                if buoy_id < 0:
+                    continue
+                self.graph.add(gtsam.BearingRangeFactor2D(self.x[dr_id],
+                                                          self.b[buoy_id],
+                                                          self.bearings_ranges[det_id].bearing(),
+                                                          self.bearings_ranges[det_id].range(),
+                                                          detection_model))
 
         # Create the initial estimate, using measured poses
         self.initial_estimate = gtsam.Values()
@@ -541,3 +551,27 @@ class process_2d_data:
 
         for i in range(len(self.b)):
             self.post_Point2s.append(self.slam_result.atPoint2(self.b[i]))
+
+    # ===== Higher level methods =====
+    def perform_offline_slam(self):
+        self.correct_coord_problem()
+        self.cluster_data()
+        self.cluster_to_landmark()
+        self.convert_poses_to_Pose2()
+        self.Bearing_range_from_detection_2D()
+        self.construct_graph_2D()
+        self.optimize_graph()
+
+    def output_results(self, verbose_level=1):
+        """
+
+        """
+        if verbose_level >= 1:
+            self.visualize_clustering()
+            self.visualize_raw()
+            self.visualize_posterior()
+        if verbose_level >= 2:
+            self.show_graph_2D('Initial', False)
+            self.show_graph_2D('Final', True)
+        if verbose_level >= 3:
+            self.show_error()

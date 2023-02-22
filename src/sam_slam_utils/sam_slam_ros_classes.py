@@ -64,14 +64,9 @@ class sam_slam_listener:
         self.detections_graph = []
 
         # File paths for logging
-        self.dr_poses_file_path = 'dr_poses.csv'
-        self.gt_poses_file_path = 'gt_poses.csv'
-        self.detections_file_path = 'detections.csv'
-
         self.dr_poses_graph_file_path = 'dr_poses_graph.csv'
         self.gt_poses_graph_file_path = 'gt_poses_graph.csv'
         self.detections_graph_file_path = 'detections_graph.csv'
-
         self.buoys_file_path = 'buoys.csv'
 
         # Timing and state
@@ -262,19 +257,14 @@ class sam_slam_listener:
                 writer.writerow(row)
 
     def write_data(self):
-        # Save dead reckoning
-        self.write_data_set(self.dr_poses_file_path, self.dr_poses)
+        """
+        Save all the relevant data
+        """
         self.write_data_set(self.dr_poses_graph_file_path, self.dr_poses_graph)
-
-        # Save ground truth
-        self.write_data_set(self.gt_poses_file_path, self.gt_poses)
         self.write_data_set(self.gt_poses_graph_file_path, self.gt_poses_graph)
-
-        # Save detections
-        self.write_data_set(self.detections_file_path, self.detections)
         self.write_data_set(self.detections_graph_file_path, self.detections_graph)
-
         self.write_data_set(self.buoys_file_path, self.buoys)
+
         return
 
 
