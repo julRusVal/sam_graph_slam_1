@@ -12,12 +12,13 @@ from sklearn.mixture import GaussianMixture
 import itertools
 import gtsam
 import networkx as nx
+from sam_slam_utils.sam_slam_helper_funcs import angle_between_rads
 
 
 # %% Classes
 
 class process_2d_data:
-    def __init__(self, input_data):
+    def __init__(self, input_data=None):
         """
         Input can either be read from a file, if the path to a folder is provided as a string
         Alternatively, data can be extracted from an instance of sam_slam_listener.
@@ -30,7 +31,13 @@ class process_2d_data:
         buoys:[[x, y, z]]
         """
         # Load data from a files
-        if isinstance(input_data, str):
+        if input_data is None:
+            self.dr_poses_graph = self.read_csv_to_array('dr_poses_graph.csv')
+            self.gt_poses_graph = self.read_csv_to_array('gt_poses_graph.csv')
+            self.detections_graph = self.read_csv_to_array('detections_graph.csv')
+            self.buoys = self.read_csv_to_array('buoys.csv')
+
+        elif isinstance(input_data, str):
             self.dr_poses_graph = self.read_csv_to_array(input_data + '/dr_poses_graph.csv')
             self.gt_poses_graph = self.read_csv_to_array(input_data + '/gt_poses_graph.csv')
             self.detections_graph = self.read_csv_to_array(input_data + '/detections_graph.csv')
@@ -85,7 +92,7 @@ class process_2d_data:
         self.gt_color = 'b'
         self.post_color = 'g'
         self.colors = ['orange', 'purple', 'cyan', 'brown', 'pink', 'gray', 'olive']
-        self.plot_limits = [-7.5, 7.5, -2.5, 17.5]
+        self.plot_limits = [-12.5, 12.5, -5, 20]
 
     # ===== Visualization methods =====
     def visualize_raw(self):
@@ -216,7 +223,7 @@ class process_2d_data:
 
         plt.show()
 
-    def show_graph_2D(self, label, show_final=True):
+    def show_graph_2d(self, label, show_final=True):
         """
 
         """
@@ -290,9 +297,20 @@ class process_2d_data:
         np.arange(self.plot_limits[0], self.plot_limits[1] + 1, 2.5)
         plt.show()
 
+    @staticmethod
+    def calc_pose_error(array_test, array_true):
+        # Positional error
+        pos_error = array_test[:, :2] - array_true[:, :2]
+
+        theta_error = np.zeros((array_true.shape[0], 1))
+        for i in range(array_true.shape[0]):
+            theta_error[i] = angle_between_rads(array_test[i, 2], array_true[i, 2])
+
+        return np.hstack((pos_error,theta_error))
+
     def show_error(self):
         # Convert the lists of Pose2s to np arrays
-        dt_array = self.pose2_list_to_nparray(self.dr_Pose2s)
+        dr_array = self.pose2_list_to_nparray(self.dr_Pose2s)
         gt_array = self.pose2_list_to_nparray(self.gt_Pose2s)
         post_array = self.pose2_list_to_nparray(self.post_Pose2s)
 
@@ -301,8 +319,8 @@ class process_2d_data:
         gt_array[:, 2] = np.pi - gt_array[:, 2]
 
         # Find the errors between gt<->dr and gt<->post
-        dr_error = dt_array - gt_array
-        post_error = post_array - gt_array
+        dr_error = self.calc_pose_error(dr_array, gt_array)
+        post_error = self.calc_pose_error(post_array, gt_array)
 
         # Calculate MSE
         dr_mse_error = np.square(dr_error).mean(0)
@@ -464,7 +482,7 @@ class process_2d_data:
         for gt_pose in self.gt_poses_graph:
             self.gt_Pose2s.append(self.create_Pose2(gt_pose))
 
-    def Bearing_range_from_detection_2D(self):
+    def Bearing_range_from_detection_2d(self):
         for detection in self.detections_graph:
             dr_id = int(detection[-1])
             detection_pose = self.dr_Pose2s[dr_id]
@@ -475,7 +493,7 @@ class process_2d_data:
             # measurement = gtsam.BearingRange3D.Measure(pose_null, detection[3:5])
             self.bearings_ranges.append(measurement)
 
-    def construct_graph_2D(self):
+    def construct_graph_2d(self):
         """
         Graph made up of gtsam.Pose2 and gtsam.Point2
         """
@@ -558,8 +576,8 @@ class process_2d_data:
         self.cluster_data()
         self.cluster_to_landmark()
         self.convert_poses_to_Pose2()
-        self.Bearing_range_from_detection_2D()
-        self.construct_graph_2D()
+        self.Bearing_range_from_detection_2d()
+        self.construct_graph_2d()
         self.optimize_graph()
 
     def output_results(self, verbose_level=1):
@@ -571,7 +589,7 @@ class process_2d_data:
             self.visualize_raw()
             self.visualize_posterior()
         if verbose_level >= 2:
-            self.show_graph_2D('Initial', False)
-            self.show_graph_2D('Final', True)
+            self.show_graph_2d('Initial', False)
+            self.show_graph_2d('Final', True)
         if verbose_level >= 3:
             self.show_error()

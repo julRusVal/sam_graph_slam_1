@@ -26,7 +26,7 @@ class sam_slam_listener:
 
     """
 
-    def __init__(self, gt_top_name, dr_top_name, det_top_name, buoy_top_name, frame_name):
+    def __init__(self, gt_top_name, dr_top_name, det_top_name, buoy_top_name, frame_name, path_name=None):
         # Topic names
         self.gt_topic = gt_top_name
         self.dr_topic = dr_top_name
@@ -64,10 +64,16 @@ class sam_slam_listener:
         self.detections_graph = []
 
         # File paths for logging
-        self.dr_poses_graph_file_path = 'dr_poses_graph.csv'
-        self.gt_poses_graph_file_path = 'gt_poses_graph.csv'
-        self.detections_graph_file_path = 'detections_graph.csv'
-        self.buoys_file_path = 'buoys.csv'
+        if isinstance(path_name, str):
+            self.dr_poses_graph_file_path = path_name + '/dr_poses_graph.csv'
+            self.gt_poses_graph_file_path = path_name + '/gt_poses_graph.csv'
+            self.detections_graph_file_path = path_name + '/detections_graph.csv'
+            self.buoys_file_path = path_name + '/buoys.csv'
+        else:
+            self.dr_poses_graph_file_path = 'dr_poses_graph.csv'
+            self.gt_poses_graph_file_path = 'gt_poses_graph.csv'
+            self.detections_graph_file_path = 'detections_graph.csv'
+            self.buoys_file_path = 'buoys.csv'
 
         # Timing and state
         self.last_time = rospy.Time.now()
@@ -144,7 +150,6 @@ class sam_slam_listener:
             # Add to the dr and gt lists
             self.dr_poses_graph.append(self.dr_poses[-1])
             self.gt_poses_graph.append(self.get_gt_trans_in_map())
-            # (OLD) self.gt_poses_graph.append(self.gt_poses[-1])
 
             # Update time and state
             self.last_time = time_now
@@ -219,6 +224,7 @@ class sam_slam_listener:
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                     tf2_ros.ExtrapolationException) as error:
                 print('Failed to transform. Error: {}'.format(error))
+
         return trans
 
     def get_gt_trans_in_map(self):
@@ -266,5 +272,3 @@ class sam_slam_listener:
         self.write_data_set(self.buoys_file_path, self.buoys)
 
         return
-
-

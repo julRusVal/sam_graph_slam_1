@@ -17,16 +17,16 @@ if __name__ == "__main__":
     process.cluster_data()
     process.cluster_to_landmark()
     process.convert_poses_to_Pose2()
-    process.Bearing_range_from_detection_2D()
-    process.construct_graph_2D()
+    process.Bearing_range_from_detection_2d()
+    process.construct_graph_2d()
     process.optimize_graph()
 
     if True:
         process.visualize_clustering()
         process.visualize_raw()
         process.visualize_posterior()
-    if False:
-        process.show_graph_2D('Initial', False)
-        process.show_graph_2D('Final', True)
+    if True:
+        process.show_graph_2d('Initial', False)
+        process.show_graph_2d('Final', True)
     if True:
         process.show_error()

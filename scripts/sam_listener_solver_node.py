@@ -20,9 +20,10 @@ def main():
     # Output parameters
     output_level = 3
     data_processed = False
+    path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data'
 
     print('initializing listener')
-    listener = sam_slam_listener(ground_truth_topic, dead_reckon_topic, detection_topic, buoy_topic, frame)
+    listener = sam_slam_listener(ground_truth_topic, dead_reckon_topic, detection_topic, buoy_topic, frame, path_name)
 
     while not rospy.is_shutdown():
         # Add the end of the run the listener will save its data, at this point we perform the offline slam
@@ -32,6 +33,7 @@ def main():
             processing.perform_offline_slam()
             processing.output_results(verbose_level=output_level)
             data_processed = True
+            print("Data processed")
         rate.sleep()
 
 
