@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 """
-Script for processing data from SMaRC's Stonefish simulation
+Script for processing data from SMaRC's Stonefish simulation. This uses the process_2d_data class.
+This class can except a path to the needed data saved in separate CSVs, or it can be passed a sam_slam_listener instance.
+
+The purpose of this script is to help with testing and reproduce the output from saved data.
 """
 
 # %% Imports

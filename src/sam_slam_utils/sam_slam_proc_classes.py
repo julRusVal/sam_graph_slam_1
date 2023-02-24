@@ -5,7 +5,6 @@ Script for processing data from SMaRC's Stonefish simulation
 """
 
 # %% Imports
-import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
@@ -13,6 +12,7 @@ import itertools
 import gtsam
 import networkx as nx
 from sam_slam_utils.sam_slam_helper_funcs import angle_between_rads, create_Pose2, pose2_list_to_nparray
+from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array
 
 
 # %% Classes
@@ -32,16 +32,16 @@ class process_2d_data:
         """
         # Load data from a files
         if input_data is None:
-            self.dr_poses_graph = self.read_csv_to_array('dr_poses_graph.csv')
-            self.gt_poses_graph = self.read_csv_to_array('gt_poses_graph.csv')
-            self.detections_graph = self.read_csv_to_array('detections_graph.csv')
-            self.buoys = self.read_csv_to_array('buoys.csv')
+            self.dr_poses_graph = read_csv_to_array('dr_poses_graph.csv')
+            self.gt_poses_graph = read_csv_to_array('gt_poses_graph.csv')
+            self.detections_graph = read_csv_to_array('detections_graph.csv')
+            self.buoys = read_csv_to_array('buoys.csv')
 
         elif isinstance(input_data, str):
-            self.dr_poses_graph = self.read_csv_to_array(input_data + '/dr_poses_graph.csv')
-            self.gt_poses_graph = self.read_csv_to_array(input_data + '/gt_poses_graph.csv')
-            self.detections_graph = self.read_csv_to_array(input_data + '/detections_graph.csv')
-            self.buoys = self.read_csv_to_array(input_data + '/buoys.csv')
+            self.dr_poses_graph = read_csv_to_array(input_data + '/dr_poses_graph.csv')
+            self.gt_poses_graph = read_csv_to_array(input_data + '/gt_poses_graph.csv')
+            self.detections_graph = read_csv_to_array(input_data + '/detections_graph.csv')
+            self.buoys = read_csv_to_array(input_data + '/buoys.csv')
 
         # Extract data from an instance of sam_slam_listener
         else:
@@ -164,7 +164,7 @@ class process_2d_data:
             print('Need to perform optimization before it can be printed!')
             return
 
-        # Build array for the  pose and point posteriors
+        # Build array for the pose and point posteriors
         slam_out_poses = np.zeros((len(self.x), 2))
         slam_out_points = np.zeros((len(self.b), 2))
         for i in range(len(self.x)):
@@ -344,27 +344,6 @@ class process_2d_data:
         plt.show()
 
     # ===== Data loading and Pre-process Methods =====
-    @staticmethod
-    def read_csv_to_array(file_path):
-        """
-        Reads a CSV file and returns the contents as a 2D Numpy array.
-
-        Parameters:
-            file_path (str): The path to the CSV file to be read.
-
-        Returns:
-            numpy.ndarray: The contents of the CSV file as a 2D Numpy array.
-        """
-        try:
-            with open(file_path, "r") as f:
-                reader = csv.reader(f)
-                data = [row for row in reader]
-
-            f.close()
-            return np.array(data, dtype=np.float64)
-        except OSError:
-            return -1
-
     def correct_coord_problem(self):
         # TODO this is super hacky and I feel like it'll cause problems later!!
         # TODO Figure out the coordinate system! map and world ned are causing problems
@@ -496,8 +475,8 @@ class process_2d_data:
 
         for id_buoy in range(self.n_buoys):
             self.graph.add(gtsam.PriorFactorPoint2(self.b[id_buoy],
-                                                   gtsam.Point2(self.buoys[id_buoy, 0],
-                                                                self.buoys[id_buoy, 1]),
+                                                   np.array((self.buoys[id_buoy, 0], self.buoys[id_buoy, 1]),
+                                                            dtype=np.float64),
                                                    prior_model_lm))
 
         # ===== Odometry Factors =====
@@ -530,8 +509,8 @@ class process_2d_data:
             self.initial_estimate.insert(self.x[pose_id], dr_Pose2)
 
         for buoy_id in range(self.n_buoys):
-            self.initial_estimate.insert(self.b[buoy_id], gtsam.Point2(self.buoys[buoy_id, 0],
-                                                                       self.buoys[buoy_id, 1]))
+            self.initial_estimate.insert(self.b[buoy_id], np.array((self.buoys[buoy_id, 0], self.buoys[buoy_id, 1]),
+                                                                   dtype=np.float64))
 
     def optimize_graph(self):
         if self.graph.size() == 0:
@@ -582,8 +561,8 @@ class online_slam_2d:
         # ===== Graph parameters =====
         self.graph = gtsam.NonlinearFactorGraph()
         self.parameters = gtsam.ISAM2Params()
-        self.parameters.setRelinearizeThreshold(0.1)
-        self.parameters.relinearizeSkip = 1
+        # self.parameters.setRelinearizeThreshold(0.1)
+        # self.parameters.setRelinearizeSkip(1)
         self.isam = gtsam.ISAM2(self.parameters)
 
         self.current_x_ind = 0
@@ -631,30 +610,38 @@ class online_slam_2d:
 
         # ===== Optimizer and values =====
         # self.optimizer = None
-        self.initial_estimate = None
+        self.initial_estimate = gtsam.Values()
         self.current_estimate = None
         self.slam_result = None
 
+        # ===== Graph states =====
+        self.buoy_map_present = False
+        self.initial_pose_set = False
+
     def buoy_setup(self, buoys):
+        print("Buoys being added to online graph")
         if len(buoys) == 0:
             print("Invalid buoy object used!")
             return -1
 
-        self.buoy_prior_map = buoys
+        self.buoy_prior_map = np.array(buoys, dtype=np.float64)
         self.n_buoys = len(self.buoy_prior_map)
 
         # labels
         self.b = {k: gtsam.symbol('b', k) for k in range(self.n_buoys)}
 
-        # Add buoy priors
+        # ===== Add buoy priors and initial estimates =====
         for id_buoy in range(self.n_buoys):
-            self.graph.add(gtsam.PriorFactorPoint2(self.b[id_buoy],
-                                                   gtsam.Point2(self.buoy_prior_map[id_buoy, 0],
-                                                                self.buoy_prior_map[id_buoy, 1]),
-                                                   self.prior_model_lm))
+            prior = np.array((self.buoy_prior_map[id_buoy, 0], self.buoy_prior_map[id_buoy, 1]), dtype=np.float64)
+
+            # Prior
+            self.graph.addPriorPoint2(self.b[id_buoy], prior, self.prior_model_lm)
+
+            # Initial estimate
+            self.initial_estimate.insert(self.b[id_buoy], prior)
 
         self.buoy_map_present = True
-
+        print("Done with  buoy setup")
         return
 
     def add_first_pose(self, dr_pose, gt_pose, initial_estimate=None):
@@ -666,7 +653,7 @@ class online_slam_2d:
             print("Waiting for buoy prior map")
             return -1
 
-        if self.n_x != 0:
+        if self.current_x_ind != 0:
             print("add_first_pose() called with a graph that already has a pose added")
             return -1
 
@@ -681,16 +668,25 @@ class online_slam_2d:
         # Add prior factor
         self.graph.add(gtsam.PriorFactorPose2(self.x[0], self.dr_Pose2s[0], self.prior_model))
 
-        # Initialize estimate
-        self.initial_estimate = gtsam.Values()
+        # ===== Add initial estimate =====
         self.initial_estimate.insert(self.x[0], self.dr_Pose2s[0])
         self.current_estimate = self.initial_estimate
+
+        self.initial_pose_set = True
+        print("Done with first pose")
+        if self.x is None:
+            print("problem")
         return
 
     def online_update(self, dr_pose, gt_pose, relative_detection=None):
         """
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
+        if not self.initial_pose_set:
+            print("Attempting to update before initial pose")
+            self.add_first_pose(dr_pose, gt_pose)
+            return
+
         # Record relevant poses
         self.dr_Pose2s.append(create_Pose2(dr_pose))
         self.gt_Pose2s.append(create_Pose2(gt_pose))
@@ -701,7 +697,7 @@ class online_slam_2d:
 
         # Add label
         self.current_x_ind += 1
-        self.x = {self.current_x_ind: gtsam.symbol('x', self.current_x_ind)}
+        self.x[self.current_x_ind] = gtsam.symbol('x', self.current_x_ind)
 
         # ===== Add the between factor =====
         self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
@@ -719,7 +715,7 @@ class online_slam_2d:
         # TODO this might need to be more robust, not assume detections will lead to graph update
         if relative_detection is not None:
             # Calculate the map location of the detection given relative measurements and current estimate
-            detect_map_loc = computed_est.transformFrom(np.array(relative_detection), dtype=np.float64)
+            detect_map_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
             detect_bearing = computed_est.bearing(detect_map_loc)
             detect_range = computed_est.range(detect_map_loc)
 
@@ -736,6 +732,11 @@ class online_slam_2d:
         self.current_estimate = self.isam.calculateEstimate()
 
         self.initial_estimate.clear()
+
+        print("Done with update")
+        if self.x is None:
+            print("problem")
+        return
 
     def associate_detection(self, detection_map_location):
         """

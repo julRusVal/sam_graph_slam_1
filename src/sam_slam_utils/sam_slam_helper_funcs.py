@@ -5,9 +5,31 @@ import numpy as np
 import gtsam
 import networkx as nx
 import matplotlib.pyplot as plt
+import csv
 
 
-# ===== Genral stuff =====
+# ===== General stuff =====
+def read_csv_to_array(file_path):
+    """
+    Reads a CSV file and returns the contents as a 2D Numpy array.
+
+    Parameters:
+        file_path (str): The path to the CSV file to be read.
+
+    Returns:
+        numpy.ndarray: The contents of the CSV file as a 2D Numpy array.
+    """
+    try:
+        with open(file_path, "r") as f:
+            reader = csv.reader(f)
+            data = [row for row in reader]
+
+        f.close()
+        return np.array(data, dtype=np.float64)
+    except OSError:
+        return -1
+
+
 def angle_between_rads(target_angle, source_angle):
     # Bound the angle [-pi, pi]
     target_angle = math.remainder(target_angle, 2 * np.pi)
@@ -44,7 +66,7 @@ def pose2_list_to_nparray(pose_list):
     return out_array
 
 
-def show_simple_graph_2d(graph, x_keys, b_keys, values, label, show_final=True):
+def show_simple_graph_2d(graph, x_keys, b_keys, values, label):
     """
     Show Graph of Pose2 and Point2 elements
     This function does not display data association colors
@@ -83,7 +105,7 @@ def show_simple_graph_2d(graph, x_keys, b_keys, values, label, show_final=True):
     fig, ax = plt.subplots()
     plt.title(f'Factor Graph\n{label}')
     ax.set_aspect('equal', 'box')
-    plt.axis(self.plot_limits)
+    plt.axis(plot_limits)
     plt.grid(True)
     plt.xticks(np.arange(plot_limits[0], plot_limits[1] + 1, 2.5))
 
