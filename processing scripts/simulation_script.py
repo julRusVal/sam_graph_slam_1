@@ -16,41 +16,17 @@ Permutations:
 # %% Imports
 import math
 import itertools
-
 import numpy as np
 from numpy.random import default_rng
-
-rng = default_rng()
-
-# import sklearn
 from sklearn.mixture import GaussianMixture
-
 import gtsam
-
 import matplotlib.pyplot as plt
-# import matplotlib.colors as mcolors
-
 import csv
 import networkx as nx
+from sam_slam_utils.sam_slam_helper_funcs import angle_between_rads
 
-
-# import graphviz
 
 # %% Functions
-def angle_between_rads(target_angle, source_angle):
-    # Bound the angle [-pi, pi]
-    target_angle = math.remainder(target_angle, 2 * np.pi)
-    source_angle = math.remainder(source_angle, 2 * np.pi)
-
-    diff_angle = target_angle - source_angle
-
-    if diff_angle > np.pi:
-        diff_angle = diff_angle - 2 * np.pi
-    elif diff_angle < -1 * np.pi:
-        diff_angle = diff_angle + 2 * np.pi
-
-    return diff_angle
-
 
 def read_csv_to_array(file_path):
     """
@@ -94,6 +70,7 @@ def show_graph(graph, result, poses, landmarks):
 
 
 # %% Parameters
+rng = default_rng()
 
 # Data source
 import_data = True
@@ -391,7 +368,6 @@ graph.add(gtsam.PriorFactorPose2(x[0], gtsam.Pose2(measured_poses[0, 0],
                                                    measured_poses[0, 1],
                                                    measured_poses[0, 2]),
                                  prior_model))
-
 
 prior_model_lm = gtsam.noiseModel.Diagonal.Sigmas((dist_sigma_initial,
                                                    dist_sigma_initial))

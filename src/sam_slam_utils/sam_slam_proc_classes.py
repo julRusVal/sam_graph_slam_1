@@ -12,7 +12,7 @@ from sklearn.mixture import GaussianMixture
 import itertools
 import gtsam
 import networkx as nx
-from sam_slam_utils.sam_slam_helper_funcs import angle_between_rads
+from sam_slam_utils.sam_slam_helper_funcs import angle_between_rads, create_Pose2, pose2_list_to_nparray
 
 
 # %% Classes
@@ -306,13 +306,13 @@ class process_2d_data:
         for i in range(array_true.shape[0]):
             theta_error[i] = angle_between_rads(array_test[i, 2], array_true[i, 2])
 
-        return np.hstack((pos_error,theta_error))
+        return np.hstack((pos_error, theta_error))
 
     def show_error(self):
         # Convert the lists of Pose2s to np arrays
-        dr_array = self.pose2_list_to_nparray(self.dr_Pose2s)
-        gt_array = self.pose2_list_to_nparray(self.gt_Pose2s)
-        post_array = self.pose2_list_to_nparray(self.post_Pose2s)
+        dr_array = pose2_list_to_nparray(self.dr_Pose2s)
+        gt_array = pose2_list_to_nparray(self.gt_Pose2s)
+        post_array = pose2_list_to_nparray(self.post_Pose2s)
 
         # TODO figure out ground truth coordinate stuff
         # This is to correct problems with the way the gt pose is converted to the map frame...
@@ -448,26 +448,6 @@ class process_2d_data:
             self.cluster2buoy[cluster_id] = buoy_id
 
     # ===== GTSAM data processing =====
-    @staticmethod
-    def create_Pose2(input_pose):
-        """
-        Create a GTSAM Pose3 from the recorded poses in the form:
-        [x,y,z,q_w,q_x,q_,y,q_z]
-        """
-        rot3 = gtsam.Rot3.Quaternion(input_pose[3], input_pose[4], input_pose[5], input_pose[6])
-        rot3_yaw = rot3.yaw()
-        # GTSAM Pose2: x, y, theta
-        return gtsam.Pose2(input_pose[0], input_pose[1], rot3_yaw)
-
-    @staticmethod
-    def pose2_list_to_nparray(pose_list):
-        out_array = np.zeros((len(pose_list), 3))
-
-        for i, pose2 in enumerate(pose_list):
-            out_array[i, :] = pose2.x(), pose2.y(), pose2.theta()
-
-        return out_array
-
     def convert_poses_to_Pose2(self):
         """
         Poses is self.
@@ -477,17 +457,17 @@ class process_2d_data:
         self.gt_Pose2s = []
 
         for dr_pose in self.dr_poses_graph:
-            self.dr_Pose2s.append(self.create_Pose2(dr_pose))
+            self.dr_Pose2s.append(create_Pose2(dr_pose))
 
         for gt_pose in self.gt_poses_graph:
-            self.gt_Pose2s.append(self.create_Pose2(gt_pose))
+            self.gt_Pose2s.append(create_Pose2(gt_pose))
 
     def Bearing_range_from_detection_2d(self):
         for detection in self.detections_graph:
             dr_id = int(detection[-1])
             detection_pose = self.dr_Pose2s[dr_id]
             # This Method uses the map coordinates to calc bearing and range
-            measurement = gtsam.BearingRange2D.Measure(detection_pose, detection[0:2])
+            measurement = gtsam.BearingRange2D.Measure(pose=detection_pose, point=detection[0:2])
             # This method uses the relative position of the detection, as it is registered in sam/base_link
             # pose_null = self.create_Pose2([0, 0, 0, 1, 0, 0, 0])
             # measurement = gtsam.BearingRange3D.Measure(pose_null, detection[3:5])
@@ -500,7 +480,7 @@ class process_2d_data:
         self.graph = gtsam.NonlinearFactorGraph()
 
         # labels
-        self.b = {k: gtsam.symbol('l', k) for k in range(self.n_buoys)}
+        self.b = {k: gtsam.symbol('b', k) for k in range(self.n_buoys)}
         self.x = {k: gtsam.symbol('x', k) for k in range(len(self.dr_poses_graph))}
 
         # ===== Prior factors =====
@@ -593,3 +573,183 @@ class process_2d_data:
             self.show_graph_2d('Final', True)
         if verbose_level >= 3:
             self.show_error()
+
+
+class online_slam_2d:
+    def __init__(self):
+        graph = gtsam.NonlinearFactorGraph()
+
+        # ===== Graph parameters =====
+        self.graph = gtsam.NonlinearFactorGraph()
+        self.parameters = gtsam.ISAM2Params()
+        self.parameters.setRelinearizeThreshold(0.1)
+        self.parameters.relinearizeSkip = 1
+        self.isam = gtsam.ISAM2(self.parameters)
+
+        self.current_x_ind = 0
+        self.x = None
+        self.b = None
+        self.dr_Pose2s = None
+        self.gt_Pose2s = None
+        self.between_pose2s = None
+        self.post_Pose2s = None
+        self.post_Point2s = None
+        self.bearings_ranges = []
+
+        # ===== Sigmas =====
+        # Agent prior sigmas
+        self.ang_sig_init = 5 * np.pi / 180
+        self.dist_sig_init = 1
+        # buoy prior sigmas
+        self.buoy_dist_sig_init = 2.5
+        # agent odometry sigmas
+        self.ang_sig = 5 * np.pi / 180
+        self.dist_sig = .25
+        # detection sigmas
+        self.detect_dist_sig = 1
+        self.detect_ang_sig = 5 * np.pi / 180
+
+        # ===== Noise models =====
+        self.prior_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.dist_sig_init,
+                                                                      self.dist_sig_init,
+                                                                      self.ang_sig_init]))
+
+        self.prior_model_lm = gtsam.noiseModel.Diagonal.Sigmas((self.buoy_dist_sig_init,
+                                                                self.buoy_dist_sig_init))
+
+        self.odometry_model = gtsam.noiseModel.Diagonal.Sigmas((self.dist_sig,
+                                                                self.dist_sig,
+                                                                self.ang_sig))
+
+        self.detection_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.detect_dist_sig,
+                                                                          self.detect_ang_sig]))
+
+        # buoy prior map
+        self.n_buoys = None
+        self.buoy_prior_map = None
+        self.buoy_map_present = False
+
+        # ===== Optimizer and values =====
+        # self.optimizer = None
+        self.initial_estimate = None
+        self.current_estimate = None
+        self.slam_result = None
+
+    def buoy_setup(self, buoys):
+        if len(buoys) == 0:
+            print("Invalid buoy object used!")
+            return -1
+
+        self.buoy_prior_map = buoys
+        self.n_buoys = len(self.buoy_prior_map)
+
+        # labels
+        self.b = {k: gtsam.symbol('b', k) for k in range(self.n_buoys)}
+
+        # Add buoy priors
+        for id_buoy in range(self.n_buoys):
+            self.graph.add(gtsam.PriorFactorPoint2(self.b[id_buoy],
+                                                   gtsam.Point2(self.buoy_prior_map[id_buoy, 0],
+                                                                self.buoy_prior_map[id_buoy, 1]),
+                                                   self.prior_model_lm))
+
+        self.buoy_map_present = True
+
+        return
+
+    def add_first_pose(self, dr_pose, gt_pose, initial_estimate=None):
+        """
+        Pose format [x, y, z, q_w, q_x, q_y, q_z]
+        """
+        # Wait to start building graph until the prior is received
+        if not self.buoy_map_present:
+            print("Waiting for buoy prior map")
+            return -1
+
+        if self.n_x != 0:
+            print("add_first_pose() called with a graph that already has a pose added")
+            return -1
+
+        # Record relevant poses
+        self.dr_Pose2s = [create_Pose2(dr_pose)]
+        self.gt_Pose2s = [create_Pose2(gt_pose)]
+        self.between_pose2s = []
+
+        # Add label
+        self.x = {self.current_x_ind: gtsam.symbol('x', self.current_x_ind)}
+
+        # Add prior factor
+        self.graph.add(gtsam.PriorFactorPose2(self.x[0], self.dr_Pose2s[0], self.prior_model))
+
+        # Initialize estimate
+        self.initial_estimate = gtsam.Values()
+        self.initial_estimate.insert(self.x[0], self.dr_Pose2s[0])
+        self.current_estimate = self.initial_estimate
+        return
+
+    def online_update(self, dr_pose, gt_pose, relative_detection=None):
+        """
+        Pose format [x, y, z, q_w, q_x, q_y, q_z]
+        """
+        # Record relevant poses
+        self.dr_Pose2s.append(create_Pose2(dr_pose))
+        self.gt_Pose2s.append(create_Pose2(gt_pose))
+
+        # Find the relative odometry between dr_poses
+        between_odometry = self.dr_Pose2s[-2].between(self.dr_Pose2s[-1])
+        self.between_pose2s.append(between_odometry)
+
+        # Add label
+        self.current_x_ind += 1
+        self.x = {self.current_x_ind: gtsam.symbol('x', self.current_x_ind)}
+
+        # ===== Add the between factor =====
+        self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
+                                                self.x[self.current_x_ind],
+                                                between_odometry,
+                                                self.odometry_model))
+
+        # Compute initialization value from the current estimate and odometry
+        computed_est = self.current_estimate.atPose2(self.x[self.current_x_ind - 1]).compose(between_odometry)
+
+        # Update initial estimate
+        self.initial_estimate.insert(self.x[self.current_x_ind], computed_est)
+
+        # Process detection
+        # TODO this might need to be more robust, not assume detections will lead to graph update
+        if relative_detection is not None:
+            # Calculate the map location of the detection given relative measurements and current estimate
+            detect_map_loc = computed_est.transformFrom(np.array(relative_detection), dtype=np.float64)
+            detect_bearing = computed_est.bearing(detect_map_loc)
+            detect_range = computed_est.range(detect_map_loc)
+
+            buoy_association_id = self.associate_detection(detect_map_loc)
+
+            self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                      self.b[buoy_association_id],
+                                                      detect_bearing,
+                                                      detect_range,
+                                                      self.detection_model))
+
+        # Incremental update
+        self.isam.update(self.graph, self.initial_estimate)
+        self.current_estimate = self.isam.calculateEstimate()
+
+        self.initial_estimate.clear()
+
+    def associate_detection(self, detection_map_location):
+        """
+        Basic association of detection with a buoys, currently using the prior locations
+        """
+        # TODO update to use the current estimated buoy locations
+        best_id = -1
+        best_range_2 = np.inf
+
+        for i, buoy_loc in enumerate(self.buoy_prior_map):
+            range_2 = (buoy_loc[0] - detection_map_location[0]) ** 2 + (buoy_loc[1] - detection_map_location[1]) ** 2
+
+            if range_2 < best_range_2:
+                best_range_2 = range_2
+                best_id = i
+
+        return best_id

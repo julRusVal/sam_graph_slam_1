@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import numpy as np
 import rospy
 import tf2_ros
 import tf2_geometry_msgs
@@ -24,9 +24,17 @@ class sam_slam_listener:
     detections format: [x_map, y_map, z_map, q_w, q_x, q_y, q_z, corresponding dr id, score]
     detections_graph format: [x_map, y_map, z_map, x_rel, y_rel, z_vel, corresponding dr id]
 
+    Online
+    If an online_graph object is passed to the listener it will be updated at every detection
+    - dr_callback: first update and odometry updates
+    - det_callback: update
+    - buoy_callback: send buoy info to online graph
+    - time_check_callback: Save results when there is no longer any dr update
+
     """
 
-    def __init__(self, gt_top_name, dr_top_name, det_top_name, buoy_top_name, frame_name, path_name=None):
+    def __init__(self, gt_top_name, dr_top_name, det_top_name, buoy_top_name, frame_name, path_name=None,
+                 online_graph=None):
         # Topic names
         self.gt_topic = gt_top_name
         self.dr_topic = dr_top_name
@@ -41,11 +49,11 @@ class sam_slam_listener:
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        # Current data
-        self.gt_pose = None
-        self.dr_pose = None
-        self.det_info = None
+        # Buoy positions
         self.buoys = None
+
+        # Online SLAM w/ iSAM2
+        self.online_graph = online_graph
 
         # Logging
         # Raw logging, occurs at the rate the data is received
@@ -115,10 +123,10 @@ class sam_slam_listener:
         Note the position of q_w, this is for compatibility with gtsam and matlab
         """
         transformed_pose = self.transform_pose(msg.pose, from_frame=msg.header.frame_id, to_frame=self.frame)
-        self.gt_pose = transformed_pose
 
         gt_position = transformed_pose.pose.position
         gt_quaternion = transformed_pose.pose.orientation
+
         self.gt_poses.append([gt_position.x, gt_position.y, gt_position.z,
                               gt_quaternion.w, gt_quaternion.x, gt_quaternion.y, gt_quaternion.z])
 
@@ -134,10 +142,11 @@ class sam_slam_listener:
         transformed_dr_pose = self.transform_pose(msg.pose,
                                                   from_frame=msg.header.frame_id,
                                                   to_frame=self.frame)
-        self.dr_pose = transformed_dr_pose
 
         dr_position = transformed_dr_pose.pose.position
         dr_quaternion = transformed_dr_pose.pose.orientation
+
+        # Record dr poses in format compatible with GTSAM
         self.dr_poses.append([dr_position.x, dr_position.y, dr_position.z,
                               dr_quaternion.w, dr_quaternion.x, dr_quaternion.y, dr_quaternion.z])
 
@@ -146,7 +155,7 @@ class sam_slam_listener:
         first_time_cond = not self.dr_updated and self.gt_updated
         stale_data_cond = self.dr_updated and (time_now - self.last_time).to_sec() > self.update_time
 
-        if first_time_cond or stale_data_cond:
+        if first_time_cond:
             # Add to the dr and gt lists
             self.dr_poses_graph.append(self.dr_poses[-1])
             self.gt_poses_graph.append(self.get_gt_trans_in_map())
@@ -155,8 +164,27 @@ class sam_slam_listener:
             self.last_time = time_now
             self.dr_updated = True
 
+            # ===== Online first update =====
+            if self.online_graph is not None:
+                # TODO
+                print("First update")
+                self.online_graph.add_first_pose(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
+
+        elif stale_data_cond:
+            # Add to the dr and gt lists
+            self.dr_poses_graph.append(self.dr_poses[-1])
+            self.gt_poses_graph.append(self.get_gt_trans_in_map())
+
+            # Update time and state
+            self.last_time = time_now
+
+            # ===== Online odometry update =====
+            if self.online_graph is not None:
+                # TODO
+                print("Odometry update")
+                self.online_graph.online_update(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
+
     def det_callback(self, msg):
-        self.det_info = msg
         for det_ind, detection in enumerate(msg.detections):
             for res_ind, result in enumerate(detection.results):
                 # Pose in base_link
@@ -175,7 +203,7 @@ class sam_slam_listener:
                 # (OLD) self.gt_poses_graph.append(self.gt_poses[-1])
 
                 # detection position:
-                # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of ]
+                # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
                 index = len(self.dr_poses_graph) - 1
                 self.detections_graph.append([det_position.x,
                                               det_position.y,
@@ -185,6 +213,14 @@ class sam_slam_listener:
                                               detection_position.pose.position.z,
                                               index])
 
+                # ===== Online detection update =====
+                if self.online_graph is not None:
+                    # TODO
+                    print("Detection update")
+                    self.online_graph.online_update(self.dr_poses_graph[-1], self.gt_poses_graph[-1],
+                                                    np.array((detection_position.pose.position.x,
+                                                              detection_position.pose.position.y), dtype=np.float64))
+
     def buoy_callback(self, msg):
         if not self.buoy_updated:
             self.buoys = []
@@ -192,6 +228,12 @@ class sam_slam_listener:
                 self.buoys.append([marker.pose.position.x,
                                    marker.pose.position.y,
                                    marker.pose.position.z])
+
+            if self.online_graph is not None:
+                # TODO buoy info to online graph
+                print("Online: buoy update")
+                self.online_graph.buoy_setup(self.buoys)
+
             self.buoy_updated = True
 
     # Timer callback
@@ -203,9 +245,14 @@ class sam_slam_listener:
             print('Data written')
             self.write_data()
             self.data_written = True
+
+        if self.online_graph is not None:
+            # TODO Save final results
+            print("TODO: Save online graph")
+
         return
 
-    # Transforms
+    # ===== Transforms =====
     def transform_pose(self, pose, from_frame, to_frame):
         trans = self.wait_for_transform(from_frame=from_frame,
                                         to_frame=to_frame)
@@ -254,7 +301,9 @@ class sam_slam_listener:
 
         return pose_list
 
-    # Random utility methods
+    # ===== iSAM2 =====
+
+    # ===== Random utility methods =====
     @staticmethod
     def write_data_set(file_path, data_array):
         with open(file_path, "w", newline="") as f:
