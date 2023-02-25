@@ -9,6 +9,8 @@ from visualization_msgs.msg import MarkerArray
 from geometry_msgs.msg import PoseStamped
 import csv
 
+from sam_slam_utils.sam_slam_helper_funcs import show_simple_graph_2d
+
 
 class sam_slam_listener:
     """
@@ -150,12 +152,16 @@ class sam_slam_listener:
         self.dr_poses.append([dr_position.x, dr_position.y, dr_position.z,
                               dr_quaternion.w, dr_quaternion.x, dr_quaternion.y, dr_quaternion.z])
 
-        # Conditions for updating dr: (1) first time or (2) stale data
+        # Conditions for updating dr: (1) first time or (2) stale data or (3) online graph is still uninitialized
         time_now = rospy.Time.now()
         first_time_cond = not self.dr_updated and self.gt_updated
         stale_data_cond = self.dr_updated and (time_now - self.last_time).to_sec() > self.update_time
+        if self.online_graph is not None:
+            online_waiting_cond = self.gt_updated and self.online_graph.initial_pose_set is False
+        else:
+            online_waiting_cond = False
 
-        if first_time_cond:
+        if first_time_cond or stale_data_cond or online_waiting_cond:
             # Add to the dr and gt lists
             self.dr_poses_graph.append(self.dr_poses[-1])
             self.gt_poses_graph.append(self.get_gt_trans_in_map())
@@ -165,22 +171,12 @@ class sam_slam_listener:
             self.dr_updated = True
 
             # ===== Online first update =====
-            if self.online_graph is not None:
+            if self.online_graph is not None and self.online_graph.initial_pose_set is False:
                 # TODO
                 print("First update")
                 self.online_graph.add_first_pose(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
 
-        elif stale_data_cond:
-            # Add to the dr and gt lists
-            self.dr_poses_graph.append(self.dr_poses[-1])
-            self.gt_poses_graph.append(self.get_gt_trans_in_map())
-
-            # Update time and state
-            self.last_time = time_now
-
-            # ===== Online odometry update =====
-            if self.online_graph is not None:
-                # TODO
+            elif self.online_graph is not None:
                 print("Odometry update")
                 self.online_graph.online_update(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
 
@@ -246,9 +242,15 @@ class sam_slam_listener:
             self.write_data()
             self.data_written = True
 
-        if self.online_graph is not None:
-            # TODO Save final results
-            print("TODO: Save online graph")
+            if self.online_graph is not None:
+                # TODO Save final results
+                print("Print online graph")
+                show_simple_graph_2d(graph=self.online_graph.graph,
+                                     x_keys=self.online_graph.x,
+                                     b_keys=self.online_graph.b,
+                                     values=self.online_graph.current_estimate,
+                                     label="Online Graph")
+
 
         return
 
