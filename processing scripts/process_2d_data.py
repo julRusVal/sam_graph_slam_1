@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
 
 """
-Script for processing data from SMaRC's Stonefish simulation. This uses the process_2d_data class.
+Script for processing data from SMaRC's Stonefish simulation. This uses the offline_slam_2d class.
 This class can except a path to the needed data saved in separate CSVs, or it can be passed a sam_slam_listener instance.
 
 The purpose of this script is to help with testing and reproduce the output from saved data.
 """
 
 # %% Imports
-from sam_slam_utils.sam_slam_proc_classes import process_2d_data
+from sam_slam_utils.sam_slam_proc_classes import offline_slam_2d
+from sam_slam_utils.sam_slam_proc_classes import analyze_slam
 
 # %% Main
 if __name__ == "__main__":
-    path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data'
-    # path_name = '/Users/julian/Library/CloudStorage/Dropbox/Degree coding/simulated_slam/data'
-    process = process_2d_data(path_name)
+    # ===== Pick data source =====
+    # linux path
+    # path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data'
+    # Mac path
+    path_name = '/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/clean run'
 
-    process.correct_coord_problem()
-    process.cluster_data()
-    process.cluster_to_landmark()
-    process.convert_poses_to_Pose2()
-    process.Bearing_range_from_detection_2d()
-    process.construct_graph_2d()
-    process.optimize_graph()
+    # ===== Perform offline slam ====
+    process = offline_slam_2d(path_name)
+    process.perform_offline_slam()
 
     if True:
         process.visualize_clustering()
@@ -33,3 +32,9 @@ if __name__ == "__main__":
         process.show_graph_2d('Final', True)
     if True:
         process.show_error()
+
+    # %%
+    # ===== Analysis class =====
+    analysis = analyze_slam(process)
+    # analysis.visualize_raw()
+    # analysis.visualize_posterior()

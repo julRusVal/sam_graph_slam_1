@@ -45,6 +45,23 @@ def angle_between_rads(target_angle, source_angle):
     return diff_angle
 
 
+def calc_pose_error(array_test: np.ndarray, array_true: np.ndarray):
+    """
+    Calculate the error between two arrays of equal size.
+    x: [:,0]
+    y: [:,1]
+    theta: [:,2]
+    """
+    # Positional error
+    pos_error = array_test[:, :2] - array_true[:, :2]
+
+    theta_error = np.zeros((array_true.shape[0], 1))
+    for i in range(array_true.shape[0]):
+        theta_error[i] = angle_between_rads(array_test[i, 2], array_true[i, 2])
+
+    return np.hstack((pos_error, theta_error))
+
+
 # ===== GTSAM Stuff =====
 def create_Pose2(input_pose):
     """

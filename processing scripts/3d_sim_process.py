@@ -424,7 +424,7 @@ if __name__ == "__main__":
         process.visualize_otimized()
     if False:
         show_graph_3d(process.graph, process.initial_estimate, process.x, 'Initial')
-        show_graph_3d(process.graph, process.slam_result, process.x, 'Posterior')
+        show_graph_3d(process.graph, process.current_estimate, process.x, 'Posterior')
     # plot.plot_trajectory(2, process.initial_estimate)
 
 # %% testing junk

@@ -3,7 +3,7 @@
 # Imports
 import rospy
 from sam_slam_utils.sam_slam_ros_classes import sam_slam_listener
-from sam_slam_utils.sam_slam_proc_classes import process_2d_data
+from sam_slam_utils.sam_slam_proc_classes import offline_slam_2d
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
         # Add the end of the run the listener will save its data, at this point we perform the offline slam
         if listener.data_written and not data_processed:
             print("Processing data")
-            processing = process_2d_data(listener)
+            processing = offline_slam_2d(listener)
             processing.perform_offline_slam()
             processing.output_results(verbose_level=output_level)
             data_processed = True

@@ -5,19 +5,28 @@ Script for processing data from SMaRC's Stonefish simulation
 """
 
 # %% Imports
+from __future__ import annotations
+import itertools
+
 import numpy as np
 import matplotlib.pyplot as plt
+
+# Clustering
 from sklearn.mixture import GaussianMixture
-import itertools
-import gtsam
+
+# Graphing graphs
 import networkx as nx
-from sam_slam_utils.sam_slam_helper_funcs import angle_between_rads, create_Pose2, pose2_list_to_nparray
+
+# Slam
+import gtsam
+from sam_slam_utils.sam_slam_helper_funcs import calc_pose_error
+from sam_slam_utils.sam_slam_helper_funcs import create_Pose2, pose2_list_to_nparray
 from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array
 
 
 # %% Classes
 
-class process_2d_data:
+class offline_slam_2d:
     def __init__(self, input_data=None):
         """
         Input can either be read from a file, if the path to a folder is provided as a string
@@ -35,23 +44,23 @@ class process_2d_data:
             self.dr_poses_graph = read_csv_to_array('dr_poses_graph.csv')
             self.gt_poses_graph = read_csv_to_array('gt_poses_graph.csv')
             self.detections_graph = read_csv_to_array('detections_graph.csv')
-            self.buoys = read_csv_to_array('buoys.csv')
+            self.buoy_priors = read_csv_to_array('buoys.csv')
 
         elif isinstance(input_data, str):
             self.dr_poses_graph = read_csv_to_array(input_data + '/dr_poses_graph.csv')
             self.gt_poses_graph = read_csv_to_array(input_data + '/gt_poses_graph.csv')
             self.detections_graph = read_csv_to_array(input_data + '/detections_graph.csv')
-            self.buoys = read_csv_to_array(input_data + '/buoys.csv')
+            self.buoy_priors = read_csv_to_array(input_data + '/buoys.csv')
 
         # Extract data from an instance of sam_slam_listener
         else:
             self.dr_poses_graph = np.array(input_data.dr_poses_graph)
             self.gt_poses_graph = np.array(input_data.gt_poses_graph)
             self.detections_graph = np.array(input_data.detections_graph)
-            self.buoys = np.array(input_data.buoys)
+            self.buoy_priors = np.array(input_data.buoys)
 
         # ===== Clustering and data association =====
-        self.n_buoys = len(self.buoys)
+        self.n_buoys = len(self.buoy_priors)
         self.n_detections = self.detections_graph.shape[0]
         self.cluster_model = None
         self.cluster_mean_threshold = 2.0  # means within this threshold will cause fewer clusters to be used
@@ -66,9 +75,13 @@ class process_2d_data:
         self.b = None
         self.dr_Pose2s = None
         self.gt_Pose2s = None
+        self.between_Pose2s = None
         self.post_Pose2s = None
         self.post_Point2s = None
         self.bearings_ranges = []
+        # TODO this will need more processing to make into da_check
+        self.da_check_proto = []
+        self.detect_locs = None
 
         # ===== Agent prior sigmas =====
         self.ang_sig_init = 5 * np.pi / 180
@@ -85,14 +98,14 @@ class process_2d_data:
         # ===== Optimizer and values =====
         self.optimizer = None
         self.initial_estimate = None
-        self.slam_result = None
+        self.current_estimate = None
 
         # ===== Visualization =====
         self.dr_color = 'r'
         self.gt_color = 'b'
         self.post_color = 'g'
         self.colors = ['orange', 'purple', 'cyan', 'brown', 'pink', 'gray', 'olive']
-        self.plot_limits = [-12.5, 12.5, -5, 20]
+        self.plot_limits = [-15.0, 15.0, -2.5, 25.0]
 
     # ===== Visualization methods =====
     def visualize_raw(self):
@@ -106,7 +119,9 @@ class process_2d_data:
             ax.scatter(self.detections_graph[:, 0], self.detections_graph[:, 1], color='k')
 
         ax.scatter(self.gt_poses_graph[:, 0], self.gt_poses_graph[:, 1], color=self.gt_color)
-        ax.scatter(self.dr_poses_graph[:, 0], self.dr_poses_graph[:, 1], color=self.dr_color)
+        # TODO this whole method needs to be moved to the analysis
+        # negative sign to fix coordinate problem
+        ax.scatter(-self.dr_poses_graph[:, 0], self.dr_poses_graph[:, 1], color=self.dr_color)
 
         plt.show()
         return
@@ -134,7 +149,7 @@ class process_2d_data:
         plt.axis(self.plot_limits)
         plt.grid(True)
 
-        for ind_buoy in range(self.buoys.shape[0]):
+        for ind_buoy in range(self.buoy_priors.shape[0]):
             cluster_num = self.buoy2cluster[ind_buoy]  # landmark_associations[ind_landmark]
             if cluster_num == -1:
                 current_color = 'k'
@@ -148,8 +163,8 @@ class process_2d_data:
                            marker='+',
                            s=75)
 
-            ax.scatter(self.buoys[ind_buoy, 0],
-                       self.buoys[ind_buoy, 1],
+            ax.scatter(self.buoy_priors[ind_buoy, 0],
+                       self.buoy_priors[ind_buoy, 1],
                        color=current_color)
 
         plt.show()
@@ -160,7 +175,7 @@ class process_2d_data:
         Visualize The Posterior
         """
         # Check if Optimization has occurred
-        if self.slam_result is None:
+        if self.current_estimate is None:
             print('Need to perform optimization before it can be printed!')
             return
 
@@ -169,12 +184,12 @@ class process_2d_data:
         slam_out_points = np.zeros((len(self.b), 2))
         for i in range(len(self.x)):
             # TODO there has to be a better way to do this!!
-            slam_out_poses[i, 0] = self.slam_result.atPose2(self.x[i]).x()
-            slam_out_poses[i, 1] = self.slam_result.atPose2(self.x[i]).y()
+            slam_out_poses[i, 0] = self.current_estimate.atPose2(self.x[i]).x()
+            slam_out_poses[i, 1] = self.current_estimate.atPose2(self.x[i]).y()
 
         for i in range(len(self.b)):
-            slam_out_points[i, 0] = self.slam_result.atPoint2(self.b[i])[0]
-            slam_out_points[i, 1] = self.slam_result.atPoint2(self.b[i])[1]
+            slam_out_points[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
+            slam_out_points[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
 
         # ===== Matplotlip options =====
         fig, ax = plt.subplots()
@@ -190,8 +205,10 @@ class process_2d_data:
                        color=self.gt_color)
 
         # ===== Plot dead reckoning =====
+        # TODO this whole method needs to be moved to the analysis
+        # negative sign to fix coordinate problem
         if plot_dr:
-            ax.scatter(self.dr_poses_graph[:, 0],
+            ax.scatter(-self.dr_poses_graph[:, 0],
                        self.dr_poses_graph[:, 1],
                        color=self.dr_color)
 
@@ -207,8 +224,8 @@ class process_2d_data:
                     current_color = self.colors[cluster_num % len(self.colors)]
 
                 # Plot all the buoys
-                ax.scatter(self.buoys[ind_buoy, 0],
-                           self.buoys[ind_buoy, 1],
+                ax.scatter(self.buoy_priors[ind_buoy, 0],
+                           self.buoy_priors[ind_buoy, 1],
                            color=current_color)
 
                 # Plot buoy posteriors
@@ -229,10 +246,10 @@ class process_2d_data:
         """
         # Select which values to graph
         if show_final:
-            if self.slam_result is None:
+            if self.current_estimate is None:
                 print('Perform optimization before it can be graphed')
                 return
-            values = self.slam_result
+            values = self.current_estimate
         else:
             if self.initial_estimate is None:
                 print('Initialize estimate before it can be graphed')
@@ -297,17 +314,6 @@ class process_2d_data:
         np.arange(self.plot_limits[0], self.plot_limits[1] + 1, 2.5)
         plt.show()
 
-    @staticmethod
-    def calc_pose_error(array_test, array_true):
-        # Positional error
-        pos_error = array_test[:, :2] - array_true[:, :2]
-
-        theta_error = np.zeros((array_true.shape[0], 1))
-        for i in range(array_true.shape[0]):
-            theta_error[i] = angle_between_rads(array_test[i, 2], array_true[i, 2])
-
-        return np.hstack((pos_error, theta_error))
-
     def show_error(self):
         # Convert the lists of Pose2s to np arrays
         dr_array = pose2_list_to_nparray(self.dr_Pose2s)
@@ -319,8 +325,8 @@ class process_2d_data:
         gt_array[:, 2] = np.pi - gt_array[:, 2]
 
         # Find the errors between gt<->dr and gt<->post
-        dr_error = self.calc_pose_error(dr_array, gt_array)
-        post_error = self.calc_pose_error(post_array, gt_array)
+        dr_error = calc_pose_error(dr_array, gt_array)
+        post_error = calc_pose_error(post_array, gt_array)
 
         # Calculate MSE
         dr_mse_error = np.square(dr_error).mean(0)
@@ -343,17 +349,6 @@ class process_2d_data:
 
         plt.show()
 
-    # ===== Data loading and Pre-process Methods =====
-    def correct_coord_problem(self):
-        # TODO this is super hacky and I feel like it'll cause problems later!!
-        # TODO Figure out the coordinate system! map and world ned are causing problems
-        """
-        The appears to be a problem with converting everything to the map frame....
-        """
-        print('Don\'t do this Julian!')
-
-        self.gt_poses_graph[:, 0] = -self.gt_poses_graph[:, 0]
-
     # ===== Clustering and data association methods =====
     def fit_cluster_model(self):
         # Check for empty detections_graph
@@ -362,7 +357,8 @@ class process_2d_data:
             return
 
         if self.cluster_model is not None:
-            self.detection_clusterings = self.cluster_model.fit_predict(self.detections_graph[:, 0:2])
+            # TODO changed to make it work with corrected dr poses
+            self.detection_clusterings = self.cluster_model.fit_predict(self.detect_locs[:, 0:2])
 
         else:
             print('Need to initialize cluster_model first')
@@ -411,8 +407,8 @@ class process_2d_data:
         for perm_ind, perm in enumerate(permutations):
             perm_score = 0
             for buoy_id, cluster_id in perm:
-                perm_score += (self.buoys[buoy_id, 0] - self.cluster_model.means_[cluster_id, 0]) ** 2
-                perm_score += (self.buoys[buoy_id, 1] - self.cluster_model.means_[cluster_id, 1]) ** 2
+                perm_score += (self.buoy_priors[buoy_id, 0] - self.cluster_model.means_[cluster_id, 0]) ** 2
+                perm_score += (self.buoy_priors[buoy_id, 1] - self.cluster_model.means_[cluster_id, 1]) ** 2
 
             if perm_score < best_perm_score:
                 best_perm_score = perm_score
@@ -434,23 +430,57 @@ class process_2d_data:
         """
         self.dr_Pose2s = []
         self.gt_Pose2s = []
+        self.between_Pose2s = []
 
+        # ===== DR =====
         for dr_pose in self.dr_poses_graph:
-            self.dr_Pose2s.append(create_Pose2(dr_pose))
+            self.dr_Pose2s.append(self.correct_dr(create_Pose2(dr_pose)))
 
+        # ===== GT =====
         for gt_pose in self.gt_poses_graph:
             self.gt_Pose2s.append(create_Pose2(gt_pose))
 
+        # ===== DR between =====
+        for i in range(1, len(self.dr_Pose2s)):
+            between_odometry = self.dr_Pose2s[i - 1].between(self.dr_Pose2s[i])
+            self.between_Pose2s.append(between_odometry)
+
+    @staticmethod
+    def correct_dr(uncorrected_dr: gtsam.Pose2):
+        """
+        This is part of the gt/dr mismatch. Its appears that there is something off with converting from
+        sam/base_link from to the map frame, the results are mirrored about the y-axis.
+        This function will mirror the input pose about the y-axis.
+        """
+        return gtsam.Pose2(x=-uncorrected_dr.x(),
+                           y=uncorrected_dr.y(),
+                           theta=np.pi - uncorrected_dr.theta())
+
+        # return uncorrected_dr
+
     def Bearing_range_from_detection_2d(self):
-        for detection in self.detections_graph:
+        self.detect_locs = np.zeros((self.n_detections, 5))
+        for i_d, detection in enumerate(self.detections_graph):
             dr_id = int(detection[-1])
             detection_pose = self.dr_Pose2s[dr_id]
+            true_pose = self.gt_Pose2s[dr_id]
             # This Method uses the map coordinates to calc bearing and range
-            measurement = gtsam.BearingRange2D.Measure(pose=detection_pose, point=detection[0:2])
+            est_detect_loc = detection_pose.transformFrom(np.array(detection[3:5], dtype=np.float64))
+            true_detect_loc = true_pose.transformFrom(np.array(detection[3:5], dtype=np.float64))
+
+            measurement = gtsam.BearingRange2D.Measure(pose=detection_pose, point=est_detect_loc)
+            # measurement = gtsam.BearingRange2D.Measure(pose=detection_pose, point=detection[0:2])
             # This method uses the relative position of the detection, as it is registered in sam/base_link
             # pose_null = self.create_Pose2([0, 0, 0, 1, 0, 0, 0])
             # measurement = gtsam.BearingRange3D.Measure(pose_null, detection[3:5])
             self.bearings_ranges.append(measurement)
+
+            # ===== Debugging =====
+            # self.da_check_proto[dr_id] = np.hstack((est_detect_loc, true_detect_loc))
+            self.da_check_proto.append(np.hstack((est_detect_loc, true_detect_loc)))
+            self.detect_locs[i_d, :] = [est_detect_loc[0], est_detect_loc[1],
+                                        true_detect_loc[0], true_detect_loc[1],
+                                        dr_id]
 
     def construct_graph_2d(self):
         """
@@ -475,7 +505,8 @@ class process_2d_data:
 
         for id_buoy in range(self.n_buoys):
             self.graph.add(gtsam.PriorFactorPoint2(self.b[id_buoy],
-                                                   np.array((self.buoys[id_buoy, 0], self.buoys[id_buoy, 1]),
+                                                   np.array((self.buoy_priors[id_buoy, 0],
+                                                             self.buoy_priors[id_buoy, 1]),
                                                             dtype=np.float64),
                                                    prior_model_lm))
 
@@ -509,33 +540,33 @@ class process_2d_data:
             self.initial_estimate.insert(self.x[pose_id], dr_Pose2)
 
         for buoy_id in range(self.n_buoys):
-            self.initial_estimate.insert(self.b[buoy_id], np.array((self.buoys[buoy_id, 0], self.buoys[buoy_id, 1]),
-                                                                   dtype=np.float64))
+            self.initial_estimate.insert(self.b[buoy_id],
+                                         np.array((self.buoy_priors[buoy_id, 0], self.buoy_priors[buoy_id, 1]),
+                                                  dtype=np.float64))
 
     def optimize_graph(self):
         if self.graph.size() == 0:
             print('Need to build the graph before is can be optimized!')
             return
         self.optimizer = gtsam.LevenbergMarquardtOptimizer(self.graph, self.initial_estimate)
-        self.slam_result = self.optimizer.optimize()
+        self.current_estimate = self.optimizer.optimize()
 
         # Save the posterior results
         self.post_Pose2s = []
         self.post_Point2s = []
 
         for i in range(len(self.x)):
-            self.post_Pose2s.append(self.slam_result.atPose2(self.x[i]))
+            self.post_Pose2s.append(self.current_estimate.atPose2(self.x[i]))
 
         for i in range(len(self.b)):
-            self.post_Point2s.append(self.slam_result.atPoint2(self.b[i]))
+            self.post_Point2s.append(self.current_estimate.atPoint2(self.b[i]))
 
     # ===== Higher level methods =====
     def perform_offline_slam(self):
-        self.correct_coord_problem()
-        self.cluster_data()
-        self.cluster_to_landmark()
         self.convert_poses_to_Pose2()
         self.Bearing_range_from_detection_2d()
+        self.cluster_data()
+        self.cluster_to_landmark()
         self.construct_graph_2d()
         self.optimize_graph()
 
@@ -570,23 +601,23 @@ class online_slam_2d:
         self.b = None
         self.dr_Pose2s = None
         self.gt_Pose2s = None
-        self.between_pose2s = None
+        self.between_Pose2s = None
         self.post_Pose2s = None
         self.post_Point2s = None
         self.bearings_ranges = []
 
         # ===== Sigmas =====
         # Agent prior sigmas
-        self.ang_sig_init = 5 * np.pi / 180
-        self.dist_sig_init = 1
+        self.ang_sig_init = np.pi / 180
+        self.dist_sig_init = 0.5
         # buoy prior sigmas
-        self.buoy_dist_sig_init = 2.5
+        self.buoy_dist_sig_init = 0.5
         # agent odometry sigmas
-        self.ang_sig = 5 * np.pi / 180
-        self.dist_sig = .25
+        self.ang_sig = 0.1 * np.pi / 180
+        self.dist_sig = .1
         # detection sigmas
         self.detect_dist_sig = 1
-        self.detect_ang_sig = 5 * np.pi / 180
+        self.detect_ang_sig = .5 * np.pi / 180
 
         # ===== Noise models =====
         self.prior_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.dist_sig_init,
@@ -605,7 +636,7 @@ class online_slam_2d:
 
         # buoy prior map
         self.n_buoys = None
-        self.buoy_prior_map = None
+        self.buoy_priors = None
         self.buoy_map_present = False
 
         # ===== Optimizer and values =====
@@ -618,21 +649,26 @@ class online_slam_2d:
         self.buoy_map_present = False
         self.initial_pose_set = False
 
+        # ===== Debugging =====
+        self.da_check = {}
+        self.est_detect_loc = None
+        self.true_detect_loc = None
+
     def buoy_setup(self, buoys):
         print("Buoys being added to online graph")
         if len(buoys) == 0:
             print("Invalid buoy object used!")
             return -1
 
-        self.buoy_prior_map = np.array(buoys, dtype=np.float64)
-        self.n_buoys = len(self.buoy_prior_map)
+        self.buoy_priors = np.array(buoys, dtype=np.float64)
+        self.n_buoys = len(self.buoy_priors)
 
         # labels
         self.b = {k: gtsam.symbol('b', k) for k in range(self.n_buoys)}
 
         # ===== Add buoy priors and initial estimates =====
         for id_buoy in range(self.n_buoys):
-            prior = np.array((self.buoy_prior_map[id_buoy, 0], self.buoy_prior_map[id_buoy, 1]), dtype=np.float64)
+            prior = np.array((self.buoy_priors[id_buoy, 0], self.buoy_priors[id_buoy, 1]), dtype=np.float64)
 
             # Prior
             self.graph.addPriorPoint2(self.b[id_buoy], prior, self.prior_model_lm)
@@ -658,9 +694,9 @@ class online_slam_2d:
             return -1
 
         # Record relevant poses
-        self.dr_Pose2s = [create_Pose2(dr_pose)]
+        self.dr_Pose2s = [self.correct_dr(create_Pose2(dr_pose))]
         self.gt_Pose2s = [create_Pose2(gt_pose)]
-        self.between_pose2s = []
+        self.between_Pose2s = []
 
         # Add label
         self.x = {self.current_x_ind: gtsam.symbol('x', self.current_x_ind)}
@@ -688,12 +724,12 @@ class online_slam_2d:
             return
 
         # Record relevant poses
-        self.dr_Pose2s.append(create_Pose2(dr_pose))
+        self.dr_Pose2s.append(self.correct_dr(create_Pose2(dr_pose)))
         self.gt_Pose2s.append(create_Pose2(gt_pose))
 
         # Find the relative odometry between dr_poses
         between_odometry = self.dr_Pose2s[-2].between(self.dr_Pose2s[-1])
-        self.between_pose2s.append(between_odometry)
+        self.between_Pose2s.append(between_odometry)
 
         # Add label
         self.current_x_ind += 1
@@ -711,15 +747,29 @@ class online_slam_2d:
         # Update initial estimate
         self.initial_estimate.insert(self.x[self.current_x_ind], computed_est)
 
-        # Process detection
+        # ===== Process detection =====
         # TODO this might need to be more robust, not assume detections will lead to graph update
         if relative_detection is not None:
             # Calculate the map location of the detection given relative measurements and current estimate
-            detect_map_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
-            detect_bearing = computed_est.bearing(detect_map_loc)
-            detect_range = computed_est.range(detect_map_loc)
+            self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
+            detect_bearing = computed_est.bearing(self.est_detect_loc)
+            detect_range = computed_est.range(self.est_detect_loc)
 
-            buoy_association_id = self.associate_detection(detect_map_loc)
+            buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
+
+            # ===== DA debugging =====
+            # Apply relative detection to gt to find the true DA
+            self.true_detect_loc = self.gt_Pose2s[-1].transformFrom(np.array(relative_detection, dtype=np.float64))
+            true_association_id, true_association_dist = self.associate_detection(self.true_detect_loc)
+
+            if buoy_association_id == true_association_id:
+                self.da_check[self.current_x_ind] = [True,
+                                                     buoy_association_id, true_association_id,
+                                                     buoy_association_dist, true_association_dist]
+            else:
+                self.da_check[self.current_x_ind] = [False,
+                                                     buoy_association_id, true_association_id,
+                                                     buoy_association_dist, true_association_dist]
 
             self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
                                                       self.b[buoy_association_id],
@@ -731,6 +781,7 @@ class online_slam_2d:
         self.isam.update(self.graph, self.initial_estimate)
         self.current_estimate = self.isam.calculateEstimate()
 
+        # self.graph.resize(0)
         self.initial_estimate.clear()
 
         print("Done with update")
@@ -741,16 +792,380 @@ class online_slam_2d:
     def associate_detection(self, detection_map_location):
         """
         Basic association of detection with a buoys, currently using the prior locations
+        Will return the id of the closest buoy and the distance between the detection and that buoy
         """
         # TODO update to use the current estimated buoy locations
         best_id = -1
         best_range_2 = np.inf
 
-        for i, buoy_loc in enumerate(self.buoy_prior_map):
+        for i, buoy_loc in enumerate(self.buoy_priors):
             range_2 = (buoy_loc[0] - detection_map_location[0]) ** 2 + (buoy_loc[1] - detection_map_location[1]) ** 2
 
             if range_2 < best_range_2:
                 best_range_2 = range_2
                 best_id = i
 
-        return best_id
+        return best_id, best_range_2 ** (1 / 2)
+
+    @staticmethod
+    def correct_gt(uncorrected_gt: gtsam.Pose2):
+        """
+        This is part of the gt/dr mismatch
+        """
+        # TODO: fix gt/dr coordinates system mismatch
+        # return gtsam.Pose2(x=-uncorrected_gt.x(),
+        #                    y=uncorrected_gt.y(),
+        #                    theta=np.pi - uncorrected_gt.theta())
+        return uncorrected_gt
+
+    @staticmethod
+    def correct_dr(uncorrected_dr: gtsam.Pose2):
+        """
+        This is part of the gt/dr mismatch. Its appears that there is something off with converting from
+        sam/base_link from to the map frame, the results are mirrored about the y-axis.
+        This function will mirror the input pose about the y-axis.
+        """
+        return gtsam.Pose2(x=-uncorrected_dr.x(),
+                           y=uncorrected_dr.y(),
+                           theta=np.pi - uncorrected_dr.theta())
+
+
+class analyze_slam:
+    """
+    Responsible for analysis of slam results
+    # TODO Need to think about how to unify the online and offline classes
+    slam_object.graph: gtsam.NonlinearFactorGraph
+    slam_object.dr_pose2s: list[gtsam.Pose2]
+    slam_object.gt_pose2s: list[gtsam.Pose2]
+    """
+
+    def __init__(self, slam_object: offline_slam_2d | online_slam_2d):
+        # unpack slam object
+        # self.slam = slam_object
+        self.graph = slam_object.graph
+        self.current_estimate = slam_object.current_estimate
+        self.x = slam_object.x  # pose keys
+        self.b = slam_object.b  # point keys
+
+        # Dead reckoning poses and the between poses, ground truth poses
+        self.dr_poses = pose2_list_to_nparray(slam_object.dr_Pose2s)
+        self.gt_poses = pose2_list_to_nparray(slam_object.gt_Pose2s)
+        self.between_Pose2s = pose2_list_to_nparray(slam_object.between_Pose2s)
+
+        # ===== Buoys =====
+        self.buoy_priors = slam_object.buoy_priors
+        self.n_buoys = len(self.buoy_priors)
+
+        # ===== Build arrays for the poses and points of the posterior =====
+        self.posterior_poses = np.zeros((len(self.x), 3))
+        self.posterior_points = np.zeros((len(self.b), 2))
+
+        for i in range(len(self.x)):
+            self.posterior_poses[i, 0] = self.current_estimate.atPose2(self.x[i]).x()
+            self.posterior_poses[i, 1] = self.current_estimate.atPose2(self.x[i]).y()
+            self.posterior_poses[i, 2] = self.current_estimate.atPose2(self.x[i]).theta()
+
+        for i in range(len(self.b)):
+            self.posterior_points[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
+            self.posterior_points[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+
+        # ===== Unpack more relevant data from the slam object =====
+        """
+        Current differences include:
+        detection_graph: list of detections with id to relate the to dr indices, only found in offline version
+        buoy2cluster: mapping from buoy to cluster, used for plotting offline buoys and clustering
+        initial_estimate: The dr poses serve as the initial estimate for the offline version
+        da_check: The online version uses the ground truth and the relative detection data to find the DA ground truth
+        """
+        # TODO Unify the online and offline versions
+        # TODO
+        if hasattr(slam_object, 'detections_graph'):
+            self.detections = slam_object.detections_graph
+            self.n_detections = len(self.detections)
+        else:
+            self.detections_graph = None
+            self.n_detections = 0
+
+        if hasattr(slam_object, 'buoy2cluster'):
+            self.buoy2cluster = slam_object.buoy2cluster
+        else:
+            self.buoy2cluster = None
+
+        if hasattr(slam_object, 'initial_estimate'):
+            self.initial_estimate = slam_object.initial_estimate
+        else:
+            self.initial_estimate = None
+
+        if hasattr(slam_object, 'da_check'):
+            self.da_check = slam_object.da_check
+        else:
+            self.initial_estimate = None
+
+        if hasattr(slam_object, 'n_clusters'):
+            self.n_clusters = slam_object.n_clusters
+        else:
+            self.n_clusters = None
+
+        # ===== Visualization parameters =====
+        self.dr_color = 'r'
+        self.gt_color = 'b'
+        self.post_color = 'g'
+        self.colors = ['orange', 'purple', 'cyan', 'brown', 'pink', 'gray', 'olive']
+        # Set plot limits
+        self.x_tick = 2.5
+        self.y_tick = 2.5
+        self.plot_limits = None
+        self.find_plot_limits()
+
+    def find_plot_limits(self):
+
+        gt_max_x, gt_max_y = np.max(self.gt_poses[:, 0:2], axis=0)
+        gt_min_x, gt_min_y = np.min(self.gt_poses[:, 0:2], axis=0)
+        dr_max_x, dr_max_y = np.max(self.dr_poses[:, 0:2], axis=0)
+        dr_min_x, dr_min_y = np.min(self.dr_poses[:, 0:2], axis=0)
+        post_max_x, post_max_y = np.max(self.posterior_poses[:, 0:2], axis=0)
+        post_min_x, post_min_y = np.min(self.posterior_poses[:, 0:2], axis=0)
+
+        min_x = (min(dr_min_x, gt_min_x, post_min_x) // self.x_tick) * self.x_tick
+        max_x = self.ceiling_division(max(dr_max_x, gt_max_x, post_max_x), self.x_tick) * self.x_tick
+
+        min_y = (min(dr_min_y, gt_min_y, post_min_y) // self.y_tick) * self.y_tick
+        max_y = self.ceiling_division(max(dr_max_y, gt_max_y, post_max_y), self.y_tick) * self.y_tick
+
+        self.plot_limits = [min_x, max_x, min_y, max_y]
+
+    @staticmethod
+    def ceiling_division(n, d):
+        return -(n // -d)
+
+    def visualize_raw(self):
+        fig, ax = plt.subplots()
+        ax.set_aspect('equal')
+        plt.title(f'Raw data')
+        plt.axis(self.plot_limits)
+        plt.grid(True)
+
+        if self.n_detections > 0:
+            ax.scatter(self.detections[:, 0], self.detections[:, 1], color='k', label='Detections')
+
+        ax.scatter(self.gt_poses[:, 0], self.gt_poses[:, 1], color=self.gt_color, label='Ground truth')
+        ax.scatter(self.dr_poses[:, 0], self.dr_poses[:, 1], color=self.dr_color, label='Dead reckoning')
+
+        ax.legend()
+        plt.show()
+        return
+
+    def visualize_posterior(self, plot_gt=True, plot_dr=True, plot_buoy=True):
+        """
+        Visualize The Posterior
+        """
+        # Check if Optimization has occurred
+        if self.current_estimate is None:
+            print('Need to perform optimization before it can be printed!')
+            return
+
+        # ===== Matplotlip options =====
+        fig, ax = plt.subplots()
+        ax.set_aspect('equal')
+        plt.title(f'Posterior')
+        plt.axis(self.plot_limits)
+        plt.grid(True)
+
+        # ==== Plot ground truth =====
+        if plot_gt:
+            ax.scatter(self.gt_poses[:, 0],
+                       self.gt_poses[:, 1],
+                       color=self.gt_color,
+                       label='Ground truth')
+
+        # ===== Plot dead reckoning =====
+        if plot_dr:
+            ax.scatter(self.dr_poses[:, 0],
+                       self.dr_poses[:, 1],
+                       color=self.dr_color,
+                       label='Dead reckoning')
+
+        # ===== Plot buoys w/ cluster colors =====
+        if plot_buoy:
+            # Plot the true location of the buoys
+            for ind_buoy in range(self.n_buoys):
+                # Determine cluster color
+                # Graph according to cluster for offline
+                # Graphing the buoy colors not supported for online yet
+                # TODO: Improve visualizations for online slam
+                if self.buoy2cluster is None:
+                    buoy_prior_color = 'k'
+                    buoy_post_color = self.post_color
+
+                elif self.buoy2cluster[ind_buoy] == -1:
+                    current_color = 'k'
+                else:
+                    cluster_num = self.buoy2cluster[ind_buoy]
+                    current_color = self.colors[cluster_num % len(self.colors)]
+
+                # Plot all the buoys
+                ax.scatter(self.buoy_priors[ind_buoy, 0],
+                           self.buoy_priors[ind_buoy, 1],
+                           color=current_color)
+
+                # Plot buoy posteriors
+                ax.scatter(self.posterior_points[ind_buoy, 0],
+                           self.posterior_points[ind_buoy, 1],
+                           color=current_color,
+                           marker='+',
+                           s=75)
+
+        # Plot the posterior
+        ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1], color='g', label='Posterior')
+
+        ax.legend()
+        plt.show()
+
+    def show_error(self):
+        # Find the errors between gt<->dr and gt<->post
+        dr_error = calc_pose_error(self.dr_poses, self.gt_poses)
+        post_error = calc_pose_error(self.posterior_poses, self.gt_poses)
+
+        # Calculate MSE
+        dr_mse_error = np.square(dr_error).mean(0)
+        post_mse_error = np.square(post_error).mean(0)
+
+        # ===== Plot =====
+        fig, (ax_x, ax_y, ax_t) = plt.subplots(1, 3)
+        # X error
+        ax_x.plot(dr_error[:, 0], self.dr_color, label='Dead reckoning')
+        ax_x.plot(post_error[:, 0], self.post_color, label='Posterior')
+        ax_x.title.set_text(f'X Error\nD.R. MSE: {dr_mse_error[0]:.4f}\n Posterior MSE: {post_mse_error[0]:.4f}')
+        ax_x.legend()
+        # Y error
+        ax_y.plot(dr_error[:, 1], self.dr_color, label='Dead reckoning')
+        ax_y.plot(post_error[:, 1], self.post_color, label='Posterior')
+        ax_y.title.set_text(f'Y Error\nD.R. MSE: {dr_mse_error[1]:.4f}\n Posterior MSE: {post_mse_error[1]:.4f}')
+        ax_y.legend()
+        # Theta error
+        ax_t.plot(dr_error[:, 2], self.dr_color, label='Dead reckoning')
+        ax_t.plot(post_error[:, 2], self.post_color, label='Posterior')
+        ax_t.title.set_text(f'Theta Error\nD.R. MSE: {dr_mse_error[2]:.4f}\n Posterior MSE: {post_mse_error[2]:.4f}')
+        ax_t.legend()
+
+        plt.show()
+
+    def show_graph_2d(self, label, show_final=True):
+        """
+
+        """
+        # Select which values to graph
+        if show_final:
+            if self.current_estimate is None:
+                print('Perform optimization before it can be graphed')
+                return
+            values = self.current_estimate
+        else:
+            if self.initial_estimate is None:
+                print('Initialize estimate before it can be graphed')
+                return
+            values = self.initial_estimate
+
+        # ===== Unpack the factor graph using networkx =====
+        # Initialize network
+        G = nx.Graph()
+        for i in range(self.graph.size()):
+            factor = self.graph.at(i)
+            for key_id, key in enumerate(factor.keys()):
+                # Test if key corresponds to a pose
+                if key in self.x.values():
+                    pos = (values.atPose2(key).x(), values.atPose2(key).y())
+                    G.add_node(key, pos=pos, color='black')
+
+                # Test if key corresponds to points
+                elif key in self.b.values():
+                    pos = (values.atPoint2(key)[0], values.atPoint2(key)[1])
+
+                    # Set color according to clustering
+                    if self.buoy2cluster is None:
+                        node_color = 'black'
+                    else:
+                        # Find the buoy index -> cluster index -> cluster color
+                        buoy_id = list(self.b.values()).index(key)
+                        cluster_id = self.buoy2cluster[buoy_id]
+                        # A negative cluster id indicates that the buoy was not assigned a cluster
+                        if cluster_id < 0:
+                            node_color = 'black'
+                        else:
+                            node_color = self.colors[cluster_id % len(self.colors)]
+                    G.add_node(key, pos=pos, color=node_color)
+                else:
+                    print('There was a problem with a factor not corresponding to an available key')
+
+                # Add edges that represent binary factor: Odometry or detection
+                for key_2_id, key_2 in enumerate(factor.keys()):
+                    if key != key_2 and key_id < key_2_id:
+                        # detections will have key corresponding to a landmark
+                        if key in self.b.values() or key_2 in self.b.values():
+                            G.add_edge(key, key_2, color='red')
+                        else:
+                            G.add_edge(key, key_2, color='blue')
+
+        # ===== Plot the graph using matplotlib =====
+        # Matplotlib options
+        fig, ax = plt.subplots()
+        plt.title(f'Factor Graph\n{label}')
+        ax.set_aspect('equal', 'box')
+        plt.axis(self.plot_limits)
+        plt.grid(True)
+        plt.xticks(np.arange(self.plot_limits[0], self.plot_limits[1] + 1, 2.5))
+        plt.yticks(np.arange(self.plot_limits[2], self.plot_limits[3] + 1, 2.5))
+
+        # Networkx Options
+        pos = nx.get_node_attributes(G, 'pos')
+        e_colors = nx.get_edge_attributes(G, 'color').values()
+        n_colors = nx.get_node_attributes(G, 'color').values()
+        options = {'node_size': 25, 'width': 3, 'with_labels': False}
+
+        # Plot
+        nx.draw_networkx(G, pos, edge_color=e_colors, node_color=n_colors, **options)
+        plt.show()
+
+    def visualize_clustering(self):
+        # ===== Plot detected clusters =====
+        fig, ax = plt.subplots()
+        plt.title(f'Clusters\n{self.n_clusters} Detected')
+        ax.set_aspect('equal', 'box')
+        plt.axis(self.plot_limits)
+        plt.grid(True)
+
+        for cluster in range(self.n_clusters):
+            inds = self.detection_clusterings == cluster
+            ax.scatter(self.detections_graph[inds, 0],
+                       self.detections_graph[inds, 1],
+                       color=self.colors[cluster % len(self.colors)])
+
+        plt.show()
+
+        # ===== Plot true buoy locations w/ cluster means ====
+        fig, ax = plt.subplots()
+        plt.title('Buoys\nTrue buoy positions and associations\ncluster means')
+        ax.set_aspect('equal', 'box')
+        plt.axis(self.plot_limits)
+        plt.grid(True)
+
+        for ind_buoy in range(self.buoy_priors.shape[0]):
+            cluster_num = self.buoy2cluster[ind_buoy]  # landmark_associations[ind_landmark]
+            if cluster_num == -1:
+                current_color = 'k'
+            else:
+                current_color = self.colors[cluster_num % len(self.colors)]
+            # not all buoys have an associated have an associated cluster
+            if cluster_num >= 0:
+                ax.scatter(self.cluster_model.means_[cluster_num, 0],
+                           self.cluster_model.means_[cluster_num, 1],
+                           color=current_color,
+                           marker='+',
+                           s=75)
+
+            ax.scatter(self.buoy_priors[ind_buoy, 0],
+                       self.buoy_priors[ind_buoy, 1],
+                       color=current_color)
+
+        plt.show()
+        return

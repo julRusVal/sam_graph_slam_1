@@ -423,7 +423,7 @@ slam_result = optimizer.optimize()
 if plot_graph:
     show_graph(graph, slam_result, x, l)
 
-# Extract Pose2 from slam_result
+# Extract Pose2 from current_estimate
 slam_out_Pose2 = np.zeros((len(x), 3))
 for i in range(len(x)):
     # TODO there has to be a better way to do this!!
