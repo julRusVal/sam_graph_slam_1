@@ -7,9 +7,15 @@ from nav_msgs.msg import Odometry
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray
 from geometry_msgs.msg import PoseStamped
-import csv
+from sensor_msgs.msg import Image, CameraInfo
+
+# cv_bridge and cv2 to convert and save images
+from cv_bridge import CvBridge, CvBridgeError
+import cv2
+import sys
 
 from sam_slam_utils.sam_slam_helper_funcs import show_simple_graph_2d
+from sam_slam_utils.sam_slam_helper_funcs import write_array_to_csv
 
 
 class sam_slam_listener:
@@ -251,7 +257,6 @@ class sam_slam_listener:
                                      values=self.online_graph.current_estimate,
                                      label="Online Graph")
 
-
         return
 
     # ===== Transforms =====
@@ -306,20 +311,226 @@ class sam_slam_listener:
     # ===== iSAM2 =====
 
     # ===== Random utility methods =====
-    @staticmethod
-    def write_data_set(file_path, data_array):
-        with open(file_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            for row in data_array:
-                writer.writerow(row)
-
     def write_data(self):
         """
         Save all the relevant data
         """
-        self.write_data_set(self.dr_poses_graph_file_path, self.dr_poses_graph)
-        self.write_data_set(self.gt_poses_graph_file_path, self.gt_poses_graph)
-        self.write_data_set(self.detections_graph_file_path, self.detections_graph)
-        self.write_data_set(self.buoys_file_path, self.buoys)
+        write_array_to_csv(self.dr_poses_graph_file_path, self.dr_poses_graph)
+        write_array_to_csv(self.gt_poses_graph_file_path, self.gt_poses_graph)
+        write_array_to_csv(self.detections_graph_file_path, self.detections_graph)
+        write_array_to_csv(self.buoys_file_path, self.buoys)
 
         return
+
+
+class sam_image_saver:
+    def __init__(self, camera_down_top_name, camera_left_top_name, camera_right_top_name, file_path=None):
+        # ===== Set topic names and file paths for output =====
+        # Down
+        self.cam_down_image_topic = camera_down_top_name + '/image_color'
+        self.cam_down_info_topic = camera_down_top_name + '/camera_info'
+        # Left
+        self.cam_left_image_topic = camera_left_top_name + '/image_color'
+        self.cam_left_info_topic = camera_left_top_name + '/camera_info'
+        # Right
+        self.cam_right_image_topic = camera_right_top_name + '/image_color'
+        self.cam_right_info_topic = camera_right_top_name + '/camera_info'
+
+        # Saved data paths
+        self.file_path = file_path
+        if self.file_path is None or not isinstance(file_path, str):
+            self.down_info_file_path = 'down_info.csv'
+            self.down_gt_file_path = 'down_gt.csv'
+        else:
+            self.down_info_file_path = file_path + '/down_info.csv'
+            self.down_gt_file_path = file_path + '/down_gt.csv'
+
+        # ===== Frame and tf stuff =====
+        self.frame = 'map'
+        self.gt_frame_id = 'gt/sam/base_link'
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+
+        # ==== Local data =====
+        # Camera ground_truth and information
+        self.down_gt = []
+        self.down_info = []
+
+        # ===== Image processing =====
+        self.bridge = CvBridge()
+
+        # ===== States =====
+        self.last_time = rospy.Time.now()
+        self.tf_ready = False
+        self.image_received = False
+        self.data_written = False
+
+        # ===== Subscriptions =====
+        # Down camera
+        self.cam_down_image_subscriber = rospy.Subscriber(self.cam_down_image_topic,
+                                                          Image,
+                                                          self.down_image_callback)
+
+        self.cam_down_info_subscriber = rospy.Subscriber(self.cam_down_info_topic,
+                                                         CameraInfo,
+                                                         self.down_info_callback)
+
+        # # Left camera
+        # self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
+        #                                                   Image,
+        #                                                   self.left_image_callback)
+        #
+        # self.cam_left_info_subscriber = rospy.Subscriber(self.cam_left_info_topic,
+        #                                                  CameraInfo,
+        #                                                  self.left_info_callback)
+        #
+        # # Right camera
+        # self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
+        #                                                   Image,
+        #                                                   self.left_image_callback)
+        #
+        # self.cam_right_info_subscriber = rospy.Subscriber(self.cam_right_info_topic,
+        #                                                  CameraInfo,
+        #                                                  self.right_info_callback)
+
+        # ===== Timers =====
+        self.time_check = rospy.Timer(rospy.Duration(5),
+                                      self.time_check_callback)
+
+    # ===== Callbacks =====
+    # Down
+    def down_image_callback(self, msg):
+        print(f'Down image callback: {msg.header.seq}')
+
+        # TODO get cvbridge working
+        # Convert to cv format
+        # try:
+        #     # Convert your ROS Image message to OpenCV2
+        #     cv2_img = self.bridge.imgmsg_to_cv2(msg)  # "bgr8"
+        # except CvBridgeError:
+        #     print('CvBridge Error')
+        # else:
+        #     # Save your OpenCV2 image as a jpeg
+        #     # time = msg.header.stamp  # cast as string to use in name
+        #     if self.file_path is None or not isinstance(self.file_path, str):
+        #         save_path = f'{msg.header.seq}.jpg'
+        #     else:
+        #         save_path = self.file_path + f'/d:{msg.header.seq}.jpg'
+        #     cv2.imwrite(save_path, cv2_img)
+
+        # Convert with home-brewed conversion
+        # https://answers.ros.org/question/350904/cv_bridge-throws-boost-import-error-in-python-3-and-ros-melodic/
+        cv2_img = self.imgmsg_to_cv2(msg)
+        if self.file_path is None or not isinstance(self.file_path, str):
+            save_path = f'{msg.header.seq}.jpg'
+        else:
+            save_path = self.file_path + f'/down/d:{msg.header.seq}.jpg'
+        cv2.imwrite(save_path, cv2_img)
+
+        # record gt
+        current = self.get_gt_trans_in_map()
+        current.append(msg.header.seq)
+        self.down_gt.append(current)
+        print(current)
+
+        # Update state and timer
+        self.image_received = True
+        self.last_time = rospy.Time.now()
+
+        return
+
+    def down_info_callback(self, msg):
+        if len(self.down_info) == 0:
+            self.down_info.append(msg.K)
+            self.down_info.append(msg.P)
+
+    # Left
+
+    # Right
+
+    # Timer
+    def time_check_callback(self, event):
+        if not self.image_received:
+            return
+        delta_t = rospy.Time.now() - self.last_time
+        if delta_t.to_sec() >= 3 and not self.data_written:
+            print('Data written')
+            self.write_data()
+            self.data_written = True
+
+        return
+
+    # ===== Transforms =====
+    def transform_pose(self, pose, from_frame, to_frame):
+        trans = self.wait_for_transform(from_frame=from_frame,
+                                        to_frame=to_frame)
+        pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans)
+        return pose_transformed
+
+    def wait_for_transform(self, from_frame, to_frame):
+        """Wait for transform from from_frame to to_frame"""
+        trans = None
+        while trans is None:
+            try:
+                trans = self.tf_buffer.lookup_transform(to_frame,
+                                                        from_frame,
+                                                        rospy.Time(),
+                                                        rospy.Duration(1))
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                    tf2_ros.ExtrapolationException) as error:
+                print('Failed to transform. Error: {}'.format(error))
+
+        return trans
+
+    def get_gt_trans_in_map(self):
+        """
+        Finds pose of the ground truth.
+        First,the transform between the map and the ground truth frame.
+        Second, the transform is applied to a null_pose located at the origin.
+        Modifying the orientation of this pose might be need to prevent later
+        processing on the ground truth
+        Returns [ x, y, z, q_w, q_x, q_y, q_z]
+        """
+
+        trans = self.wait_for_transform(from_frame=self.gt_frame_id,
+                                        to_frame=self.frame)
+
+        null_pose = PoseStamped()
+        null_pose.pose.orientation.w = 1.0
+        pose_in_map = tf2_geometry_msgs.do_transform_pose(null_pose, trans)
+
+        pose_list = [pose_in_map.pose.position.x,
+                     pose_in_map.pose.position.y,
+                     pose_in_map.pose.position.z,
+                     pose_in_map.pose.orientation.w,
+                     pose_in_map.pose.orientation.x,
+                     pose_in_map.pose.orientation.y,
+                     pose_in_map.pose.orientation.z]
+
+        return pose_list
+
+    # ===== Utilities =====
+    def write_data(self):
+        """
+        Save all the relevant data
+        """
+        write_array_to_csv(self.down_info_file_path, self.down_info)
+        write_array_to_csv(self.down_gt_file_path, self.down_gt)
+
+        return
+
+    @staticmethod
+    def imgmsg_to_cv2(img_msg):
+        """
+        Its assumed that the input image is rgb, opencv expects bgr
+        """
+        dtype = np.dtype("uint8")  # Hardcode to 8 bits...
+        dtype = dtype.newbyteorder('>' if img_msg.is_bigendian else '<')
+        image_opencv = np.ndarray(shape=(img_msg.height, img_msg.width, 3),
+                                  dtype=dtype, buffer=img_msg.data)
+        # flip converts rgb to bgr
+        image_opencv = np.flip(image_opencv, axis=2)
+        # If the byt order is different between the message and the system.
+        if img_msg.is_bigendian == (sys.byteorder == 'little'):
+            image_opencv = image_opencv.byteswap().newbyteorder()
+        return image_opencv

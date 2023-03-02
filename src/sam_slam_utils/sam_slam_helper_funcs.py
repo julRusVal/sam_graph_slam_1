@@ -30,6 +30,13 @@ def read_csv_to_array(file_path):
         return -1
 
 
+def write_array_to_csv(file_path, data_array):
+    with open(file_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        for row in data_array:
+            writer.writerow(row)
+
+
 def angle_between_rads(target_angle, source_angle):
     # Bound the angle [-pi, pi]
     target_angle = math.remainder(target_angle, 2 * np.pi)
