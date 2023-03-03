@@ -10,7 +10,7 @@ from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image, CameraInfo
 
 # cv_bridge and cv2 to convert and save images
-from cv_bridge import CvBridge, CvBridgeError
+# from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import sys
 
@@ -324,7 +324,8 @@ class sam_slam_listener:
 
 
 class sam_image_saver:
-    def __init__(self, camera_down_top_name, camera_left_top_name, camera_right_top_name, file_path=None):
+    def __init__(self, camera_down_top_name, camera_left_top_name, camera_right_top_name, buoy_top_name,
+                 file_path=None):
         # ===== Set topic names and file paths for output =====
         # Down
         self.cam_down_image_topic = camera_down_top_name + '/image_color'
@@ -335,6 +336,9 @@ class sam_image_saver:
         # Right
         self.cam_right_image_topic = camera_right_top_name + '/image_color'
         self.cam_right_info_topic = camera_right_top_name + '/camera_info'
+
+        # Buoys
+        self.buoy_topic = buoy_top_name
 
         # Saved data paths
         self.file_path = file_path
@@ -356,12 +360,21 @@ class sam_image_saver:
         self.down_gt = []
         self.down_info = []
 
+        self.left_gt = []
+        self.left_info = []
+
+        self.right_gt = []
+        self.right_info = []
+
+        self.buoys = []
+
         # ===== Image processing =====
-        self.bridge = CvBridge()
+        # self.bridge = CvBridge()  # Not had problems
 
         # ===== States =====
         self.last_time = rospy.Time.now()
         self.tf_ready = False
+        self.buoys_received = False
         self.image_received = False
         self.data_written = False
 
@@ -375,23 +388,28 @@ class sam_image_saver:
                                                          CameraInfo,
                                                          self.down_info_callback)
 
-        # # Left camera
-        # self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
-        #                                                   Image,
-        #                                                   self.left_image_callback)
-        #
-        # self.cam_left_info_subscriber = rospy.Subscriber(self.cam_left_info_topic,
-        #                                                  CameraInfo,
-        #                                                  self.left_info_callback)
-        #
-        # # Right camera
-        # self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
-        #                                                   Image,
-        #                                                   self.left_image_callback)
-        #
-        # self.cam_right_info_subscriber = rospy.Subscriber(self.cam_right_info_topic,
-        #                                                  CameraInfo,
-        #                                                  self.right_info_callback)
+        # Left camera
+        self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
+                                                          Image,
+                                                          self.left_image_callback)
+
+        self.cam_left_info_subscriber = rospy.Subscriber(self.cam_left_info_topic,
+                                                         CameraInfo,
+                                                         self.left_info_callback)
+
+        # Right camera
+        self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
+                                                          Image,
+                                                          self.left_image_callback)
+
+        self.cam_right_info_subscriber = rospy.Subscriber(self.cam_right_info_topic,
+                                                          CameraInfo,
+                                                          self.right_info_callback)
+
+        # Buoys
+        self.buoy_subscriber = rospy.Subscriber(self.buoy_topic,
+                                                MarkerArray,
+                                                self.buoy_callback)
 
         # ===== Timers =====
         self.time_check = rospy.Timer(rospy.Duration(5),
@@ -445,8 +463,69 @@ class sam_image_saver:
             self.down_info.append(msg.P)
 
     # Left
+    def left_image_callback(self, msg):
+        """
+        Based on down_image_callback
+        """
+        cv2_img = self.imgmsg_to_cv2(msg)
+        if self.file_path is None or not isinstance(self.file_path, str):
+            save_path = f'{msg.header.seq}.jpg'
+        else:
+            save_path = self.file_path + f'/left/l:{msg.header.seq}.jpg'
+        cv2.imwrite(save_path, cv2_img)
+
+        # record gt
+        current = self.get_gt_trans_in_map()
+        current.append(msg.header.seq)
+        self.left_gt.append(current)
+        print(current)
+
+        # Update state and timer
+        self.image_received = True
+        self.last_time = rospy.Time.now()
+
+        return
+
+    def left_info_callback(self, msg):
+        if len(self.left_info) == 0:
+            self.left_info.append(msg.K)
+            self.left_info.append(msg.P)
 
     # Right
+    def right_image_callback(self, msg):
+
+        cv2_img = self.imgmsg_to_cv2(msg)
+        if self.file_path is None or not isinstance(self.file_path, str):
+            save_path = f'{msg.header.seq}.jpg'
+        else:
+            save_path = self.file_path + f'/right/r:{msg.header.seq}.jpg'
+        cv2.imwrite(save_path, cv2_img)
+
+        # record gt
+        current = self.get_gt_trans_in_map()
+        current.append(msg.header.seq)
+        self.right_gt.append(current)
+        print(current)
+
+        # Update state and timer
+        self.image_received = True
+        self.last_time = rospy.Time.now()
+
+        return
+
+    def right_info_callback(self, msg):
+        if len(self.right_info) == 0:
+            self.right_info.append(msg.K)
+            self.right_info.append(msg.P)
+
+    def buoy_callback(self, msg):
+        if not self.buoys_received:
+            for marker in msg.markers:
+                self.buoys.append([marker.pose.position.x,
+                                   marker.pose.position.y,
+                                   marker.pose.position.z])
+
+            self.buoys_received = True
 
     # Timer
     def time_check_callback(self, event):
