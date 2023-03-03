@@ -467,6 +467,7 @@ class sam_image_saver:
         if len(self.down_info) == 0:
             self.down_info.append(msg.K)
             self.down_info.append(msg.P)
+            self.down_info.append([msg.width, msg.height])
 
     # Left
     def left_image_callback(self, msg):
@@ -496,6 +497,7 @@ class sam_image_saver:
         if len(self.left_info) == 0:
             self.left_info.append(msg.K)
             self.left_info.append(msg.P)
+            self.left_info.append([msg.width, msg.height])
 
     # Right
     def right_image_callback(self, msg):
@@ -523,6 +525,7 @@ class sam_image_saver:
         if len(self.right_info) == 0:
             self.right_info.append(msg.K)
             self.right_info.append(msg.P)
+            self.right_info.append([msg.width, msg.height])
 
     def buoy_callback(self, msg):
         if not self.buoys_received:
