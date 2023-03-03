@@ -12,6 +12,7 @@ def main():
     camera_down_topic = '/sam/perception/csi_cam_0/camera'
     camera_left_topic = '/sam/perception/csi_cam_1/camera'
     camera_right_topic = '/sam/perception/csi_cam_2/camera'
+    buoy_topic = '/sam/sim/marked_positions'
 
     path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data'
 
@@ -19,6 +20,7 @@ def main():
     listener = sam_image_saver(camera_down_top_name=camera_down_topic,
                                camera_left_top_name=camera_left_topic,
                                camera_right_top_name=camera_right_topic,
+                               buoy_top_name=buoy_topic,
                                file_path=path_name)
 
     while not rospy.is_shutdown():

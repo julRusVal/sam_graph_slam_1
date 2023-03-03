@@ -326,7 +326,7 @@ class sam_slam_listener:
 class sam_image_saver:
     def __init__(self, camera_down_top_name, camera_left_top_name, camera_right_top_name, buoy_top_name,
                  file_path=None):
-        # ===== Set topic names and file paths for output =====
+        # ===== Set topic names ====== file paths for output =====
         # Down
         self.cam_down_image_topic = camera_down_top_name + '/image_color'
         self.cam_down_info_topic = camera_down_top_name + '/camera_info'
@@ -336,18 +336,27 @@ class sam_image_saver:
         # Right
         self.cam_right_image_topic = camera_right_top_name + '/image_color'
         self.cam_right_info_topic = camera_right_top_name + '/camera_info'
-
         # Buoys
         self.buoy_topic = buoy_top_name
 
-        # Saved data paths
+        # ===== File paths for output =====
         self.file_path = file_path
         if self.file_path is None or not isinstance(file_path, str):
-            self.down_info_file_path = 'down_info.csv'
-            self.down_gt_file_path = 'down_gt.csv'
+            file_path_prefix = ''
         else:
-            self.down_info_file_path = file_path + '/down_info.csv'
-            self.down_gt_file_path = file_path + '/down_gt.csv'
+            file_path_prefix = self.file_path + '/'
+
+        # Down
+        self.down_info_file_path = file_path_prefix + 'down_info.csv'
+        self.down_gt_file_path = file_path_prefix + 'down_gt.csv'
+        # Left
+        self.left_info_file_path = file_path_prefix + 'left_info.csv'
+        self.left_gt_file_path = file_path_prefix + 'left_gt.csv'
+        # Right
+        self.right_info_file_path = file_path_prefix + 'right_info.csv'
+        self.right_gt_file_path = file_path_prefix + 'right_gt.csv'
+        # Buoy
+        self.buoy_info_file_path = file_path_prefix + 'buoy_info.csv'
 
         # ===== Frame and tf stuff =====
         self.frame = 'map'
@@ -359,13 +368,10 @@ class sam_image_saver:
         # Camera ground_truth and information
         self.down_gt = []
         self.down_info = []
-
         self.left_gt = []
         self.left_info = []
-
         self.right_gt = []
         self.right_info = []
-
         self.buoys = []
 
         # ===== Image processing =====
@@ -398,9 +404,9 @@ class sam_image_saver:
                                                          self.left_info_callback)
 
         # Right camera
-        self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
-                                                          Image,
-                                                          self.left_image_callback)
+        self.cam_right_image_subscriber = rospy.Subscriber(self.cam_right_image_topic,
+                                                           Image,
+                                                           self.right_image_callback)
 
         self.cam_right_info_subscriber = rospy.Subscriber(self.cam_right_info_topic,
                                                           CameraInfo,
@@ -412,7 +418,7 @@ class sam_image_saver:
                                                 self.buoy_callback)
 
         # ===== Timers =====
-        self.time_check = rospy.Timer(rospy.Duration(5),
+        self.time_check = rospy.Timer(rospy.Duration(1),
                                       self.time_check_callback)
 
     # ===== Callbacks =====
@@ -532,7 +538,7 @@ class sam_image_saver:
         if not self.image_received:
             return
         delta_t = rospy.Time.now() - self.last_time
-        if delta_t.to_sec() >= 3 and not self.data_written:
+        if delta_t.to_sec() >= 5 and not self.data_written:
             print('Data written')
             self.write_data()
             self.data_written = True
@@ -593,8 +599,17 @@ class sam_image_saver:
         """
         Save all the relevant data
         """
+        # Down
         write_array_to_csv(self.down_info_file_path, self.down_info)
         write_array_to_csv(self.down_gt_file_path, self.down_gt)
+        # Left
+        write_array_to_csv(self.left_info_file_path, self.left_info)
+        write_array_to_csv(self.left_gt_file_path, self.left_gt)
+        # Right
+        write_array_to_csv(self.right_info_file_path, self.right_info)
+        write_array_to_csv(self.right_gt_file_path, self.right_gt)
+        # Buoy
+        write_array_to_csv(self.buoy_info_file_path, self.buoys)
 
         return
 
