@@ -368,10 +368,13 @@ class sam_image_saver:
         # Camera ground_truth and information
         self.down_gt = []
         self.down_info = []
+        self.down_times = []
         self.left_gt = []
         self.left_info = []
+        self.left_times = []
         self.right_gt = []
         self.right_info = []
+        self.left_times = []
         self.buoys = []
 
         # ===== Image processing =====
@@ -474,18 +477,18 @@ class sam_image_saver:
         """
         Based on down_image_callback
         """
+        # record gt
+        current = self.get_gt_trans_in_map()
+        current.append(msg.header.seq)
+        self.left_gt.append(current)
+        print(current)
+
         cv2_img = self.imgmsg_to_cv2(msg)
         if self.file_path is None or not isinstance(self.file_path, str):
             save_path = f'{msg.header.seq}.jpg'
         else:
             save_path = self.file_path + f'/left/l_{msg.header.seq}.jpg'
         cv2.imwrite(save_path, cv2_img)
-
-        # record gt
-        current = self.get_gt_trans_in_map()
-        current.append(msg.header.seq)
-        self.left_gt.append(current)
-        print(current)
 
         # Update state and timer
         self.image_received = True
