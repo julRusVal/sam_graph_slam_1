@@ -448,7 +448,7 @@ class sam_image_saver:
         if self.file_path is None or not isinstance(self.file_path, str):
             save_path = f'{msg.header.seq}.jpg'
         else:
-            save_path = self.file_path + f'/down/d:{msg.header.seq}.jpg'
+            save_path = self.file_path + f'/down/d_{msg.header.seq}.jpg'
         cv2.imwrite(save_path, cv2_img)
 
         # record gt
@@ -478,7 +478,7 @@ class sam_image_saver:
         if self.file_path is None or not isinstance(self.file_path, str):
             save_path = f'{msg.header.seq}.jpg'
         else:
-            save_path = self.file_path + f'/left/l:{msg.header.seq}.jpg'
+            save_path = self.file_path + f'/left/l_{msg.header.seq}.jpg'
         cv2.imwrite(save_path, cv2_img)
 
         # record gt
@@ -506,7 +506,7 @@ class sam_image_saver:
         if self.file_path is None or not isinstance(self.file_path, str):
             save_path = f'{msg.header.seq}.jpg'
         else:
-            save_path = self.file_path + f'/right/r:{msg.header.seq}.jpg'
+            save_path = self.file_path + f'/right/r_{msg.header.seq}.jpg'
         cv2.imwrite(save_path, cv2_img)
 
         # record gt
