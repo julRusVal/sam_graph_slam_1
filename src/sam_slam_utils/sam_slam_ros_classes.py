@@ -427,7 +427,14 @@ class sam_image_saver:
     # ===== Callbacks =====
     # Down
     def down_image_callback(self, msg):
+
+        # record gt
+        current = self.get_gt_trans_in_map()
+        current.append(msg.header.seq)
+        self.down_gt.append(current)
+
         print(f'Down image callback: {msg.header.seq}')
+        print(current)
 
         # TODO get cvbridge working
         # Convert to cv format
@@ -448,17 +455,13 @@ class sam_image_saver:
         # Convert with home-brewed conversion
         # https://answers.ros.org/question/350904/cv_bridge-throws-boost-import-error-in-python-3-and-ros-melodic/
         cv2_img = self.imgmsg_to_cv2(msg)
+
+        # Write to 'disk'
         if self.file_path is None or not isinstance(self.file_path, str):
             save_path = f'{msg.header.seq}.jpg'
         else:
             save_path = self.file_path + f'/down/d_{msg.header.seq}.jpg'
         cv2.imwrite(save_path, cv2_img)
-
-        # record gt
-        current = self.get_gt_trans_in_map()
-        current.append(msg.header.seq)
-        self.down_gt.append(current)
-        print(current)
 
         # Update state and timer
         self.image_received = True
@@ -483,7 +486,10 @@ class sam_image_saver:
         self.left_gt.append(current)
         print(current)
 
+        # Convert to cv2 format
         cv2_img = self.imgmsg_to_cv2(msg)
+
+        # Write to 'disk'
         if self.file_path is None or not isinstance(self.file_path, str):
             save_path = f'{msg.header.seq}.jpg'
         else:
@@ -505,18 +511,21 @@ class sam_image_saver:
     # Right
     def right_image_callback(self, msg):
 
-        cv2_img = self.imgmsg_to_cv2(msg)
-        if self.file_path is None or not isinstance(self.file_path, str):
-            save_path = f'{msg.header.seq}.jpg'
-        else:
-            save_path = self.file_path + f'/right/r_{msg.header.seq}.jpg'
-        cv2.imwrite(save_path, cv2_img)
-
         # record gt
         current = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
         self.right_gt.append(current)
         print(current)
+
+        # Convert to cv2 format
+        cv2_img = self.imgmsg_to_cv2(msg)
+
+        # Write to 'disk'
+        if self.file_path is None or not isinstance(self.file_path, str):
+            save_path = f'{msg.header.seq}.jpg'
+        else:
+            save_path = self.file_path + f'/right/r_{msg.header.seq}.jpg'
+        cv2.imwrite(save_path, cv2_img)
 
         # Update state and timer
         self.image_received = True
