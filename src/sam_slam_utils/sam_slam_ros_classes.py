@@ -428,7 +428,7 @@ class sam_image_saver:
     # Down
     def down_image_callback(self, msg):
 
-        # record gt
+        # Record gt
         current = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
         self.down_gt.append(current)
@@ -458,7 +458,7 @@ class sam_image_saver:
 
         # Write to 'disk'
         if self.file_path is None or not isinstance(self.file_path, str):
-            save_path = f'{msg.header.seq}.jpg'
+            save_path = f'd_{msg.header.seq}.jpg'
         else:
             save_path = self.file_path + f'/down/d_{msg.header.seq}.jpg'
         cv2.imwrite(save_path, cv2_img)

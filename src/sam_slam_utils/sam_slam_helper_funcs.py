@@ -30,6 +30,18 @@ def read_csv_to_array(file_path):
         return -1
 
 
+def read_csv_to_list(file_path):
+    try:
+        with open(file_path, "r") as f:
+            reader = csv.reader(f)
+            data = [row for row in reader]
+
+        f.close()
+        return data
+    except OSError:
+        return -1
+
+
 def write_array_to_csv(file_path, data_array):
     with open(file_path, "w", newline="") as f:
         writer = csv.writer(f)

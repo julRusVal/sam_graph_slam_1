@@ -3,6 +3,7 @@ import gtsam
 import numpy as np
 
 from sam_slam_utils.sam_slam_helper_funcs import create_Pose2
+
 # %%
 # %% Testing Junk #2
 p_0 = create_Pose2([0, 0, 0, 1, 0, 0, 0])
