@@ -139,7 +139,7 @@ class image_mapping:
         self.camera_info = camera_info
         self.relative_camera_pose = relative_camera_pose
         # TODO Currently hard coded to use left
-        self.camera_pose3s = apply_transformPoseFrom(self.base_pose3s, self._return_left_relative_pose())
+        self.camera_pose3s = apply_transformPoseFrom(self.base_pose3s, self.return_left_relative_pose(use_rpy=False))
 
         # form k and P  matrices, plumb bob distortion model
         # K: 3x3
@@ -179,16 +179,35 @@ class image_mapping:
         self.spatial_2_pixel = 100  # 1 meter = 100 pixels
 
     @staticmethod
-    def _return_left_relative_pose():
+    def return_left_relative_pose(use_rpy=False):
         l_t_x = 1.313
         l_t_y = 0.048
         l_t_z = -0.007
+
+        # ===== Quaternion values from ROS tf messages =====
         l_r_x = -0.733244
         l_r_y = 0.310005
         l_r_z = -0.235671
         l_r_w = 0.557413
 
-        return create_Pose3([l_t_x, l_t_y, l_t_z, l_r_w, l_r_x, l_r_y, l_r_z])
+        # ===== RPY values from stonefish =====
+        # these values have been converted to quaternions
+        # [-0.7332437391795082, 0.31000489232064976, -0.23567133276329172, 0.5574133193644455]
+        # l_r_x_2 = -0.7332437391795082
+        # l_r_y_2 = 0.31000489232064976
+        # l_r_z_2 = -0.23567133276329172
+        # l_r_w_2 = 0.5574133193644455
+
+        # These are the rpy values converted w/ XYZ
+        l_r_x_2 = 0.7332437391795082
+        l_r_y_2 = 0.31000489232064976
+        l_r_z_2 = 0.23567133276329172
+        l_r_w_2 = -0.5574133193644455
+
+        if use_rpy:
+            return create_Pose3([l_t_x, l_t_y, l_t_z, l_r_w_2, l_r_x_2, l_r_y_2, l_r_z_2])
+        else:
+            return create_Pose3([l_t_x, l_t_y, l_t_z, l_r_w, l_r_x, l_r_y, l_r_z])
 
     def find_fov_rays(self):
         """
@@ -401,6 +420,7 @@ img_map.plot_fancy(img_map.camera_pose3s)
 # %% Testing parameters
 do_testing_1 = False
 do_testing_2 = True
+do_testing_3 = False
 # %% Testing 1
 if do_testing_1:
     print("Testing 1")
@@ -452,20 +472,43 @@ if do_testing_2:
     proper_img_id = int(img_map.base_pose[pose_id, -1])
     test_next_n = 3
 
+    # buoys
     test_point_b0 = np.array([-5.0, 4.0, 0])
     test_point_b1 = np.array([-5.0, 9.0, 0])
-    test_point_c = np.array([-5.0, 6.592, -0.706])
+
     x_pix_0, y_pix_0 = img_map.find_pixels_of_3d_point(pose_id, test_point_b0)
     x_pix_1, y_pix_1 = img_map.find_pixels_of_3d_point(pose_id, test_point_b1)
-    x_pix_c, y_pix_c = img_map.find_pixels_of_3d_point(pose_id, test_point_c)
+
+    # Lower points
+    depth = 2
+    test_point_b0_deep = test_point_b0
+    test_point_b0_deep[2] = -depth
+
+    test_point_b1_deep = test_point_b1
+    test_point_b1_deep[2] = -depth
+
+    x_pix_0_d, y_pix_0_d = img_map.find_pixels_of_3d_point(pose_id, test_point_b0_deep)
+    x_pix_1_d, y_pix_1_d = img_map.find_pixels_of_3d_point(pose_id, test_point_b1_deep)
+
+    # Center
+    # test_point_c = np.array([-5.0, 6.592, -0.706])
+    # x_pix_c, y_pix_c = img_map.find_pixels_of_3d_point(pose_id, test_point_c)
 
     # Mark images
     for i in range(int(test_next_n + 1)):
         img_id = proper_img_id + i
         img = cv2.imread(f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{img_id}.jpg")
+
+        # Buoys
         img_marked = cv2.circle(img, (int(x_pix_0//1), int(y_pix_0//1)), 5, (0, 0, 255), -1)
         img_marked = cv2.circle(img_marked, (int(x_pix_1 // 1), int(y_pix_1 // 1)), 5, (0, 0, 255), -1)
-        img_marked = cv2.circle(img_marked, (int(x_pix_c // 1), int(y_pix_c // 1)), 5, (0, 255, 255), -1)
+
+        # Lower points
+        img_marked = cv2.circle(img, (int(x_pix_0_d // 1), int(y_pix_0_d // 1)), 5, (255, 0, 255), -1)
+        img_marked = cv2.circle(img_marked, (int(x_pix_1_d // 1), int(y_pix_1_d // 1)), 5, (255, 0, 255), -1)
+
+        # Center
+        # img_marked = cv2.circle(img_marked, (int(x_pix_c // 1), int(y_pix_c // 1)), 5, (0, 255, 255), -1)
 
         img_marked[:, int(img_map.cx), :] = (0, 255, 255)
         img_marked[int(img_map.cy), :, :] = (0, 255, 255)
@@ -478,3 +521,21 @@ if do_testing_2:
 
     # Destroys all the windows created
     cv2.destroyAllWindows()
+
+if do_testing_3:
+    """
+    Testing for the transform between base_link and left camera
+    """
+    pose_id = 25
+    base_pose3 = img_map.base_pose3s[pose_id]
+    # Ros transform using quaternions reported by ros
+    # stnfish using rpy in stonefish config -> quaternion w/ rpy_2_quat.py
+    ros_b_2_c = img_map.return_left_relative_pose()
+    stnfsh_b_2_c = img_map.return_left_relative_pose(use_rpy=True)
+
+    ros_left_pose3 = base_pose3.transformPoseFrom(ros_b_2_c)
+    stnfsh_left_pose3 = base_pose3.transformPoseFrom(stnfsh_b_2_c)
+
+    # Convert matrix to rpy w/ gtsam
+    ros_check = ros_b_2_c.rotation().rpy()
+    stnfsh_check = stnfsh_b_2_c.rotation().rpy()
