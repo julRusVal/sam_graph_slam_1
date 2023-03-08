@@ -362,12 +362,12 @@ class sam_image_saver:
         # Buoy
         self.buoy_info_file_path = file_path_prefix + 'buoy_info.csv'
 
-
         # ===== Frame and tf stuff =====
         self.frame = 'map'
         self.gt_frame_id = 'gt/sam/base_link'
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        self.gt_topic = '/sam/sim/odom'
 
         # ==== Local data =====
         # Camera ground_truth and information
@@ -380,6 +380,7 @@ class sam_image_saver:
         self.right_gt = []
         self.right_info = []
         self.left_times = []
+        self.gt_poses_from_topic = []
         self.buoys = []
 
         # ===== Image processing =====
@@ -388,6 +389,7 @@ class sam_image_saver:
         # ===== States =====
         self.last_time = rospy.Time.now()
         self.tf_ready = False
+        self.gt_updated = False
         self.buoys_received = False
         self.image_received = False
         self.data_written = False
@@ -420,6 +422,11 @@ class sam_image_saver:
                                                           CameraInfo,
                                                           self.right_info_callback)
 
+        # Ground truth
+        self.gt_subscriber = rospy.Subscriber(self.gt_topic,
+                                              Odometry,
+                                              self.gt_callback)
+
         # Buoys
         self.buoy_subscriber = rospy.Subscriber(self.buoy_topic,
                                                 MarkerArray,
@@ -437,9 +444,6 @@ class sam_image_saver:
         current, _ = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
         self.down_gt.append(current)
-
-        print(f'Down image callback: {msg.header.seq}')
-        print(current)
 
         # TODO get cvbridge working
         # Convert to cv format
@@ -491,22 +495,35 @@ class sam_image_saver:
 
         # record gt
         current, current_stamp = self.get_gt_trans_in_map(gt_time=msg.header.stamp)
-        current.append(msg.header.seq)
-        self.left_gt.append(current)
+
+        # transform method of gt
+        current_id = msg.header.seq
+        current.append(current_id)
+        # subcription method of gt
+        current_sub_meth = self.gt_poses_from_topic[-1]
+        current_sub_meth.append(current_id)
+
+        # self.left_gt.append(current)
+        self.left_gt.append(current_sub_meth)
 
         # Record times
         self.left_times.append([now_stamp.to_sec(),
                                 msg_stamp.to_sec(),
                                 current_stamp.to_sec()])
 
+        print(f'Down image callback: {msg.header.seq}')
+        # print(current)
+        print(current_sub_meth)
+        print(self.gt_poses_from_topic[-1])
+
         # Convert to cv2 format
         cv2_img = self.imgmsg_to_cv2(msg)
 
         # Write to 'disk'
         if self.file_path is None or not isinstance(self.file_path, str):
-            save_path = f'{msg.header.seq}.jpg'
+            save_path = f'{current_id}.jpg'
         else:
-            save_path = self.file_path + f'/left/l_{msg.header.seq}.jpg'
+            save_path = self.file_path + f'/left/l_{current_id}.jpg'
         cv2.imwrite(save_path, cv2_img)
 
         # Update state and timer
@@ -528,7 +545,6 @@ class sam_image_saver:
         current, _ = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
         self.right_gt.append(current)
-        print(current)
 
         # Convert to cv2 format
         cv2_img = self.imgmsg_to_cv2(msg)
@@ -551,6 +567,23 @@ class sam_image_saver:
             self.right_info.append(msg.K)
             self.right_info.append(msg.P)
             self.right_info.append([msg.width, msg.height])
+
+    def gt_callback(self, msg):
+        """
+        Call back for the ground truth subscription, msg is of type nav_msgs/Odometry.
+        The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z].
+        Note the position of q_w, this is for compatibility with gtsam and matlab
+        """
+        transformed_pose = self.transform_pose(msg.pose, from_frame=msg.header.frame_id, to_frame=self.frame,
+                                               req_transform_time=None)
+
+        gt_position = transformed_pose.pose.position
+        gt_quaternion = transformed_pose.pose.orientation
+
+        self.gt_poses_from_topic.append([gt_position.x, gt_position.y, gt_position.z,
+                                         gt_quaternion.w, gt_quaternion.x, gt_quaternion.y, gt_quaternion.z])
+
+        self.gt_updated = True
 
     def buoy_callback(self, msg):
         if not self.buoys_received:
@@ -576,8 +609,11 @@ class sam_image_saver:
     # ===== Transforms =====
     def transform_pose(self, pose, from_frame, to_frame, req_transform_time=None):
         trans = self.wait_for_transform(from_frame=from_frame,
-                                        to_frame=to_frame)
-        pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans, req_transform_time)
+                                        to_frame=to_frame,
+                                        req_transform_time=req_transform_time)
+
+        pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans)
+
         return pose_transformed
 
     def wait_for_transform(self, from_frame, to_frame, req_transform_time=None):
@@ -595,6 +631,7 @@ class sam_image_saver:
                                                         from_frame,
                                                         transform_time,
                                                         rospy.Duration(1))
+
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                     tf2_ros.ExtrapolationException) as error:
                 print('Failed to transform. Error: {}'.format(error))
