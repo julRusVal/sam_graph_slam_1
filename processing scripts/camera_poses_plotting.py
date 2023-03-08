@@ -68,13 +68,15 @@ def projectPixelTo3dRay(u, v, cx, cy, fx, fy):
 
 
 class rope_section:
-    def __init__(self, start_buoy, end_buoy, start_coord, end_coord, bottom_coord):
+    def __init__(self, start_buoy, end_buoy, start_coord, end_coord, depth):
         self.start_buoy = start_buoy
         self.end_buoy = end_buoy
 
         self.start_coord = start_coord
         self.end_coord = end_coord
-        self.bottom_coord = bottom_coord
+
+        self.start_bottom_coord = start_coord - np.array([0, 0, depth], dtype=np.float64)
+        self.end_bottom_coord = end_coord - np.array([0, 0, depth], dtype=np.float64)
 
         # ===== Define plane =====
         # Basis vectors
@@ -82,7 +84,7 @@ class rope_section:
         self.mag_x = np.sqrt(np.sum(np.multiply(self.v_x, self.v_x)))
         self.v_x = self.v_x / self.mag_x
 
-        self.v_y = bottom_coord - start_coord
+        self.v_y = self.start_bottom_coord - self.start_coord
         self.mag_y = np.sqrt(np.sum(np.multiply(self.v_y, self.v_y)))
         self.v_y = self.v_y / self.mag_y
 
@@ -100,7 +102,12 @@ class rope_section:
     def find_intersection(self, point, direction):
         """
         Given the plane does the line described by the point and direction intersect.
-        The
+        :param point: np.array([x, y, z])
+        :param direction: np.array([delta_x, delta_y, delta_z])
+        :return: status: uses the dot product of the plane norm and camera z-axis to exclude applying images to 'back'
+        :return: w_coords:
+        :return: p_coords:
+        :return: in_bounds: true is central line of camera intersects with the bounds of the plane
         """
 
         # Check for intersection
@@ -129,17 +136,17 @@ class rope_section:
 
 
 class image_mapping:
-    def __init__(self, base_link_pose, camera_info, relative_camera_pose, buoy_info, ropes):
+    def __init__(self, base_link_poses, camera_info, relative_camera_pose, buoy_info, ropes):
         # ===== Base pose =====
-        self.base_pose = base_link_pose
+        self.base_pose = base_link_poses
         self.base_pose3s = convert_poses_to_Pose3(self.base_pose)
         self.pose_ids = self.base_pose[:, -1]
 
         # ===== Camera =====
         self.camera_info = camera_info
-        self.relative_camera_pose = relative_camera_pose
         # TODO Currently hard coded to use left
-        self.camera_pose3s = apply_transformPoseFrom(self.base_pose3s, self.return_left_relative_pose(use_rpy=False))
+        self.relative_camera_pose = self.return_left_relative_pose(use_rpy=False)
+        self.camera_pose3s = apply_transformPoseFrom(self.base_pose3s, self.relative_camera_pose)
 
         # form k and P  matrices, plumb bob distortion model
         # K: 3x3
@@ -171,7 +178,7 @@ class image_mapping:
         # ===== Map info =====
         self.buoys = buoy_info
         self.ropes = ropes
-        self.depth = 15  # Used to define the vertical extent of the planes
+        self.depth = 2  # Used to define the vertical extent of the planes
 
         self.planes = []
         self.build_planes_from_buoys_ropes()
@@ -180,9 +187,13 @@ class image_mapping:
 
     @staticmethod
     def return_left_relative_pose(use_rpy=False):
-        l_t_x = 1.313
-        l_t_y = 0.048
-        l_t_z = -0.007
+        # TODO return relative camera pose to 'correct' value of 1.313
+        # l_t_x = 1.313
+        # l_t_y = 0.048
+        # l_t_z = -0.007
+        l_t_x = 0.6
+        l_t_y = 0.0
+        l_t_z = 0.0
 
         # ===== Quaternion values from ROS tf messages =====
         l_r_x = -0.733244
@@ -193,16 +204,10 @@ class image_mapping:
         # ===== RPY values from stonefish =====
         # these values have been converted to quaternions
         # [-0.7332437391795082, 0.31000489232064976, -0.23567133276329172, 0.5574133193644455]
-        # l_r_x_2 = -0.7332437391795082
-        # l_r_y_2 = 0.31000489232064976
-        # l_r_z_2 = -0.23567133276329172
-        # l_r_w_2 = 0.5574133193644455
-
-        # These are the rpy values converted w/ XYZ
-        l_r_x_2 = 0.7332437391795082
+        l_r_x_2 = -0.7332437391795082
         l_r_y_2 = 0.31000489232064976
-        l_r_z_2 = 0.23567133276329172
-        l_r_w_2 = -0.5574133193644455
+        l_r_z_2 = -0.23567133276329172
+        l_r_w_2 = 0.5574133193644455
 
         if use_rpy:
             return create_Pose3([l_t_x, l_t_y, l_t_z, l_r_w_2, l_r_x_2, l_r_y_2, l_r_z_2])
@@ -236,19 +241,20 @@ class image_mapping:
 
                 start_coord = self.buoys[start_buoy, :]
                 end_coord = self.buoys[end_buoy, :]
-                bottom_coord = self.buoys[start_buoy, :] - np.array([0, 0, self.depth], dtype=np.float64)
 
                 self.planes.append(rope_section(start_buoy=start_buoy,
                                                 end_buoy=end_buoy,
                                                 start_coord=start_coord,
                                                 end_coord=end_coord,
-                                                bottom_coord=bottom_coord))
+                                                depth=self.depth))
 
     def plot_fancy(self, other_pose3s=None):
         # Parameters
         fig_num = 0
         base_scale = .1
         other_scale = 1
+        plot_base = [31, 32, 33, 34, 35, 36]
+        plot_other = [31, 32, 33, 34, 35, 36]
 
         fig = plt.figure(fig_num)
         axes = fig.add_subplot(projection='3d')
@@ -257,20 +263,24 @@ class image_mapping:
         axes.set_ylabel("Y axis")
         axes.set_zlabel("Z axis")
 
-        # Plot buoys
-        # for buoy in buoy_info:
-        axes.scatter(buoy_info[:, 0], buoy_info[:, 1], buoy_info[:, 2], c='b', linewidths=5)
+        # Plot buoys and vertical 'ropes'
+        for buoy in self.buoys:
+            axes.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5)
+            axes.plot([buoy[0], buoy[0]],
+                      [buoy[1], buoy[1]],
+                      [buoy[2], buoy[2] - 10], c='g')
 
         # plot base_link gt pose3s
         for i_base, pose3 in enumerate(self.base_pose3s):
             # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
-            if i_base == 25:
+            if i_base in plot_base:
                 gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
+
         # plot camera gt pose3s
         if other_pose3s is not None:
             for i_other, pose3 in enumerate(other_pose3s):
                 # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
-                if i_other == 25:
+                if i_other in plot_other:
                     gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
                     # plot fov
                     for i_ray, ray in enumerate(self.fov_rays):
@@ -291,21 +301,10 @@ class image_mapping:
                     # plot intersection
                     for plane in self.planes:
                         # Find the center ray in the camera frame and then find the world coord given pose
-                        center_ray = self.fov_rays[-1]
-                        center_end_point_pose3 = pose3.transformFrom(center_ray)
+                        start, direction = self.camera_center_point_direction(pose3)
 
-                        end = np.array([center_end_point_pose3[0],
-                                        center_end_point_pose3[1],
-                                        center_end_point_pose3[2]], dtype=np.float64)
-
-                        start = np.array([pose3.x(),
-                                          pose3.y(),
-                                          pose3.z()])
-
-                        direction = end - start
-
-                        intrcpt_status, intrcpt_w_coords, intrcpt_p_coords, in_bounds = plane.find_intersection(start,
-                                                                                                                direction)
+                        intrcpt_status, intrcpt_w_coords, _, in_bounds = plane.find_intersection(start,
+                                                                                                 direction)
 
                         if in_bounds:
                             axes.scatter(intrcpt_w_coords[0], intrcpt_w_coords[1], intrcpt_w_coords[2], c='r')
@@ -314,9 +313,9 @@ class image_mapping:
         plt.title("Testing the transform")
         plt.show()
 
-    def find_corner_coords(self, plane_id, pose_id):
+    def find_fov_corner_coords(self, plane_id, pose_id):
         """
-
+        Find the intersections of the fov with the define plane
         """
         # Camera pose
         pose3 = self.camera_pose3s[pose_id]
@@ -346,6 +345,29 @@ class image_mapping:
             corner_cords[i_ray, :] = corner_p_coords
 
         return corner_cords
+
+    def find_plane_corner_pixels(self, plane_id, pose_id):
+        """
+        Each plane is defined by a start buoy and an end buoy, a lower buoy is defined as being below the start buoy.
+        The fourth corner is placed below the end buoy. This function will return the pixel positions of these corners.
+        """
+
+        corner_pixels = np.zeros((4, 2), dtype=np.float64)
+
+        # the world coordinates of the plane corners
+        w_corner_coords = np.zeros((4, 3), dtype=np.float64)
+        w_corner_coords[0, :] = self.planes[plane_id].start_coord
+        w_corner_coords[1, :] = self.planes[plane_id].end_coord
+        w_corner_coords[2, :] = self.planes[plane_id].start_bottom_coord
+        w_corner_coords[3, :] = self.planes[plane_id].end_bottom_coord
+
+        # Compute an intersection for each ray
+        for i_corner in range(4):
+            x_pixel, y_pixel = self.find_pixels_of_3d_point(pose_id, w_corner_coords[i_corner, :])
+
+            corner_pixels[i_corner, :] = x_pixel, y_pixel
+
+        return corner_pixels
 
     def convert_spatial_corners_to_pixel(self, plane_id, corner_coords):
         corner_coords_pixels = corner_coords * self.spatial_2_pixel
@@ -394,6 +416,71 @@ class image_mapping:
         else:
             return float('nan'), float('nan')
 
+    def camera_center_point_direction(self, pose):
+        """
+        returns the center point and direction of central ray of camera given pose
+        can accept pose_id or id
+        """
+        if isinstance(pose, gtsam.Pose3):
+            camera_pose3 = pose
+        elif 0 <= int(pose) < len(self.camera_pose3s):
+            camera_pose3 = self.camera_pose3s[pose]
+        else:
+            print("Malformed request")
+
+        center_ray = self.fov_rays[-1]
+        center_end_point_pose3 = camera_pose3.transformFrom(center_ray)
+
+        end = np.array([center_end_point_pose3[0],
+                        center_end_point_pose3[1],
+                        center_end_point_pose3[2]], dtype=np.float64)
+
+        start = np.array([camera_pose3.x(),
+                          camera_pose3.y(),
+                          camera_pose3.z()])
+
+        direction = end - start
+
+        return start, direction
+
+    def process_images(self, verbose=False):
+
+        for pose_id in range(len(self.base_pose3s)):
+            img_id = int(self.base_pose[pose_id][-1])
+            camera_pose3 = self.camera_pose3s[pose_id]
+
+            for plane_id, plane in enumerate(self.planes):
+                # Find which if plane to apply the image to
+                c_center, c_direction = self.camera_center_point_direction(camera_pose3)
+                status, w_coords, p_coords, in_bounds = plane.find_intersection(c_center, c_direction)
+
+                # properly oriented plane that is centrally located w.r.t. camera frame
+                if status and in_bounds:
+                    corners = self.find_plane_corner_pixels(plane_id=plane_id, pose_id=pose_id)
+
+                    if verbose:
+                        # TODO remove hardcoded left camera
+                        mod_id = int(img_id + 1)
+                        img = cv2.imread(
+                            f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{mod_id}.jpg")
+
+                        # Draw corners
+                        for corner in corners:
+                            if math.isnan(corner[0]) or math.isnan(corner[1]):
+                                continue
+                            corner_x = int(corner[0] // 1)
+                            corner_y = int(corner[1] // 1)
+                            img = cv2.circle(img, (corner_x, corner_y), 5, (0, 0, 255), -1)
+
+                        # Draw center
+                        center = self.find_pixels_of_3d_point(pose_id=pose_id, map_point=w_coords)
+
+                        if not math.isnan(center[0]) and not math.isnan(center[1]):
+                            center_x = int(center[0] // 1)
+                            center_y = int(center[1] // 1)
+                            img = cv2.circle(img, (center_x, center_y), 5, (255, 0, 255), -1)
+
+                        cv2.imwrite(f"data/Processing_{pose_id}_{img_id}_{plane_id}.jpg", img)
 
 # %% Load and process data
 # This is the gt of the base_link indexed for the left images
@@ -407,7 +494,7 @@ buoy_info = read_csv_to_array('data/buoy_info.csv')
 ropes = [[0, 4], [4, 2],
          [1, 5], [5, 3]]
 
-img_map = image_mapping(base_link_pose=base_gt,
+img_map = image_mapping(base_link_poses=base_gt,
                         camera_info=left_info,
                         relative_camera_pose=None,
                         buoy_info=buoy_info,
@@ -416,11 +503,13 @@ img_map = image_mapping(base_link_pose=base_gt,
 # %% Plot
 img_map.plot_fancy(img_map.camera_pose3s)
 # plot_fancy(base_gt_pose3s, left_gt_pose3s, buoy_info, points)
+img_map.process_images(True)
 
 # %% Testing parameters
 do_testing_1 = False
-do_testing_2 = True
+do_testing_2 = False
 do_testing_3 = False
+do_testing_4 = True
 # %% Testing 1
 if do_testing_1:
     print("Testing 1")
@@ -434,7 +523,7 @@ if do_testing_1:
 
     a, b, c, d = img_map.planes[0].find_intersection(point, direction)
 
-    corner_coords = img_map.find_corner_coords(0, 25)
+    corner_coords = img_map.find_fov_corner_coords(0, 25)
 
     corner_pixels, offset, max_inds = img_map.convert_spatial_corners_to_pixel(0, corner_coords)
 
@@ -500,7 +589,7 @@ if do_testing_2:
         img = cv2.imread(f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{img_id}.jpg")
 
         # Buoys
-        img_marked = cv2.circle(img, (int(x_pix_0//1), int(y_pix_0//1)), 5, (0, 0, 255), -1)
+        img_marked = cv2.circle(img, (int(x_pix_0 // 1), int(y_pix_0 // 1)), 5, (0, 0, 255), -1)
         img_marked = cv2.circle(img_marked, (int(x_pix_1 // 1), int(y_pix_1 // 1)), 5, (0, 0, 255), -1)
 
         # Lower points
@@ -515,6 +604,7 @@ if do_testing_2:
 
         #
         cv2.imshow(f"Marked Image: {img_id}", img_marked)
+        cv2.imwrite(f"Test2:{proper_img_id}_{img_id}.jpg", img_marked)
 
     # Waits for a keystroke
     cv2.waitKey(0)
@@ -522,6 +612,7 @@ if do_testing_2:
     # Destroys all the windows created
     cv2.destroyAllWindows()
 
+# %% Testing 3
 if do_testing_3:
     """
     Testing for the transform between base_link and left camera
@@ -539,3 +630,19 @@ if do_testing_3:
     # Convert matrix to rpy w/ gtsam
     ros_check = ros_b_2_c.rotation().rpy()
     stnfsh_check = stnfsh_b_2_c.rotation().rpy()
+
+# %% Testing 4
+if do_testing_4:
+    for pose in img_map.base_pose:
+        img_id = int(pose[-1])
+
+        img = cv2.imread(f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{img_id}.jpg")
+
+        center_x = img_map.cx
+        center_y = img_map.cy
+
+        img[:, int(img_map.cx), :] = (0, 255, 255)
+        img[int(img_map.cy), :, :] = (0, 255, 255)
+
+        cv2.imwrite(f"data/Centers_{img_id}.jpg", img)
+
