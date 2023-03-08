@@ -490,7 +490,7 @@ class sam_image_saver:
         msg_stamp = msg.header.stamp
 
         # record gt
-        current, current_stamp = self.get_gt_trans_in_map()
+        current, current_stamp = self.get_gt_trans_in_map(gt_time=msg.header.stamp)
         current.append(msg.header.seq)
         self.left_gt.append(current)
 
@@ -574,10 +574,10 @@ class sam_image_saver:
         return
 
     # ===== Transforms =====
-    def transform_pose(self, pose, from_frame, to_frame):
+    def transform_pose(self, pose, from_frame, to_frame, req_transform_time=None):
         trans = self.wait_for_transform(from_frame=from_frame,
                                         to_frame=to_frame)
-        pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans)
+        pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans, req_transform_time)
         return pose_transformed
 
     def wait_for_transform(self, from_frame, to_frame, req_transform_time=None):
@@ -601,7 +601,7 @@ class sam_image_saver:
 
         return trans
 
-    def get_gt_trans_in_map(self):
+    def get_gt_trans_in_map(self, gt_time=None):
         """
         Finds pose of the ground truth.
         First,the transform between the map and the ground truth frame.
@@ -612,7 +612,8 @@ class sam_image_saver:
         """
 
         trans = self.wait_for_transform(from_frame=self.gt_frame_id,
-                                        to_frame=self.frame)
+                                        to_frame=self.frame,
+                                        req_transform_time=gt_time)
 
         null_pose = PoseStamped()
         null_pose.pose.orientation.w = 1.0
