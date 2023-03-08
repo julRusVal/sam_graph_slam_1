@@ -3,6 +3,7 @@ import numpy as np
 import rospy
 import tf2_ros
 import tf2_geometry_msgs
+from std_msgs.msg import Time
 from nav_msgs.msg import Odometry
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray
@@ -170,7 +171,8 @@ class sam_slam_listener:
         if first_time_cond or stale_data_cond or online_waiting_cond:
             # Add to the dr and gt lists
             self.dr_poses_graph.append(self.dr_poses[-1])
-            self.gt_poses_graph.append(self.get_gt_trans_in_map())
+            gt_pose, _ = self.get_gt_trans_in_map()
+            self.gt_poses_graph.append(gt_pose)
 
             # Update time and state
             self.last_time = time_now
@@ -201,7 +203,8 @@ class sam_slam_listener:
                 # ===== Log data for the graph =====
                 # First update dr and gr with the most current
                 self.dr_poses_graph.append(self.dr_poses[-1])
-                self.gt_poses_graph.append(self.get_gt_trans_in_map())
+                gt_pose, _ = self.get_gt_trans_in_map()
+                self.gt_poses_graph.append(gt_pose)
                 # (OLD) self.gt_poses_graph.append(self.gt_poses[-1])
 
                 # detection position:
@@ -351,12 +354,14 @@ class sam_image_saver:
         self.down_gt_file_path = file_path_prefix + 'down_gt.csv'
         # Left
         self.left_info_file_path = file_path_prefix + 'left_info.csv'
+        self.left_times_file_path = file_path_prefix + 'left_times.csv'
         self.left_gt_file_path = file_path_prefix + 'left_gt.csv'
         # Right
         self.right_info_file_path = file_path_prefix + 'right_info.csv'
         self.right_gt_file_path = file_path_prefix + 'right_gt.csv'
         # Buoy
         self.buoy_info_file_path = file_path_prefix + 'buoy_info.csv'
+
 
         # ===== Frame and tf stuff =====
         self.frame = 'map'
@@ -429,7 +434,7 @@ class sam_image_saver:
     def down_image_callback(self, msg):
 
         # Record gt
-        current = self.get_gt_trans_in_map()
+        current, _ = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
         self.down_gt.append(current)
 
@@ -480,11 +485,19 @@ class sam_image_saver:
         """
         Based on down_image_callback
         """
+
+        now_stamp = rospy.Time.now()
+        msg_stamp = msg.header.stamp
+
         # record gt
-        current = self.get_gt_trans_in_map()
+        current, current_stamp = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
         self.left_gt.append(current)
-        print(current)
+
+        # Record times
+        self.left_times.append([now_stamp.to_sec(),
+                                msg_stamp.to_sec(),
+                                current_stamp.to_sec()])
 
         # Convert to cv2 format
         cv2_img = self.imgmsg_to_cv2(msg)
@@ -512,7 +525,7 @@ class sam_image_saver:
     def right_image_callback(self, msg):
 
         # record gt
-        current = self.get_gt_trans_in_map()
+        current, _ = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
         self.right_gt.append(current)
         print(current)
@@ -567,14 +580,20 @@ class sam_image_saver:
         pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans)
         return pose_transformed
 
-    def wait_for_transform(self, from_frame, to_frame):
+    def wait_for_transform(self, from_frame, to_frame, req_transform_time=None):
         """Wait for transform from from_frame to to_frame"""
         trans = None
+
+        if isinstance(req_transform_time, Time):
+            transform_time = req_transform_time
+        else:
+            transform_time = rospy.Time()
+
         while trans is None:
             try:
                 trans = self.tf_buffer.lookup_transform(to_frame,
                                                         from_frame,
-                                                        rospy.Time(),
+                                                        transform_time,
                                                         rospy.Duration(1))
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                     tf2_ros.ExtrapolationException) as error:
@@ -599,6 +618,8 @@ class sam_image_saver:
         null_pose.pose.orientation.w = 1.0
         pose_in_map = tf2_geometry_msgs.do_transform_pose(null_pose, trans)
 
+        pose_stamp = pose_in_map.header.stamp
+
         pose_list = [pose_in_map.pose.position.x,
                      pose_in_map.pose.position.y,
                      pose_in_map.pose.position.z,
@@ -607,7 +628,7 @@ class sam_image_saver:
                      pose_in_map.pose.orientation.y,
                      pose_in_map.pose.orientation.z]
 
-        return pose_list
+        return pose_list, pose_stamp
 
     # ===== Utilities =====
     def write_data(self):
@@ -619,6 +640,7 @@ class sam_image_saver:
         write_array_to_csv(self.down_gt_file_path, self.down_gt)
         # Left
         write_array_to_csv(self.left_info_file_path, self.left_info)
+        write_array_to_csv(self.left_times_file_path, self.left_times)
         write_array_to_csv(self.left_gt_file_path, self.left_gt)
         # Right
         write_array_to_csv(self.right_info_file_path, self.right_info)
