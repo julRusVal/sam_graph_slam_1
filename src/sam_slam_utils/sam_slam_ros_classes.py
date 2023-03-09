@@ -494,22 +494,27 @@ class sam_image_saver:
         msg_stamp = msg.header.stamp
 
         # record gt
-        current, current_stamp = self.get_gt_trans_in_map(gt_time=msg.header.stamp)
-
-        # transform method of gt
         current_id = msg.header.seq
+
+        # ===== Pick one method =====
+        # Method 1 - frame transform
+        # current_pose, pose_stamp = self.get_gt_trans_in_map(gt_time=msg.header.stamp)
+        # pose_time = pose_stamp.to_sec()
+        # current.append(current_id)
+
+        # Method 2 - subscription method of gt
+        current_pose_and_time = self.gt_poses_from_topic[-1]
+        current = current_pose_and_time[0:-1]
+        pose_time = current_pose_and_time[-1]
         current.append(current_id)
-        # subcription method of gt
-        current_sub_meth = self.gt_poses_from_topic[-1]
-        current_sub_meth.append(current_id)
 
         # self.left_gt.append(current)
-        self.left_gt.append(current_sub_meth)
+        self.left_gt.append(current)
 
         # Record times
         self.left_times.append([now_stamp.to_sec(),
                                 msg_stamp.to_sec(),
-                                current_stamp.to_sec()])
+                                pose_time])
 
         print(f'Down image callback: {msg.header.seq}')
         # print(current)
@@ -579,9 +584,11 @@ class sam_image_saver:
 
         gt_position = transformed_pose.pose.position
         gt_quaternion = transformed_pose.pose.orientation
+        gt_time = transformed_pose.header.stamp.to_sec()
 
         self.gt_poses_from_topic.append([gt_position.x, gt_position.y, gt_position.z,
-                                         gt_quaternion.w, gt_quaternion.x, gt_quaternion.y, gt_quaternion.z])
+                                         gt_quaternion.w, gt_quaternion.x, gt_quaternion.y, gt_quaternion.z,
+                                         gt_time])
 
         self.gt_updated = True
 

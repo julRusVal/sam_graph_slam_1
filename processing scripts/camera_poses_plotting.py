@@ -80,6 +80,7 @@ class rope_section:
 
         # ===== Define plane =====
         # Basis vectors
+        # x is the horizontal component and y is the vertical component
         self.v_x = end_coord - start_coord
         self.mag_x = np.sqrt(np.sum(np.multiply(self.v_x, self.v_x)))
         self.v_x = self.v_x / self.mag_x
@@ -178,7 +179,7 @@ class image_mapping:
         # ===== Map info =====
         self.buoys = buoy_info
         self.ropes = ropes
-        self.depth = 2  # Used to define the vertical extent of the planes
+        self.depth = 7.5  # Used to define the vertical extent of the planes
 
         self.planes = []
         self.build_planes_from_buoys_ropes()
@@ -458,11 +459,13 @@ class image_mapping:
                 if status and in_bounds:
                     corners = self.find_plane_corner_pixels(plane_id=plane_id, pose_id=pose_id)
 
+                    # TODO remove hardcoded left camera
+                    mod_id = int(img_id + 1)
+                    img = cv2.imread(
+                        f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{mod_id}.jpg")
+
                     if verbose:
-                        # TODO remove hardcoded left camera
-                        mod_id = int(img_id + 1)
-                        img = cv2.imread(
-                            f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{mod_id}.jpg")
+                        img_verbose = img.copy()
 
                         # Draw corners
                         for corner in corners:
@@ -470,7 +473,7 @@ class image_mapping:
                                 continue
                             corner_x = int(corner[0] // 1)
                             corner_y = int(corner[1] // 1)
-                            img = cv2.circle(img, (corner_x, corner_y), 5, (0, 0, 255), -1)
+                            img_verbose = cv2.circle(img_verbose, (corner_x, corner_y), 5, (0, 0, 255), -1)
 
                         # Draw center
                         center = self.find_pixels_of_3d_point(pose_id=pose_id, map_point=w_coords)
@@ -478,9 +481,29 @@ class image_mapping:
                         if not math.isnan(center[0]) and not math.isnan(center[1]):
                             center_x = int(center[0] // 1)
                             center_y = int(center[1] // 1)
-                            img = cv2.circle(img, (center_x, center_y), 5, (255, 0, 255), -1)
+                            img_verbose = cv2.circle(img_verbose, (center_x, center_y), 5, (255, 0, 255), -1)
 
-                        cv2.imwrite(f"data/Processing_{pose_id}_{img_id}_{plane_id}.jpg", img)
+                        cv2.imwrite(f"data/Processing_{pose_id}_{mod_id}_{plane_id}.jpg", img_verbose)
+
+                    # perform extraction
+                    plane_spatial_width = plane.mag_x  # meters
+                    plane_spatial_height = plane.mag_y  # meters
+
+                    plane_pixel_width = int(plane_spatial_width * self.spatial_2_pixel//1)
+                    plane_pixel_height = int((plane_spatial_height * self.spatial_2_pixel)//1)
+
+                    destination_corners = np.array([[0, 0],
+                                                    [plane_pixel_width - 1, 0],
+                                                    [0, plane_pixel_height - 1],
+                                                    [plane_pixel_width - 1, plane_pixel_height - 1]], dtype=np.float64)
+
+                    homography = cv2.getPerspectiveTransform(corners.astype(np.float32),
+                                                             destination_corners.astype(np.float32))
+
+                    img_warped = cv2.warpPerspective(img, homography, (plane_pixel_width, plane_pixel_height))
+
+                    cv2.imwrite(f"data/Warping_{pose_id}_{mod_id}_{plane_id}.jpg", img_warped)
+
 
 # %% Load and process data
 # This is the gt of the base_link indexed for the left images
@@ -569,7 +592,7 @@ if do_testing_2:
     x_pix_1, y_pix_1 = img_map.find_pixels_of_3d_point(pose_id, test_point_b1)
 
     # Lower points
-    depth = 2
+    depth = 7.5
     test_point_b0_deep = test_point_b0
     test_point_b0_deep[2] = -depth
 
@@ -645,4 +668,3 @@ if do_testing_4:
         img[int(img_map.cy), :, :] = (0, 255, 255)
 
         cv2.imwrite(f"data/Centers_{img_id}.jpg", img)
-
