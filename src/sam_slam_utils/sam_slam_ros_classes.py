@@ -518,7 +518,7 @@ class sam_image_saver:
 
         print(f'Down image callback: {msg.header.seq}')
         # print(current)
-        print(current_sub_meth)
+        print(current)
         print(self.gt_poses_from_topic[-1])
 
         # Convert to cv2 format

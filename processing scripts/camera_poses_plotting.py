@@ -97,8 +97,8 @@ class rope_section:
         self.Q = self.start_coord
 
         # ===== Storage for images and masks
-        self.images = {}
-        self.masks = {}
+        self.images = []
+        self.masks = []
 
     def find_intersection(self, point, direction):
         """
@@ -189,12 +189,12 @@ class image_mapping:
     @staticmethod
     def return_left_relative_pose(use_rpy=False):
         # TODO return relative camera pose to 'correct' value of 1.313
-        # l_t_x = 1.313
-        # l_t_y = 0.048
-        # l_t_z = -0.007
-        l_t_x = 0.6
-        l_t_y = 0.0
-        l_t_z = 0.0
+        l_t_x = 1.313
+        l_t_y = 0.048
+        l_t_z = -0.007
+        # l_t_x = 0.6
+        # l_t_y = 0.0
+        # l_t_z = 0.0
 
         # ===== Quaternion values from ROS tf messages =====
         l_r_x = -0.733244
@@ -252,10 +252,10 @@ class image_mapping:
     def plot_fancy(self, other_pose3s=None):
         # Parameters
         fig_num = 0
-        base_scale = .1
+        base_scale = .5
         other_scale = 1
-        plot_base = [31, 32, 33, 34, 35, 36]
-        plot_other = [31, 32, 33, 34, 35, 36]
+        plot_base = [34, 35, 36]
+        plot_other = [34, 35, 36]
 
         fig = plt.figure(fig_num)
         axes = fig.add_subplot(projection='3d')
@@ -285,7 +285,7 @@ class image_mapping:
                     gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
                     # plot fov
                     for i_ray, ray in enumerate(self.fov_rays):
-                        point_end = pose3.transformFrom(10 * ray)
+                        point_end = pose3.transformFrom(5 * ray)
                         x_comp = [pose3.x(), point_end[0]]
                         y_comp = [pose3.y(), point_end[1]]
                         z_comp = [pose3.z(), point_end[2]]
@@ -483,7 +483,7 @@ class image_mapping:
                             center_y = int(center[1] // 1)
                             img_verbose = cv2.circle(img_verbose, (center_x, center_y), 5, (255, 0, 255), -1)
 
-                        cv2.imwrite(f"data/Processing_{pose_id}_{mod_id}_{plane_id}.jpg", img_verbose)
+                        cv2.imwrite(f"data/registration_images/Processing_{pose_id}_{mod_id}_{plane_id}.jpg", img_verbose)
 
                     # perform extraction
                     plane_spatial_width = plane.mag_x  # meters
@@ -499,10 +499,19 @@ class image_mapping:
 
                     homography = cv2.getPerspectiveTransform(corners.astype(np.float32),
                                                              destination_corners.astype(np.float32))
+                    # Apply homography to image
+                    img_warped = cv2.warpPerspective(img, homography,
+                                                     (plane_pixel_width, plane_pixel_height))
 
-                    img_warped = cv2.warpPerspective(img, homography, (plane_pixel_width, plane_pixel_height))
+                    # apply homography to form a mask
+                    mask_warped = cv2.warpPerspective(np.ones_like(img) * 255, homography,
+                                                      (plane_pixel_width, plane_pixel_height))
 
-                    cv2.imwrite(f"data/Warping_{pose_id}_{mod_id}_{plane_id}.jpg", img_warped)
+                    self.planes[plane_id].images.append(img_warped)
+                    self.planes[plane_id].masks.append(mask_warped)
+
+                    cv2.imwrite(f"data/warped_images/Warping_{pose_id}_{mod_id}_{plane_id}.jpg", img_warped)
+                    cv2.imwrite(f"data/warped_masks/Warping_{pose_id}_{mod_id}_{plane_id}.jpg", mask_warped)
 
 
 # %% Load and process data
@@ -532,7 +541,7 @@ img_map.process_images(True)
 do_testing_1 = False
 do_testing_2 = False
 do_testing_3 = False
-do_testing_4 = True
+do_testing_4 = False
 # %% Testing 1
 if do_testing_1:
     print("Testing 1")
@@ -635,7 +644,7 @@ if do_testing_2:
     # Destroys all the windows created
     cv2.destroyAllWindows()
 
-# %% Testing 3
+# %% Testing 3 - checking rotation transforms and equivalences
 if do_testing_3:
     """
     Testing for the transform between base_link and left camera
@@ -654,7 +663,7 @@ if do_testing_3:
     ros_check = ros_b_2_c.rotation().rpy()
     stnfsh_check = stnfsh_b_2_c.rotation().rpy()
 
-# %% Testing 4
+# %% Testing 4 - mark images with centers
 if do_testing_4:
     for pose in img_map.base_pose:
         img_id = int(pose[-1])
