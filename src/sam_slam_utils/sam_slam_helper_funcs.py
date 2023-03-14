@@ -155,3 +155,18 @@ def show_simple_graph_2d(graph, x_keys, b_keys, values, label):
     nx.draw_networkx(G, pos, edge_color=e_colors, node_color=n_colors, **options)
     np.arange(plot_limits[0], plot_limits[1] + 1, 2.5)
     plt.show()
+
+
+class odometry_data:
+    def __init__(self, x, y, z, q_w, q_x, q_y, q_z, roll, pitch, depth, image_id=-1):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.q_w = q_w
+        self.q_x = q_x
+        self.q_y = q_y
+        self.q_z = q_z
+        self.roll = roll
+        self.pitch = pitch
+        self.depth = depth
+        self.image_id = image_id

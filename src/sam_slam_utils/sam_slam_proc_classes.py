@@ -19,6 +19,8 @@ import networkx as nx
 
 # Slam
 import gtsam
+
+import rospy
 from sam_slam_utils.sam_slam_helper_funcs import calc_pose_error
 from sam_slam_utils.sam_slam_helper_funcs import create_Pose2, pose2_list_to_nparray
 from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array
@@ -600,6 +602,7 @@ class online_slam_2d:
         self.x = None
         self.b = None
         self.dr_Pose2s = None
+        self.dr_rpd = None  # roll pitch depth
         self.gt_Pose2s = None
         self.between_Pose2s = None
         self.post_Pose2s = None
@@ -648,6 +651,7 @@ class online_slam_2d:
         # ===== Graph states =====
         self.buoy_map_present = False
         self.initial_pose_set = False
+        self.busy = False
 
         # ===== Debugging =====
         self.da_check = {}
@@ -694,7 +698,10 @@ class online_slam_2d:
             return -1
 
         # Record relevant poses
-        self.dr_Pose2s = [self.correct_dr(create_Pose2(dr_pose))]
+        # The
+        self.dr_Pose2s = [self.correct_dr(create_Pose2(dr_pose[:7]))]
+        if len(dr_pose) == 10:
+            self.dr_rpd = [dr_pose[7:10]]
         self.gt_Pose2s = [create_Pose2(gt_pose)]
         self.between_Pose2s = []
 
@@ -723,8 +730,13 @@ class online_slam_2d:
             self.add_first_pose(dr_pose, gt_pose)
             return
 
+        # Attempt at preventing saturation
+        self.busy = True
+
         # Record relevant poses
-        self.dr_Pose2s.append(self.correct_dr(create_Pose2(dr_pose)))
+        self.dr_Pose2s.append(self.correct_dr(create_Pose2(dr_pose[:7])))
+        if self.dr_rpd is not None and len(dr_pose) == 10:
+            self.dr_rpd.append(dr_pose[7:10])
         self.gt_Pose2s.append(create_Pose2(gt_pose))
 
         # Find the relative odometry between dr_poses
@@ -777,6 +789,9 @@ class online_slam_2d:
                                                       detect_range,
                                                       self.detection_model))
 
+        # Time update process
+        start_time = rospy.Time.now()
+
         # Incremental update
         self.isam.update(self.graph, self.initial_estimate)
         self.current_estimate = self.isam.calculateEstimate()
@@ -784,7 +799,13 @@ class online_slam_2d:
         # self.graph.resize(0)
         self.initial_estimate.clear()
 
-        print("Done with update")
+        end_time = rospy.Time.now()
+        update_time = (end_time - start_time).to_sec()
+
+        # Release the graph
+        self.busy = False
+
+        print(f"Done with update - {self.current_x_ind}: {update_time} s")
         if self.x is None:
             print("problem")
         return

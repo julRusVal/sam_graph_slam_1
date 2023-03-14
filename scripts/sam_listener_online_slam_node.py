@@ -11,10 +11,7 @@ def main():
     rate = rospy.Rate(5)
 
     # Topic parameters
-    ground_truth_topic = '/sam/sim/odom'
-    dead_reckon_topic = '/sam/dr/odom'
-    detection_topic = '/sam/payload/sidescan/detection_hypothesis'
-    buoy_topic = '/sam/sim/marked_positions'
+    robot_name = 'sam'
     frame = 'map'
 
     # Output parameters
@@ -26,8 +23,9 @@ def main():
     online_graph = online_slam_2d()
 
     print('initializing listener')
-    listener = sam_slam_listener(ground_truth_topic, dead_reckon_topic, detection_topic, buoy_topic,
-                                 frame, path_name,
+    listener = sam_slam_listener(robot_name,
+                                 frame,
+                                 path_name,
                                  online_graph=online_graph)
 
     while not rospy.is_shutdown():

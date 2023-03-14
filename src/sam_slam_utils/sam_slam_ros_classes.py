@@ -4,6 +4,7 @@ import rospy
 import tf2_ros
 import tf2_geometry_msgs
 from std_msgs.msg import Time
+from std_msgs.msg import Float64
 from nav_msgs.msg import Odometry
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray
@@ -42,13 +43,19 @@ class sam_slam_listener:
 
     """
 
-    def __init__(self, gt_top_name, dr_top_name, det_top_name, buoy_top_name, frame_name, path_name=None,
+    def __init__(self, robot_name, frame_name,
+                 path_name=None,
                  online_graph=None):
         # Topic names
-        self.gt_topic = gt_top_name
-        self.dr_topic = dr_top_name
-        self.det_topic = det_top_name
-        self.buoy_topic = buoy_top_name
+        self.robot_name = robot_name
+        self.gt_topic = f'/{self.robot_name}/sim/odom'
+        self.dr_topic = f'/{self.robot_name}/dr/odom'
+        self.det_topic = f'/{self.robot_name}/payload/sidescan/detection_hypothesis'
+        self.buoy_topic = f'/{self.robot_name}/sim/marked_positions'
+
+        self.roll_topic = f'/{self.robot_name}/dr/roll'
+        self.pitch_topic = f'/{self.robot_name}/dr/pitch'
+        self.depth_topic = f'/{self.robot_name}/dr/depth'
 
         # Frame names: For the most part everything is transformed to the map frame
         self.frame = frame_name
@@ -69,6 +76,10 @@ class sam_slam_listener:
         self.gt_poses = []
         self.dr_poses = []
         self.detections = []
+
+        self.rolls = []
+        self.pitches = []
+        self.depths = []
 
         # Graph logging
         """
@@ -92,13 +103,22 @@ class sam_slam_listener:
             self.detections_graph_file_path = 'detections_graph.csv'
             self.buoys_file_path = 'buoys.csv'
 
-        # Timing and state
-        self.last_time = rospy.Time.now()
-        self.dr_updated = False
+        # States and timings
         self.gt_updated = False
+        self.dr_updated = False
+        self.roll_updated = False
+        self.pitch_updated = False
+        self.depth_updated = False
         self.buoy_updated = False
         self.data_written = False
-        self.update_time = 0.5
+        self.gt_last_time = rospy.Time.now()
+        self.gt_timeout = 5.0  # Time out used to save data at end of simulation
+
+        self.dr_last_time = rospy.Time.now()
+        self.dr_update_time = 2.0  # Time for limiting the rate that odometry factors are added
+
+        self.detect_last_time = rospy.Time.now()
+        self.detect_update_time = .25  # Time for limiting the rate that detection factors are added
 
         # ===== Subscribers =====
         # Ground truth
@@ -110,6 +130,19 @@ class sam_slam_listener:
         self.dr_subscriber = rospy.Subscriber(self.dr_topic,
                                               Odometry,
                                               self.dr_callback)
+
+        # Additional odometry topics: roll, pitch, depth
+        self.roll_subscriber = rospy.Subscriber(self.roll_topic,
+                                                Float64,
+                                                self.roll_callback)
+
+        self.pitch_subscriber = rospy.Subscriber(self.pitch_topic,
+                                                 Float64,
+                                                 self.pitch_callback)
+
+        self.depth_subscriber = rospy.Subscriber(self.depth_topic,
+                                                 Float64,
+                                                 self.depth_callback)
 
         # Detections
         self.det_subscriber = rospy.Subscriber(self.det_topic,
@@ -140,13 +173,19 @@ class sam_slam_listener:
                               gt_quaternion.w, gt_quaternion.x, gt_quaternion.y, gt_quaternion.z])
 
         self.gt_updated = True
+        self.gt_last_time = rospy.Time.now()
 
     def dr_callback(self, msg):
         """
         Call back for the dead reckoning subscription, msg is of type nav_msgs/Odometry.
-        The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z].
+        WAS: The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z].
+        NOW: The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z, roll, pitch, depth].
         Note the position of q_w, this is for compatibility with gtsam and matlab
         """
+        # wait for gt
+        if not self.gt_updated or not self.roll_updated or not self.pitch_updated or not self.depth_updated:
+            return
+
         # transform odom to the map frame
         transformed_dr_pose = self.transform_pose(msg.pose,
                                                   from_frame=msg.header.frame_id,
@@ -155,14 +194,19 @@ class sam_slam_listener:
         dr_position = transformed_dr_pose.pose.position
         dr_quaternion = transformed_dr_pose.pose.orientation
 
+        curr_roll = self.rolls[-1]
+        curr_pitch = self.pitches[-1]
+        curr_depth = self.depths[-1]
+
         # Record dr poses in format compatible with GTSAM
         self.dr_poses.append([dr_position.x, dr_position.y, dr_position.z,
-                              dr_quaternion.w, dr_quaternion.x, dr_quaternion.y, dr_quaternion.z])
+                              dr_quaternion.w, dr_quaternion.x, dr_quaternion.y, dr_quaternion.z,
+                              curr_roll, curr_pitch, curr_depth])
 
         # Conditions for updating dr: (1) first time or (2) stale data or (3) online graph is still uninitialized
         time_now = rospy.Time.now()
         first_time_cond = not self.dr_updated and self.gt_updated
-        stale_data_cond = self.dr_updated and (time_now - self.last_time).to_sec() > self.update_time
+        stale_data_cond = self.dr_updated and (time_now - self.dr_last_time).to_sec() > self.dr_update_time
         if self.online_graph is not None:
             online_waiting_cond = self.gt_updated and self.online_graph.initial_pose_set is False
         else:
@@ -171,60 +215,103 @@ class sam_slam_listener:
         if first_time_cond or stale_data_cond or online_waiting_cond:
             # Add to the dr and gt lists
             self.dr_poses_graph.append(self.dr_poses[-1])
-            gt_pose, _ = self.get_gt_trans_in_map()
+            # Transform method OLD
+            # gt_pose, _ = self.get_gt_trans_in_map()
+            gt_pose = self.gt_poses[-1]
             self.gt_poses_graph.append(gt_pose)
 
             # Update time and state
-            self.last_time = time_now
+            self.dr_last_time = time_now
             self.dr_updated = True
 
             # ===== Online first update =====
-            if self.online_graph is not None and self.online_graph.initial_pose_set is False:
+            if self.online_graph.busy:
+                print('Busy condition found')
+            if self.online_graph is not None \
+                    and self.online_graph.initial_pose_set is False \
+                    and not self.online_graph.busy:
                 # TODO
                 print("First update")
                 self.online_graph.add_first_pose(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
 
-            elif self.online_graph is not None:
-                print("Odometry update")
+            elif self.online_graph is not None \
+                    and not self.online_graph.busy:
+                print(f"Odometry update - {self.online_graph.current_x_ind + 1}")
                 self.online_graph.online_update(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
 
+    def roll_callback(self, msg):
+        """
+        """
+        self.rolls.append(msg.data)
+        self.roll_updated = True
+
+    def pitch_callback(self, msg):
+        """
+        """
+        self.pitches.append(msg.data)
+        self.pitch_updated = True
+
+    def depth_callback(self, msg):
+        """
+        """
+        self.depths.append(msg.data)
+        self.depth_updated = True
+
     def det_callback(self, msg):
+        # Check that topics have received messages
+        if not self.gt_updated or not self.roll_updated or not self.pitch_updated or not self.depth_updated:
+            return
+
+        # check elapsed time
+        detect_time_now = rospy.Time.now()
+        if (detect_time_now - self.detect_last_time).to_sec() < self.detect_update_time:
+            return
+
+        # Reset timer
+        self.detect_last_time = rospy.Time.now()
+
+        # Process detection
         for det_ind, detection in enumerate(msg.detections):
             for res_ind, result in enumerate(detection.results):
                 # Pose in base_link
-                detection_position = result.pose
+                det_pose_base = result.pose
+
                 # Convert to map
-                transformed_pose = self.transform_pose(detection_position,
-                                                       from_frame=msg.header.frame_id,
-                                                       to_frame=self.frame)
-                # Extract the position
-                det_position = transformed_pose.pose.position
+                det_pos_map = self.transform_pose(det_pose_base,
+                                                  from_frame=msg.header.frame_id,
+                                                  to_frame=self.frame)
 
                 # ===== Log data for the graph =====
                 # First update dr and gr with the most current
-                self.dr_poses_graph.append(self.dr_poses[-1])
-                gt_pose, _ = self.get_gt_trans_in_map()
+                dr_pose = self.dr_poses[-1]
+                self.dr_poses_graph.append(dr_pose)
+                gt_pose = self.gt_poses[-1]
                 self.gt_poses_graph.append(gt_pose)
-                # (OLD) self.gt_poses_graph.append(self.gt_poses[-1])
 
                 # detection position:
                 # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
                 index = len(self.dr_poses_graph) - 1
-                self.detections_graph.append([det_position.x,
-                                              det_position.y,
-                                              det_position.z,
-                                              detection_position.pose.position.x,
-                                              detection_position.pose.position.y,
-                                              detection_position.pose.position.z,
+                self.detections_graph.append([det_pos_map.pose.position.x,
+                                              det_pos_map.pose.position.y,
+                                              det_pos_map.pose.position.z,
+                                              det_pose_base.pose.position.x,
+                                              det_pose_base.pose.position.y,
+                                              det_pose_base.pose.position.z,
                                               index])
 
+                # ===== Output =====
+                print(f'Detection callback: {index}')
+
                 # ===== Online detection update =====
-                if self.online_graph is not None:
+                if self.online_graph.busy:
+                    print('Busy condition found')
+                if self.online_graph is not None and not self.online_graph.busy:
                     # TODO
-                    print("Detection update")
-                    self.online_graph.online_update(self.dr_poses_graph[-1], self.gt_poses_graph[-1],
-                                                    np.array((detection_position.pose.position.x,
-                                                              detection_position.pose.position.y), dtype=np.float64))
+                    print(f"Detection update - {self.online_graph.current_x_ind + 1}")
+                    self.online_graph.online_update(dr_pose, gt_pose,
+                                                    np.array((det_pose_base.pose.position.x,
+                                                              det_pose_base.pose.position.y),
+                                                             dtype=np.float64))
 
     def buoy_callback(self, msg):
         if not self.buoy_updated:
@@ -245,8 +332,8 @@ class sam_slam_listener:
     def time_check_callback(self, event):
         if not self.dr_updated:
             return
-        delta_t = rospy.Time.now() - self.last_time
-        if delta_t.to_sec() >= 1 and not self.data_written:
+        delta_t = rospy.Time.now() - self.gt_last_time
+        if delta_t.to_sec() >= self.gt_timeout and not self.data_written:
             print('Data written')
             self.write_data()
             self.data_written = True
@@ -262,7 +349,7 @@ class sam_slam_listener:
 
         return
 
-    # ===== Transforms =====
+    # ===== Transforms and poses =====
     def transform_pose(self, pose, from_frame, to_frame):
         trans = self.wait_for_transform(from_frame=from_frame,
                                         to_frame=to_frame)
@@ -398,29 +485,35 @@ class sam_image_saver:
         # Down camera
         self.cam_down_image_subscriber = rospy.Subscriber(self.cam_down_image_topic,
                                                           Image,
-                                                          self.down_image_callback)
+                                                          self.image_callback,
+                                                          'down')
 
         self.cam_down_info_subscriber = rospy.Subscriber(self.cam_down_info_topic,
                                                          CameraInfo,
-                                                         self.down_info_callback)
+                                                         self.info_callback,
+                                                         'down')
 
         # Left camera
         self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
                                                           Image,
-                                                          self.left_image_callback)
+                                                          self.image_callback,
+                                                          'left')
 
         self.cam_left_info_subscriber = rospy.Subscriber(self.cam_left_info_topic,
                                                          CameraInfo,
-                                                         self.left_info_callback)
+                                                         self.info_callback,
+                                                         'left')
 
         # Right camera
         self.cam_right_image_subscriber = rospy.Subscriber(self.cam_right_image_topic,
                                                            Image,
-                                                           self.right_image_callback)
+                                                           self.image_callback,
+                                                           'right')
 
         self.cam_right_info_subscriber = rospy.Subscriber(self.cam_right_info_topic,
                                                           CameraInfo,
-                                                          self.right_info_callback)
+                                                          self.info_callback,
+                                                          'right')
 
         # Ground truth
         self.gt_subscriber = rospy.Subscriber(self.gt_topic,
@@ -437,9 +530,9 @@ class sam_image_saver:
                                       self.time_check_callback)
 
     # ===== Callbacks =====
-    # Down
-    def down_image_callback(self, msg):
+    def old_down_image_callback(self, msg, camera_id):
 
+        print(camera_id)
         # Record gt
         current, _ = self.get_gt_trans_in_map()
         current.append(msg.header.seq)
@@ -478,14 +571,26 @@ class sam_image_saver:
 
         return
 
-    def down_info_callback(self, msg):
-        if len(self.down_info) == 0:
-            self.down_info.append(msg.K)
-            self.down_info.append(msg.P)
-            self.down_info.append([msg.width, msg.height])
+    def info_callback(self, msg, camera_id):
+        if camera_id == 'down':
+            if len(self.down_info) == 0:
+                self.down_info.append(msg.K)
+                self.down_info.append(msg.P)
+                self.down_info.append([msg.width, msg.height])
+        elif camera_id == 'left':
+            if len(self.left_info) == 0:
+                self.left_info.append(msg.K)
+                self.left_info.append(msg.P)
+                self.left_info.append([msg.width, msg.height])
+        elif camera_id == 'right':
+            if len(self.right_info) == 0:
+                self.right_info.append(msg.K)
+                self.right_info.append(msg.P)
+                self.right_info.append([msg.width, msg.height])
+        else:
+            print('Unknown camera_id passed to info callback')
 
-    # Left
-    def left_image_callback(self, msg):
+    def image_callback(self, msg, camera_id):
         """
         Based on down_image_callback
         """
@@ -508,27 +613,41 @@ class sam_image_saver:
         pose_time = current_pose_and_time[-1]
         current.append(current_id)
 
-        # self.left_gt.append(current)
-        self.left_gt.append(current)
+        # Record data
+        if camera_id == 'down':
+            # Record the ground truth and times
+            self.left_gt.append(current)
+            self.left_times.append([now_stamp.to_sec(),
+                                    msg_stamp.to_sec(),
+                                    pose_time])
+        elif camera_id == 'left':
+            # Record the ground truth and times
+            self.left_gt.append(current)
+            self.left_times.append([now_stamp.to_sec(),
+                                    msg_stamp.to_sec(),
+                                    pose_time])
+        elif camera_id == 'right':
+            # Record the ground truth and times
+            self.left_gt.append(current)
+            self.left_times.append([now_stamp.to_sec(),
+                                    msg_stamp.to_sec(),
+                                    pose_time])
+        else:
+            print('Unknown camera_id passed to image callback')
+            return
 
-        # Record times
-        self.left_times.append([now_stamp.to_sec(),
-                                msg_stamp.to_sec(),
-                                pose_time])
-
-        print(f'Down image callback: {msg.header.seq}')
-        # print(current)
+        # Display call back info
+        print(f'image callback - {camera_id}: {current_id}')
         print(current)
-        print(self.gt_poses_from_topic[-1])
 
         # Convert to cv2 format
         cv2_img = self.imgmsg_to_cv2(msg)
 
         # Write to 'disk'
         if self.file_path is None or not isinstance(self.file_path, str):
-            save_path = f'{current_id}.jpg'
+            save_path = f'{camera_id}_{current_id}.jpg'
         else:
-            save_path = self.file_path + f'/left/l_{current_id}.jpg'
+            save_path = self.file_path + f'/{camera_id}/{current_id}.jpg'
         cv2.imwrite(save_path, cv2_img)
 
         # Update state and timer
@@ -536,42 +655,6 @@ class sam_image_saver:
         self.last_time = rospy.Time.now()
 
         return
-
-    def left_info_callback(self, msg):
-        if len(self.left_info) == 0:
-            self.left_info.append(msg.K)
-            self.left_info.append(msg.P)
-            self.left_info.append([msg.width, msg.height])
-
-    # Right
-    def right_image_callback(self, msg):
-
-        # record gt
-        current, _ = self.get_gt_trans_in_map()
-        current.append(msg.header.seq)
-        self.right_gt.append(current)
-
-        # Convert to cv2 format
-        cv2_img = self.imgmsg_to_cv2(msg)
-
-        # Write to 'disk'
-        if self.file_path is None or not isinstance(self.file_path, str):
-            save_path = f'{msg.header.seq}.jpg'
-        else:
-            save_path = self.file_path + f'/right/r_{msg.header.seq}.jpg'
-        cv2.imwrite(save_path, cv2_img)
-
-        # Update state and timer
-        self.image_received = True
-        self.last_time = rospy.Time.now()
-
-        return
-
-    def right_info_callback(self, msg):
-        if len(self.right_info) == 0:
-            self.right_info.append(msg.K)
-            self.right_info.append(msg.P)
-            self.right_info.append([msg.width, msg.height])
 
     def gt_callback(self, msg):
         """
