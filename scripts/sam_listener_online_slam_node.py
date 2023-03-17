@@ -15,7 +15,7 @@ def main():
     frame = 'map'
 
     # Output parameters
-    path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data'
+    path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing'
     data_processed = False
 
     # ===== Start =====

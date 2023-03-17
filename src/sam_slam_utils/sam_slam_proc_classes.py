@@ -23,8 +23,10 @@ import gtsam
 import rospy
 from sam_slam_utils.sam_slam_helper_funcs import calc_pose_error
 from sam_slam_utils.sam_slam_helper_funcs import create_Pose2, pose2_list_to_nparray
-from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array
+from sam_slam_utils.sam_slam_helper_funcs import create_Pose3, merge_into_Pose3
+from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array, write_array_to_csv
 
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
 # %% Classes
 
@@ -588,8 +590,15 @@ class offline_slam_2d:
 
 
 class online_slam_2d:
-    def __init__(self):
+    def __init__(self, path_name=None):
         graph = gtsam.NonlinearFactorGraph()
+
+        # ===== File path for data logging =====
+        self.file_path = path_name
+        if self.file_path is None or not isinstance(path_name, str):
+            self.file_path = ''
+        else:
+            self.file_path = path_name + '/'
 
         # ===== Graph parameters =====
         self.graph = gtsam.NonlinearFactorGraph()
@@ -601,13 +610,26 @@ class online_slam_2d:
         self.current_x_ind = 0
         self.x = None
         self.b = None
+
+        # === dr ===
         self.dr_Pose2s = None
-        self.dr_rpd = None  # roll pitch depth
-        self.gt_Pose2s = None
+        self.dr_Pose3s = None
+        self.dr_pose_raw = None
+        self.dr_pose_rpd = None  # roll pitch depth
         self.between_Pose2s = None
+
+        # === gt ===
+        self.gt_Pose2s = None
+        self.gt_Pose3s = None
+        self.gt_pose_raw = None
+
+        # === Estimated ===
         self.post_Pose2s = None
         self.post_Point2s = None
-        self.bearings_ranges = []
+
+        # === Sensors and detections
+        self.bearings_ranges = []  # Not used for online
+        self.sensor_string_at_key = {}  # camera and sss data is associated with graph nodes here
 
         # ===== Sigmas =====
         # Agent prior sigmas
@@ -619,8 +641,8 @@ class online_slam_2d:
         self.ang_sig = 0.1 * np.pi / 180
         self.dist_sig = .1
         # detection sigmas
+        self.detect_ang_sig = 1 * np.pi / 180
         self.detect_dist_sig = 1
-        self.detect_ang_sig = .5 * np.pi / 180
 
         # ===== Noise models =====
         self.prior_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.dist_sig_init,
@@ -684,7 +706,7 @@ class online_slam_2d:
         print("Done with  buoy setup")
         return
 
-    def add_first_pose(self, dr_pose, gt_pose, initial_estimate=None):
+    def add_first_pose(self, dr_pose, gt_pose, initial_estimate=None, id_string=None):
         """
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
@@ -697,16 +719,34 @@ class online_slam_2d:
             print("add_first_pose() called with a graph that already has a pose added")
             return -1
 
-        # Record relevant poses
-        # The
+        # === Record relevant poses ===
+        """
+        Both dr and gt are saved as Pose2, Pose3 and the raw list sent to the slam processing
+        dr_pose format: [x, y, z, q_w, q_x, q_y, q_z, roll, pitch, depth]
+        gt_pose format: [x, y, z, q_w, q_x, q_y, q_z, time]
+        """
+        # dr
         self.dr_Pose2s = [self.correct_dr(create_Pose2(dr_pose[:7]))]
+        # TODO Pose3 also need to be corrected in the same way Pose2 is corrected
+        self.dr_Pose3s = [create_Pose3(dr_pose)]
+        self.dr_pose_raw = [dr_pose]
         if len(dr_pose) == 10:
-            self.dr_rpd = [dr_pose[7:10]]
-        self.gt_Pose2s = [create_Pose2(gt_pose)]
+            self.dr_pose_rpd = [dr_pose[7:10]]
         self.between_Pose2s = []
+
+        # gt
+        self.gt_Pose2s = [create_Pose2(gt_pose)]
+        self.gt_Pose3s = [create_Pose3(gt_pose)]
+        self.gt_pose_raw = [gt_pose]
 
         # Add label
         self.x = {self.current_x_ind: gtsam.symbol('x', self.current_x_ind)}
+
+        # Add type or sensor identifier
+        if id_string is None:
+            self.sensor_string_at_key[self.current_x_ind] = 'odometry'
+        else:
+            self.sensor_string_at_key[self.current_x_ind] = id_string
 
         # Add prior factor
         self.graph.add(gtsam.PriorFactorPose2(self.x[0], self.dr_Pose2s[0], self.prior_model))
@@ -716,12 +756,12 @@ class online_slam_2d:
         self.current_estimate = self.initial_estimate
 
         self.initial_pose_set = True
-        print("Done with first pose")
+        print("Done with first pose - x0")
         if self.x is None:
             print("problem")
         return
 
-    def online_update(self, dr_pose, gt_pose, relative_detection=None):
+    def online_update(self, dr_pose, gt_pose, relative_detection=None, id_string=None):
         """
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
@@ -733,11 +773,19 @@ class online_slam_2d:
         # Attempt at preventing saturation
         self.busy = True
 
-        # Record relevant poses
+        # === Record relevant poses ===
+        # dr
         self.dr_Pose2s.append(self.correct_dr(create_Pose2(dr_pose[:7])))
-        if self.dr_rpd is not None and len(dr_pose) == 10:
-            self.dr_rpd.append(dr_pose[7:10])
+        # TODO Pose3 also need to be corrected in the same way Pose2 is corrected
+        self.dr_Pose3s.append(create_Pose3(dr_pose))
+        self.dr_pose_raw.append(dr_pose)
+        if self.dr_pose_rpd is not None and len(dr_pose) == 10:
+            self.dr_pose_rpd.append(dr_pose[7:10])
+
+        # gt
         self.gt_Pose2s.append(create_Pose2(gt_pose))
+        self.gt_Pose3s.append(create_Pose3(gt_pose))
+        self.gt_pose_raw.append(gt_pose)
 
         # Find the relative odometry between dr_poses
         between_odometry = self.dr_Pose2s[-2].between(self.dr_Pose2s[-1])
@@ -746,6 +794,14 @@ class online_slam_2d:
         # Add label
         self.current_x_ind += 1
         self.x[self.current_x_ind] = gtsam.symbol('x', self.current_x_ind)
+
+        # Add type or sensor identifier
+        if relative_detection is None and id_string is None:
+            self.sensor_string_at_key[self.current_x_ind] = 'odometry'
+        elif relative_detection is not None and id_string is None:
+            self.sensor_string_at_key[self.current_x_ind] = 'detection'
+        else:
+            self.sensor_string_at_key[self.current_x_ind] = id_string
 
         # ===== Add the between factor =====
         self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
@@ -805,7 +861,7 @@ class online_slam_2d:
         # Release the graph
         self.busy = False
 
-        print(f"Done with update - {self.current_x_ind}: {update_time} s")
+        print(f"Done with update - x{self.current_x_ind}: {update_time} s")
         if self.x is None:
             print("problem")
         return
@@ -850,7 +906,6 @@ class online_slam_2d:
                            y=uncorrected_dr.y(),
                            theta=np.pi - uncorrected_dr.theta())
 
-
 class analyze_slam:
     """
     Responsible for analysis of slam results
@@ -862,7 +917,7 @@ class analyze_slam:
 
     def __init__(self, slam_object: offline_slam_2d | online_slam_2d):
         # unpack slam object
-        # self.slam = slam_object
+        self.slam = slam_object
         self.graph = slam_object.graph
         self.current_estimate = slam_object.current_estimate
         self.x = slam_object.x  # pose keys
@@ -1190,3 +1245,51 @@ class analyze_slam:
 
         plt.show()
         return
+
+    def save_for_camera_processing(self, file_path=''):
+        """
+        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
+
+        :return:
+        """
+
+        camera_gt = []
+        camera_dr = []
+        camera_est = []
+
+        # form the required list of lists
+        # exclude poses that do not correspond to captured images
+        for key, value in self.slam.sensor_string_at_key.items():
+            if value == 'odometry' or value == 'detection':
+                continue
+            image_id = int(value)
+
+            image_gt_pose = self.slam.gt_pose_raw[key][0:7]
+            image_gt_pose.append(image_id)
+            camera_gt.append(image_gt_pose)
+
+            image_dr_pose = self.slam.dr_pose_raw[key][0:7]
+            image_dr_pose.append(image_id)
+            camera_dr.append(image_dr_pose)
+
+            # estimation
+            roll = self.slam.dr_pose_rpd[key][0]
+            pitch = self.slam.dr_pose_rpd[key][1]
+            depth = self.slam.dr_pose_rpd[key][2]
+
+            est_x = self.posterior_poses[key, 0]
+            est_y = self.posterior_poses[key, 1]
+            est_yaw = self.posterior_poses[key, 2]
+
+            quats = quaternion_from_euler(roll, pitch, est_yaw)
+
+            image_est_pose = [est_x, est_y, depth,
+                              quats[3], quats[0], quats[1], quats[2],
+                              image_id]
+            camera_est.append(image_est_pose)
+
+        # Save
+        write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
+        write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
+        write_array_to_csv(file_path + 'camera_est.csv', camera_est)

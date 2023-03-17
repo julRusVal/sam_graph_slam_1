@@ -137,16 +137,23 @@ class rope_section:
 
 
 class image_mapping:
-    def __init__(self, base_link_poses, camera_info, relative_camera_pose, buoy_info, ropes):
+    def __init__(self, gt_base_link_poses, base_link_poses, camera_info, relative_camera_pose, buoy_info, ropes):
+        # ===== true base pose =====
+        self.gt_base_pose = gt_base_link_poses
+        self.gt_base_pose3s = convert_poses_to_Pose3(self.gt_base_pose)
+
         # ===== Base pose =====
         self.base_pose = base_link_poses
         self.base_pose3s = convert_poses_to_Pose3(self.base_pose)
+
         self.pose_ids = self.base_pose[:, -1]
 
         # ===== Camera =====
         self.camera_info = camera_info
         # TODO Currently hard coded to use left
         self.relative_camera_pose = self.return_left_relative_pose(use_rpy=False)
+
+        self.gt_camera_pose3s = apply_transformPoseFrom(self.gt_base_pose3s, self.relative_camera_pose)
         self.camera_pose3s = apply_transformPoseFrom(self.base_pose3s, self.relative_camera_pose)
 
         # form k and P  matrices, plumb bob distortion model
@@ -156,10 +163,6 @@ class image_mapping:
         # P: 3x4
         self.P = np.array(self.camera_info[1], dtype=np.float64)
         self.P = np.reshape(self.P, (3, 4))
-
-        # Convert focal length to meters
-        # self.P[0, 0] = self.P[0, 0] / 1000
-        # self.P[1, 1] = self.P[1, 1] / 1000
 
         # Extract key parameters
         self.width = int(self.camera_info[2][0])
@@ -254,8 +257,8 @@ class image_mapping:
         fig_num = 0
         base_scale = .5
         other_scale = 1
-        plot_base = [34, 35, 36]
-        plot_other = [34, 35, 36]
+        plot_base = [10, 12, 14, 16, 18]
+        plot_other = [10, 12, 14, 16, 18]
 
         fig = plt.figure(fig_num)
         axes = fig.add_subplot(projection='3d')
@@ -274,14 +277,14 @@ class image_mapping:
         # plot base_link gt pose3s
         for i_base, pose3 in enumerate(self.base_pose3s):
             # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
-            if i_base in plot_base:
+            if i_base in plot_base or len(plot_base) == 0:
                 gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
 
         # plot camera gt pose3s
         if other_pose3s is not None:
             for i_other, pose3 in enumerate(other_pose3s):
                 # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
-                if i_other in plot_other:
+                if i_other in plot_other or len(plot_other) == 0:
                     gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
                     # plot fov
                     for i_ray, ray in enumerate(self.fov_rays):
@@ -310,7 +313,7 @@ class image_mapping:
                         if in_bounds:
                             axes.scatter(intrcpt_w_coords[0], intrcpt_w_coords[1], intrcpt_w_coords[2], c='r')
 
-        plt.axis('equal')
+        # plt.axis('equal')
         plt.title("Testing the transform")
         plt.show()
 
@@ -444,7 +447,7 @@ class image_mapping:
 
         return start, direction
 
-    def process_images(self, verbose=False):
+    def process_images(self, path_name, image_path, verbose=False):
 
         for pose_id in range(len(self.base_pose3s)):
             img_id = int(self.base_pose[pose_id][-1])
@@ -460,9 +463,13 @@ class image_mapping:
                     corners = self.find_plane_corner_pixels(plane_id=plane_id, pose_id=pose_id)
 
                     # TODO remove hardcoded left camera
+                    # TODO figure why this increment is need, should not be
+                    # mod_id = int(img_id + 1)
                     mod_id = int(img_id + 1)
-                    img = cv2.imread(
-                        f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{mod_id}.jpg")
+                    img = cv2.imread(image_path + f"{mod_id}.jpg")
+
+                    if not isinstance(img, np.ndarray):
+                        continue
 
                     if verbose:
                         img_verbose = img.copy()
@@ -483,7 +490,8 @@ class image_mapping:
                             center_y = int(center[1] // 1)
                             img_verbose = cv2.circle(img_verbose, (center_x, center_y), 5, (255, 0, 255), -1)
 
-                        cv2.imwrite(f"data/registration_images/Processing_{pose_id}_{mod_id}_{plane_id}.jpg", img_verbose)
+                        cv2.imwrite(path_name + f"images_registered/Processing_{pose_id}_{mod_id}_{plane_id}.jpg",
+                                    img_verbose)
 
                     # perform extraction
                     plane_spatial_width = plane.mag_x  # meters
@@ -510,15 +518,26 @@ class image_mapping:
                     self.planes[plane_id].images.append(img_warped)
                     self.planes[plane_id].masks.append(mask_warped)
 
-                    cv2.imwrite(f"data/warped_images/Warping_{pose_id}_{mod_id}_{plane_id}.jpg", img_warped)
-                    cv2.imwrite(f"data/warped_masks/Warping_{pose_id}_{mod_id}_{plane_id}.jpg", mask_warped)
+                    cv2.imwrite(path_name + f"images_warped/Warping_{pose_id}_{mod_id}_{plane_id}.jpg",
+                                img_warped)
+
+                    cv2.imwrite(path_name + f"images_masked/Warping_{pose_id}_{mod_id}_{plane_id}.jpg",
+                                mask_warped)
 
 
 # %% Load and process data
 # This is the gt of the base_link indexed for the left images
-base_gt = read_csv_to_array('data/left_gt.csv')
-left_info = read_csv_to_list('data/left_info.csv')
-buoy_info = read_csv_to_array('data/buoy_info.csv')
+# base_gt = read_csv_to_array('data/left_gt.csv')
+# left_info = read_csv_to_list('data/left_info.csv')
+# buoy_info = read_csv_to_array('data/buoy_info.csv')
+
+# linux
+path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/'
+img_path_name = path_name + "left/"
+gt_base = read_csv_to_array(path_name + 'camera_gt.csv')
+base = read_csv_to_array(path_name + 'camera_est.csv')
+left_info = read_csv_to_list(path_name + 'left_info.csv')
+buoy_info = read_csv_to_array(path_name + 'buoys.csv')
 
 # Define the connections between buoys
 # list of start and stop indices of buoys
@@ -526,22 +545,24 @@ buoy_info = read_csv_to_array('data/buoy_info.csv')
 ropes = [[0, 4], [4, 2],
          [1, 5], [5, 3]]
 
-img_map = image_mapping(base_link_poses=base_gt,
+img_map = image_mapping(gt_base_link_poses=gt_base,
+                        base_link_poses=base,
                         camera_info=left_info,
                         relative_camera_pose=None,
                         buoy_info=buoy_info,
                         ropes=ropes)
 
 # %% Plot
-img_map.plot_fancy(img_map.camera_pose3s)
+#img_map.plot_fancy(img_map.camera_pose3s)
+img_map.plot_fancy(img_map.gt_camera_pose3s)  # plot the ground ruth as other
 # plot_fancy(base_gt_pose3s, left_gt_pose3s, buoy_info, points)
-img_map.process_images(True)
+#img_map.process_images(path_name, img_path_name, True)
 
 # %% Testing parameters
 do_testing_1 = False
 do_testing_2 = False
 do_testing_3 = False
-do_testing_4 = False
+do_testing_4 = True
 # %% Testing 1
 if do_testing_1:
     print("Testing 1")
@@ -668,7 +689,7 @@ if do_testing_4:
     for pose in img_map.base_pose:
         img_id = int(pose[-1])
 
-        img = cv2.imread(f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{img_id}.jpg")
+        img = cv2.imread(img_path_name + f"{img_id}.jpg")
 
         center_x = img_map.cx
         center_y = img_map.cy
@@ -676,4 +697,4 @@ if do_testing_4:
         img[:, int(img_map.cx), :] = (0, 255, 255)
         img[int(img_map.cy), :, :] = (0, 255, 255)
 
-        cv2.imwrite(f"data/Centers_{img_id}.jpg", img)
+        cv2.imwrite(path_name + f"centers/centers_{img_id}.jpg", img)

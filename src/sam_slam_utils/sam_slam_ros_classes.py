@@ -18,6 +18,23 @@ import sys
 
 from sam_slam_utils.sam_slam_helper_funcs import show_simple_graph_2d
 from sam_slam_utils.sam_slam_helper_funcs import write_array_to_csv
+from sam_slam_utils.sam_slam_proc_classes import analyze_slam
+
+
+def imgmsg_to_cv2(img_msg):
+    """
+    Its assumed that the input image is rgb, opencv expects bgr
+    """
+    dtype = np.dtype("uint8")  # Hardcode to 8 bits...
+    dtype = dtype.newbyteorder('>' if img_msg.is_bigendian else '<')
+    image_opencv = np.ndarray(shape=(img_msg.height, img_msg.width, 3),
+                              dtype=dtype, buffer=img_msg.data)
+    # flip converts rgb to bgr
+    image_opencv = np.flip(image_opencv, axis=2)
+    # If the byt order is different between the message and the system.
+    if img_msg.is_bigendian == (sys.byteorder == 'little'):
+        image_opencv = image_opencv.byteswap().newbyteorder()
+    return image_opencv
 
 
 class sam_slam_listener:
@@ -43,10 +60,11 @@ class sam_slam_listener:
 
     """
 
-    def __init__(self, robot_name, frame_name,
+    def __init__(self, robot_name, frame_name='sam',
                  path_name=None,
                  online_graph=None):
-        # Topic names
+
+        # ===== Topic names =====
         self.robot_name = robot_name
         self.gt_topic = f'/{self.robot_name}/sim/odom'
         self.dr_topic = f'/{self.robot_name}/dr/odom'
@@ -57,9 +75,43 @@ class sam_slam_listener:
         self.pitch_topic = f'/{self.robot_name}/dr/pitch'
         self.depth_topic = f'/{self.robot_name}/dr/depth'
 
+        # Camera: down
+        self.cam_down_image_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/image_color'
+        self.cam_down_info_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/camera_info'
+        # Camera: left
+        self.cam_left_image_topic = f'/{self.robot_name}/perception/csi_cam_1/camera/image_color'
+        self.cam_left_info_topic = f'/{self.robot_name}/perception/csi_cam_1/camera/camera_info'
+        # Camera: right
+        self.cam_right_image_topic = f'/{self.robot_name}/perception/csi_cam_2/camera/image_color'
+        self.cam_right_info_topic = f'/{self.robot_name}/perception/csi_cam_2/camera/camera_info'
+
         # Frame names: For the most part everything is transformed to the map frame
         self.frame = frame_name
         self.gt_frame_id = 'gt/sam/base_link'
+
+        # ===== File paths for logging =====
+        self.file_path = path_name
+        if self.file_path is None or not isinstance(path_name, str):
+            self.file_path = ''
+        else:
+            self.file_path = path_name + '/'
+
+        self.gt_poses_graph_file_path = self.file_path + 'gt_poses_graph.csv'
+        self.dr_poses_graph_file_path = self.file_path + 'dr_poses_graph.csv'
+        self.detections_graph_file_path = self.file_path + 'detections_graph.csv'
+        self.buoys_file_path = self.file_path + 'buoys.csv'
+
+        # === Camera ===
+        # Down
+        self.down_info_file_path = self.file_path + 'down_info.csv'
+        self.down_gt_file_path = self.file_path + 'down_gt.csv'
+        # Left
+        self.left_info_file_path = self.file_path + 'left_info.csv'
+        self.left_times_file_path = self.file_path + 'left_times.csv'
+        self.left_gt_file_path = self.file_path + 'left_gt.csv'
+        # Right
+        self.right_info_file_path = self.file_path + 'right_info.csv'
+        self.right_gt_file_path = self.file_path + 'right_gt.csv'
 
         # tf stuff
         self.tf_buffer = tf2_ros.Buffer()
@@ -71,7 +123,7 @@ class sam_slam_listener:
         # Online SLAM w/ iSAM2
         self.online_graph = online_graph
 
-        # Logging
+        # ===== Logging =====
         # Raw logging, occurs at the rate the data is received
         self.gt_poses = []
         self.dr_poses = []
@@ -81,7 +133,22 @@ class sam_slam_listener:
         self.pitches = []
         self.depths = []
 
+        # === Camera stuff ===
+        # down
+        self.down_gt = []
+        self.down_info = []
+        self.down_times = []
+        # left
+        self.left_gt = []
+        self.left_info = []
+        self.left_times = []
+        # right
+        self.right_gt = []
+        self.right_info = []
+        self.right_times = []
+
         # Graph logging
+        # TODO check comment for accuracy
         """
         dr_callback will update at a set rate will also record ground truth pose
         det_callback will update all three
@@ -91,18 +158,6 @@ class sam_slam_listener:
         self.dr_poses_graph = []
         self.detections_graph = []
 
-        # File paths for logging
-        if isinstance(path_name, str):
-            self.dr_poses_graph_file_path = path_name + '/dr_poses_graph.csv'
-            self.gt_poses_graph_file_path = path_name + '/gt_poses_graph.csv'
-            self.detections_graph_file_path = path_name + '/detections_graph.csv'
-            self.buoys_file_path = path_name + '/buoys.csv'
-        else:
-            self.dr_poses_graph_file_path = 'dr_poses_graph.csv'
-            self.gt_poses_graph_file_path = 'gt_poses_graph.csv'
-            self.detections_graph_file_path = 'detections_graph.csv'
-            self.buoys_file_path = 'buoys.csv'
-
         # States and timings
         self.gt_updated = False
         self.dr_updated = False
@@ -111,6 +166,8 @@ class sam_slam_listener:
         self.depth_updated = False
         self.buoy_updated = False
         self.data_written = False
+        self.image_received = False
+
         self.gt_last_time = rospy.Time.now()
         self.gt_timeout = 5.0  # Time out used to save data at end of simulation
 
@@ -118,7 +175,11 @@ class sam_slam_listener:
         self.dr_update_time = 2.0  # Time for limiting the rate that odometry factors are added
 
         self.detect_last_time = rospy.Time.now()
-        self.detect_update_time = .25  # Time for limiting the rate that detection factors are added
+        self.detect_update_time = .5  # Time for limiting the rate that detection factors are added
+
+        self.camera_last_time = rospy.Time.now()
+        self.camera_update_time = 1
+        self.camera_last_seq = -1
 
         # ===== Subscribers =====
         # Ground truth
@@ -154,6 +215,40 @@ class sam_slam_listener:
                                                 MarkerArray,
                                                 self.buoy_callback)
 
+        # Cameras
+        # Down camera
+        self.cam_down_image_subscriber = rospy.Subscriber(self.cam_down_image_topic,
+                                                          Image,
+                                                          self.image_callback,
+                                                          'down')
+
+        self.cam_down_info_subscriber = rospy.Subscriber(self.cam_down_info_topic,
+                                                         CameraInfo,
+                                                         self.info_callback,
+                                                         'down')
+
+        # Left camera
+        self.cam_left_image_subscriber = rospy.Subscriber(self.cam_left_image_topic,
+                                                          Image,
+                                                          self.image_callback,
+                                                          'left')
+
+        self.cam_left_info_subscriber = rospy.Subscriber(self.cam_left_info_topic,
+                                                         CameraInfo,
+                                                         self.info_callback,
+                                                         'left')
+
+        # Right camera
+        self.cam_right_image_subscriber = rospy.Subscriber(self.cam_right_image_topic,
+                                                           Image,
+                                                           self.image_callback,
+                                                           'right')
+
+        self.cam_right_info_subscriber = rospy.Subscriber(self.cam_right_info_topic,
+                                                          CameraInfo,
+                                                          self.info_callback,
+                                                          'right')
+
         self.time_check = rospy.Timer(rospy.Duration(2),
                                       self.time_check_callback)
 
@@ -161,16 +256,18 @@ class sam_slam_listener:
     def gt_callback(self, msg):
         """
         Call back for the ground truth subscription, msg is of type nav_msgs/Odometry.
-        The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z].
+        The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z, time].
         Note the position of q_w, this is for compatibility with gtsam and matlab
         """
         transformed_pose = self.transform_pose(msg.pose, from_frame=msg.header.frame_id, to_frame=self.frame)
 
         gt_position = transformed_pose.pose.position
         gt_quaternion = transformed_pose.pose.orientation
+        gt_time = transformed_pose.header.stamp.to_sec()
 
         self.gt_poses.append([gt_position.x, gt_position.y, gt_position.z,
-                              gt_quaternion.w, gt_quaternion.x, gt_quaternion.y, gt_quaternion.z])
+                              gt_quaternion.w, gt_quaternion.x, gt_quaternion.y, gt_quaternion.z,
+                              gt_time])
 
         self.gt_updated = True
         self.gt_last_time = rospy.Time.now()
@@ -214,9 +311,8 @@ class sam_slam_listener:
 
         if first_time_cond or stale_data_cond or online_waiting_cond:
             # Add to the dr and gt lists
-            self.dr_poses_graph.append(self.dr_poses[-1])
-            # Transform method OLD
-            # gt_pose, _ = self.get_gt_trans_in_map()
+            dr_pose = self.dr_poses[-1]
+            self.dr_poses_graph.append(dr_pose)
             gt_pose = self.gt_poses[-1]
             self.gt_poses_graph.append(gt_pose)
 
@@ -225,19 +321,18 @@ class sam_slam_listener:
             self.dr_updated = True
 
             # ===== Online first update =====
-            if self.online_graph.busy:
-                print('Busy condition found')
-            if self.online_graph is not None \
-                    and self.online_graph.initial_pose_set is False \
-                    and not self.online_graph.busy:
-                # TODO
-                print("First update")
-                self.online_graph.add_first_pose(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
+            if self.online_graph is None:
+                return
+            if self.online_graph.initial_pose_set is False and not self.online_graph.busy:
+                print("First update - x0")
+                self.online_graph.add_first_pose(dr_pose, gt_pose)
 
-            elif self.online_graph is not None \
-                    and not self.online_graph.busy:
-                print(f"Odometry update - {self.online_graph.current_x_ind + 1}")
-                self.online_graph.online_update(self.dr_poses_graph[-1], self.gt_poses_graph[-1])
+            elif not self.online_graph.busy:
+                print(f"Odometry update - x{self.online_graph.current_x_ind + 1}")
+                self.online_graph.online_update(dr_pose, gt_pose)
+
+            else:
+                print('Busy condition found')
 
     def roll_callback(self, msg):
         """
@@ -303,15 +398,137 @@ class sam_slam_listener:
                 print(f'Detection callback: {index}')
 
                 # ===== Online detection update =====
-                if self.online_graph.busy:
-                    print('Busy condition found')
-                if self.online_graph is not None and not self.online_graph.busy:
-                    # TODO
-                    print(f"Detection update - {self.online_graph.current_x_ind + 1}")
+                if self.online_graph is None:
+                    return
+                if not self.online_graph.busy:
+                    print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
                     self.online_graph.online_update(dr_pose, gt_pose,
                                                     np.array((det_pose_base.pose.position.x,
                                                               det_pose_base.pose.position.y),
                                                              dtype=np.float64))
+                else:
+                    print('Busy condition found')
+
+    def info_callback(self, msg, camera_id):
+        if camera_id == 'down':
+            if len(self.down_info) == 0:
+                self.down_info.append(msg.K)
+                self.down_info.append(msg.P)
+                self.down_info.append([msg.width, msg.height])
+        elif camera_id == 'left':
+            if len(self.left_info) == 0:
+                self.left_info.append(msg.K)
+                self.left_info.append(msg.P)
+                self.left_info.append([msg.width, msg.height])
+        elif camera_id == 'right':
+            if len(self.right_info) == 0:
+                self.right_info.append(msg.K)
+                self.right_info.append(msg.P)
+                self.right_info.append([msg.width, msg.height])
+        else:
+            print('Unknown camera_id passed to info callback')
+
+    def image_callback(self, msg, camera_id):
+        """
+        Based
+        """
+        # Check that topics have received messages
+        if not self.gt_updated or not self.roll_updated or not self.pitch_updated or not self.depth_updated:
+            return
+
+        # Identifies frames
+        # We want to save down, left , and right images of the same frame
+        current_id = msg.header.seq
+
+        # check elapsed time
+        camera_time_now = rospy.Time.now()
+        camera_stale = (camera_time_now - self.camera_last_time).to_sec() > self.camera_update_time
+
+        if camera_stale or not self.image_received:
+            self.camera_last_seq = current_id
+            self.camera_last_time = rospy.Time.now()
+            new_frame = True  # Used to only add one node to graph for each camera frame: down, left, and right
+            self.image_received = True
+            print(f'New camera frame: {camera_id} - {current_id}')
+        elif current_id != self.camera_last_seq:
+            return
+        else:
+            new_frame = False  # Do not add a node to the graph
+            print(f'Current camera frame: {camera_id} - {current_id}')
+
+        now_stamp = rospy.Time.now()
+        msg_stamp = msg.header.stamp
+
+        dr_pose = self.dr_poses[-1]
+        self.dr_poses_graph.append(dr_pose)
+        gt_pose = self.gt_poses[-1]
+        self.gt_poses_graph.append(gt_pose)
+
+        if new_frame:
+            print(f"Adding img-{current_id} to graph")
+
+            if self.online_graph is not None \
+                    and self.online_graph.initial_pose_set is False \
+                    and not self.online_graph.busy:
+                print("First update w/ camera data")
+                self.online_graph.add_first_pose(dr_pose, gt_pose,
+                                                 initial_estimate=None,
+                                                 id_string=f'{current_id}')
+
+            elif self.online_graph is not None \
+                    and not self.online_graph.busy:
+                print(f"Odometry and camera update - {self.online_graph.current_x_ind + 1}")
+                self.online_graph.online_update(dr_pose, gt_pose,
+                                                relative_detection=None,
+                                                id_string=f'{current_id}')
+
+        # === Debugging ===
+        """
+        This is only need to verify that the data is being recorded properly
+        gt_pose is of the format [x, y, z, q_w, q_x, q_y, q_z, time]
+        """
+        pose_current = gt_pose[0:-1]
+        pose_time = gt_pose[-1]
+        pose_current.append(current_id)
+
+        # Record debugging data
+        if camera_id == 'down':
+            # Record the ground truth and times
+            self.down_gt.append(pose_current)
+            self.down_times.append([now_stamp.to_sec(),
+                                    msg_stamp.to_sec(),
+                                    pose_time])
+        elif camera_id == 'left':
+            # Record the ground truth and times
+            self.left_gt.append(pose_current)
+            self.left_times.append([now_stamp.to_sec(),
+                                    msg_stamp.to_sec(),
+                                    pose_time])
+        elif camera_id == 'right':
+            # Record the ground truth and times
+            self.right_gt.append(pose_current)
+            self.right_times.append([now_stamp.to_sec(),
+                                     msg_stamp.to_sec(),
+                                     pose_time])
+        else:
+            print('Unknown camera_id passed to image callback')
+            return
+
+        # Display call back info
+        print(f'image callback - {camera_id}: {current_id}')
+        print(pose_current)
+
+        # Convert to cv2 format
+        cv2_img = imgmsg_to_cv2(msg)
+
+        # Write to 'disk'
+        if self.file_path is None or not isinstance(self.file_path, str):
+            save_path = f'{camera_id}_{current_id}.jpg'
+        else:
+            save_path = self.file_path + f'/{camera_id}/{current_id}.jpg'
+        cv2.imwrite(save_path, cv2_img)
+
+        return
 
     def buoy_callback(self, msg):
         if not self.buoy_updated:
@@ -341,11 +558,15 @@ class sam_slam_listener:
             if self.online_graph is not None:
                 # TODO Save final results
                 print("Print online graph")
-                show_simple_graph_2d(graph=self.online_graph.graph,
-                                     x_keys=self.online_graph.x,
-                                     b_keys=self.online_graph.b,
-                                     values=self.online_graph.current_estimate,
-                                     label="Online Graph")
+
+                analysis = analyze_slam(self.online_graph)
+                analysis.save_for_camera_processing(self.file_path)
+
+                # show_simple_graph_2d(graph=self.online_graph.graph,
+                #                      x_keys=self.online_graph.x,
+                #                      b_keys=self.online_graph.b,
+                #                      values=self.online_graph.current_estimate,
+                #                      label="Online Graph")
 
         return
 
@@ -409,6 +630,18 @@ class sam_slam_listener:
         write_array_to_csv(self.gt_poses_graph_file_path, self.gt_poses_graph)
         write_array_to_csv(self.detections_graph_file_path, self.detections_graph)
         write_array_to_csv(self.buoys_file_path, self.buoys)
+
+        # === Camera ===
+        # Down
+        write_array_to_csv(self.down_info_file_path, self.down_info)
+        write_array_to_csv(self.down_gt_file_path, self.down_gt)
+        # Left
+        write_array_to_csv(self.left_info_file_path, self.left_info)
+        write_array_to_csv(self.left_times_file_path, self.left_times)
+        write_array_to_csv(self.left_gt_file_path, self.left_gt)
+        # Right
+        write_array_to_csv(self.right_info_file_path, self.right_info)
+        write_array_to_csv(self.right_gt_file_path, self.right_gt)
 
         return
 
@@ -641,7 +874,7 @@ class sam_image_saver:
         print(current)
 
         # Convert to cv2 format
-        cv2_img = self.imgmsg_to_cv2(msg)
+        cv2_img = imgmsg_to_cv2(msg)
 
         # Write to 'disk'
         if self.file_path is None or not isinstance(self.file_path, str):
@@ -777,19 +1010,3 @@ class sam_image_saver:
         write_array_to_csv(self.buoy_info_file_path, self.buoys)
 
         return
-
-    @staticmethod
-    def imgmsg_to_cv2(img_msg):
-        """
-        Its assumed that the input image is rgb, opencv expects bgr
-        """
-        dtype = np.dtype("uint8")  # Hardcode to 8 bits...
-        dtype = dtype.newbyteorder('>' if img_msg.is_bigendian else '<')
-        image_opencv = np.ndarray(shape=(img_msg.height, img_msg.width, 3),
-                                  dtype=dtype, buffer=img_msg.data)
-        # flip converts rgb to bgr
-        image_opencv = np.flip(image_opencv, axis=2)
-        # If the byt order is different between the message and the system.
-        if img_msg.is_bigendian == (sys.byteorder == 'little'):
-            image_opencv = image_opencv.byteswap().newbyteorder()
-        return image_opencv

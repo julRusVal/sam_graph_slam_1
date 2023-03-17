@@ -92,6 +92,32 @@ def create_Pose2(input_pose):
     # GTSAM Pose2: x, y, theta
     return gtsam.Pose2(input_pose[0], input_pose[1], rot3_yaw)
 
+def create_Pose3(input_pose):
+    """
+    Create a GTSAM Pose3 from the recorded poses in the form:
+    [x,y,z,q_w,q_x,q_,y,q_z]
+    """
+    rot3 = gtsam.Rot3.Quaternion(input_pose[3], input_pose[4], input_pose[5], input_pose[6])
+    return gtsam.Pose3(r=rot3, t=np.array((input_pose[0], input_pose[1], input_pose[2]), dtype=np.float64))
+
+def merge_into_Pose3(input_pose2, input_rpd):
+    """
+    Create a GTSAM Pose3 from the recorded poses in the form:
+    [x,y,z,q_w,q_x,q_,y,q_z]
+    """
+
+    # Calculate rotation component of Pose3
+    # The yaw is provided by the pose2 and is combined with roll and pitch
+    q_from_rpy = get_quaternion_from_euler(input_rpd[0],
+                                           input_rpd[1],
+                                           input_pose2[2])
+
+    rot3 = gtsam.Rot3.Quaternion(q_from_rpy[0], q_from_rpy[1], q_from_rpy[2], q_from_rpy[3])
+
+    # Calculate translation component of Pose3
+    trans = np.array((input_pose2[0], input_pose2[1], input_rpd[2]), dtype=np.float64)
+
+    return gtsam.Pose3(r=rot3, t=trans)
 
 def pose2_list_to_nparray(pose_list):
     out_array = np.zeros((len(pose_list), 3))
@@ -155,6 +181,27 @@ def show_simple_graph_2d(graph, x_keys, b_keys, values, label):
     nx.draw_networkx(G, pos, edge_color=e_colors, node_color=n_colors, **options)
     np.arange(plot_limits[0], plot_limits[1] + 1, 2.5)
     plt.show()
+
+
+def get_quaternion_from_euler(roll, pitch, yaw):
+    """
+    Convert an Euler angle to a quaternion.
+    Author: AutomaticAddison.com
+
+    Input
+      :param roll: The roll (rotation around x-axis) angle in radians.
+      :param pitch: The pitch (rotation around y-axis) angle in radians.
+      :param yaw: The yaw (rotation around z-axis) angle in radians.
+
+    Output
+      :return qw, qx, qy, qz: The orientation in quaternion [w, x,y,z] format
+    """
+    qx = np.sin(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) - np.cos(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
+    qy = np.cos(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2)
+    qz = np.cos(roll / 2) * np.cos(pitch / 2) * np.sin(yaw / 2) - np.sin(roll / 2) * np.sin(pitch / 2) * np.cos(yaw / 2)
+    qw = np.cos(roll / 2) * np.cos(pitch / 2) * np.cos(yaw / 2) + np.sin(roll / 2) * np.sin(pitch / 2) * np.sin(yaw / 2)
+
+    return [qw, qx, qy, qz]
 
 
 class odometry_data:

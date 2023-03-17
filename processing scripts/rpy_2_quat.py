@@ -9,6 +9,7 @@ import numpy as np  # Scientific computing library for Python
 def get_quaternion_from_euler(roll, pitch, yaw):
     """
     Convert an Euler angle to a quaternion.
+    Author: AutomaticAddison.com
 
     Input
       :param roll: The roll (rotation around x-axis) angle in radians.
