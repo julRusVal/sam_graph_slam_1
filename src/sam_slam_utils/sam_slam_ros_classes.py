@@ -11,6 +11,9 @@ from visualization_msgs.msg import MarkerArray
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image, CameraInfo
 
+import tf
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
+
 # cv_bridge and cv2 to convert and save images
 # from cv_bridge import CvBridge, CvBridgeError
 import cv2
@@ -190,7 +193,8 @@ class sam_slam_listener:
         # Dead reckoning
         self.dr_subscriber = rospy.Subscriber(self.dr_topic,
                                               Odometry,
-                                              self.dr_callback)
+                                              self.dr_callback,
+                                              True)  # bool to set if the dr is corrected
 
         # Additional odometry topics: roll, pitch, depth
         self.roll_subscriber = rospy.Subscriber(self.roll_topic,
@@ -272,7 +276,7 @@ class sam_slam_listener:
         self.gt_updated = True
         self.gt_last_time = rospy.Time.now()
 
-    def dr_callback(self, msg):
+    def dr_callback(self, msg, correct_dr):
         """
         Call back for the dead reckoning subscription, msg is of type nav_msgs/Odometry.
         WAS: The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z].
@@ -296,9 +300,31 @@ class sam_slam_listener:
         curr_depth = self.depths[-1]
 
         # Record dr poses in format compatible with GTSAM
-        self.dr_poses.append([dr_position.x, dr_position.y, dr_position.z,
-                              dr_quaternion.w, dr_quaternion.x, dr_quaternion.y, dr_quaternion.z,
-                              curr_roll, curr_pitch, curr_depth])
+        if correct_dr:
+            # Correction of position
+            corrected_x = -dr_position.x
+            # Correction of orientation
+            # Incorrect method
+            # uncorrected_q = Quaternion(dr_quaternion.x, dr_quaternion.y, dr_quaternion.z, dr_quaternion.w)
+            # uncorrected_rpy = euler_from_quaternion(dr_quaternion)
+            # uncorrected_rpy = euler_from_quaternion([dr_quaternion.x, dr_quaternion.y, dr_quaternion.z, dr_quaternion.w])
+            # corrected_y = np.pi - uncorrected_rpy[2]
+            # corrected_q = quaternion_from_euler(uncorrected_rpy[0], uncorrected_rpy[1], corrected_y)
+            #
+            # Correct? method
+            r_q = [0, -1, 0, 0]
+
+            dr_q = [dr_quaternion.x, dr_quaternion.y, dr_quaternion.z, dr_quaternion.w]
+            corrected_q = tf.transformations.quaternion_multiply(r_q, dr_q)
+
+            self.dr_poses.append([corrected_x, dr_position.y, dr_position.z,
+                                  corrected_q[3], corrected_q[0], corrected_q[1], corrected_q[2],
+                                  curr_roll, curr_pitch, curr_depth])
+
+        else:
+            self.dr_poses.append([dr_position.x, dr_position.y, dr_position.z,
+                                  dr_quaternion.w, dr_quaternion.x, dr_quaternion.y, dr_quaternion.z,
+                                  curr_roll, curr_pitch, curr_depth])
 
         # Conditions for updating dr: (1) first time or (2) stale data or (3) online graph is still uninitialized
         time_now = rospy.Time.now()
@@ -561,12 +587,13 @@ class sam_slam_listener:
 
                 analysis = analyze_slam(self.online_graph)
                 analysis.save_for_camera_processing(self.file_path)
+                analysis.save_2d_poses(self.file_path)
 
-                # show_simple_graph_2d(graph=self.online_graph.graph,
-                #                      x_keys=self.online_graph.x,
-                #                      b_keys=self.online_graph.b,
-                #                      values=self.online_graph.current_estimate,
-                #                      label="Online Graph")
+                show_simple_graph_2d(graph=self.online_graph.graph,
+                                     x_keys=self.online_graph.x,
+                                     b_keys=self.online_graph.b,
+                                     values=self.online_graph.current_estimate,
+                                     label="Online Graph")
 
         return
 

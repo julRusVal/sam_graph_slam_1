@@ -257,8 +257,8 @@ class image_mapping:
         fig_num = 0
         base_scale = .5
         other_scale = 1
-        plot_base = [10, 12, 14, 16, 18]
-        plot_other = [10, 12, 14, 16, 18]
+        plot_base = [10, 11, 12, 13, 14]
+        plot_other = [10, 11, 12, 13, 14]
 
         fig = plt.figure(fig_num)
         axes = fig.add_subplot(projection='3d')
@@ -449,9 +449,9 @@ class image_mapping:
 
     def process_images(self, path_name, image_path, verbose=False):
 
-        for pose_id in range(len(self.base_pose3s)):
-            img_id = int(self.base_pose[pose_id][-1])
-            camera_pose3 = self.camera_pose3s[pose_id]
+        for current_pose_id in range(len(self.camera_pose3s)):
+            current_img_id = int(self.base_pose[current_pose_id][-1])
+            camera_pose3 = self.camera_pose3s[current_pose_id]
 
             for plane_id, plane in enumerate(self.planes):
                 # Find which if plane to apply the image to
@@ -460,12 +460,12 @@ class image_mapping:
 
                 # properly oriented plane that is centrally located w.r.t. camera frame
                 if status and in_bounds:
-                    corners = self.find_plane_corner_pixels(plane_id=plane_id, pose_id=pose_id)
+                    corners = self.find_plane_corner_pixels(plane_id=plane_id, pose_id=current_pose_id)
 
                     # TODO remove hardcoded left camera
                     # TODO figure why this increment is need, should not be
                     # mod_id = int(img_id + 1)
-                    mod_id = int(img_id + 1)
+                    mod_id = int(current_img_id + 1)
                     img = cv2.imread(image_path + f"{mod_id}.jpg")
 
                     if not isinstance(img, np.ndarray):
@@ -483,14 +483,14 @@ class image_mapping:
                             img_verbose = cv2.circle(img_verbose, (corner_x, corner_y), 5, (0, 0, 255), -1)
 
                         # Draw center
-                        center = self.find_pixels_of_3d_point(pose_id=pose_id, map_point=w_coords)
+                        center = self.find_pixels_of_3d_point(pose_id=current_pose_id, map_point=w_coords)
 
                         if not math.isnan(center[0]) and not math.isnan(center[1]):
                             center_x = int(center[0] // 1)
                             center_y = int(center[1] // 1)
                             img_verbose = cv2.circle(img_verbose, (center_x, center_y), 5, (255, 0, 255), -1)
 
-                        cv2.imwrite(path_name + f"images_registered/Processing_{pose_id}_{mod_id}_{plane_id}.jpg",
+                        cv2.imwrite(path_name + f"images_registered/Processing_{current_pose_id}_{mod_id}_{plane_id}.jpg",
                                     img_verbose)
 
                     # perform extraction
@@ -518,10 +518,10 @@ class image_mapping:
                     self.planes[plane_id].images.append(img_warped)
                     self.planes[plane_id].masks.append(mask_warped)
 
-                    cv2.imwrite(path_name + f"images_warped/Warping_{pose_id}_{mod_id}_{plane_id}.jpg",
+                    cv2.imwrite(path_name + f"images_warped/Warping_{current_pose_id}_{mod_id}_{plane_id}.jpg",
                                 img_warped)
 
-                    cv2.imwrite(path_name + f"images_masked/Warping_{pose_id}_{mod_id}_{plane_id}.jpg",
+                    cv2.imwrite(path_name + f"images_masked/Warping_{current_pose_id}_{mod_id}_{plane_id}.jpg",
                                 mask_warped)
 
 
@@ -553,16 +553,16 @@ img_map = image_mapping(gt_base_link_poses=gt_base,
                         ropes=ropes)
 
 # %% Plot
-#img_map.plot_fancy(img_map.camera_pose3s)
-img_map.plot_fancy(img_map.gt_camera_pose3s)  # plot the ground ruth as other
+img_map.plot_fancy(img_map.camera_pose3s)
+# img_map.plot_fancy(img_map.gt_camera_pose3s)  # plot the ground ruth as other
 # plot_fancy(base_gt_pose3s, left_gt_pose3s, buoy_info, points)
-#img_map.process_images(path_name, img_path_name, True)
+img_map.process_images(path_name, img_path_name, True)
 
 # %% Testing parameters
 do_testing_1 = False
 do_testing_2 = False
 do_testing_3 = False
-do_testing_4 = True
+do_testing_4 = False
 # %% Testing 1
 if do_testing_1:
     print("Testing 1")

@@ -28,6 +28,22 @@ from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array, write_array_
 
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
+
+# %% Functions
+
+def correct_dr(uncorrected_dr: gtsam.Pose2):
+    """
+    This is part of the gt/dr mismatch. Its appears that there is something off with converting from
+    sam/base_link from to the map frame, the results are mirrored about the y-axis.
+    This function will mirror the input pose about the y-axis.
+    """
+    # return gtsam.Pose2(x=-uncorrected_dr.x(),
+    #                    y=uncorrected_dr.y(),
+    #                    theta=np.pi - uncorrected_dr.theta())
+
+    return uncorrected_dr
+
+
 # %% Classes
 
 class offline_slam_2d:
@@ -438,7 +454,7 @@ class offline_slam_2d:
 
         # ===== DR =====
         for dr_pose in self.dr_poses_graph:
-            self.dr_Pose2s.append(self.correct_dr(create_Pose2(dr_pose)))
+            self.dr_Pose2s.append(correct_dr(create_Pose2(dr_pose)))
 
         # ===== GT =====
         for gt_pose in self.gt_poses_graph:
@@ -448,19 +464,6 @@ class offline_slam_2d:
         for i in range(1, len(self.dr_Pose2s)):
             between_odometry = self.dr_Pose2s[i - 1].between(self.dr_Pose2s[i])
             self.between_Pose2s.append(between_odometry)
-
-    @staticmethod
-    def correct_dr(uncorrected_dr: gtsam.Pose2):
-        """
-        This is part of the gt/dr mismatch. Its appears that there is something off with converting from
-        sam/base_link from to the map frame, the results are mirrored about the y-axis.
-        This function will mirror the input pose about the y-axis.
-        """
-        return gtsam.Pose2(x=-uncorrected_dr.x(),
-                           y=uncorrected_dr.y(),
-                           theta=np.pi - uncorrected_dr.theta())
-
-        # return uncorrected_dr
 
     def Bearing_range_from_detection_2d(self):
         self.detect_locs = np.zeros((self.n_detections, 5))
@@ -726,7 +729,7 @@ class online_slam_2d:
         gt_pose format: [x, y, z, q_w, q_x, q_y, q_z, time]
         """
         # dr
-        self.dr_Pose2s = [self.correct_dr(create_Pose2(dr_pose[:7]))]
+        self.dr_Pose2s = [correct_dr(create_Pose2(dr_pose[:7]))]
         # TODO Pose3 also need to be corrected in the same way Pose2 is corrected
         self.dr_Pose3s = [create_Pose3(dr_pose)]
         self.dr_pose_raw = [dr_pose]
@@ -775,7 +778,7 @@ class online_slam_2d:
 
         # === Record relevant poses ===
         # dr
-        self.dr_Pose2s.append(self.correct_dr(create_Pose2(dr_pose[:7])))
+        self.dr_Pose2s.append(correct_dr(create_Pose2(dr_pose[:7])))
         # TODO Pose3 also need to be corrected in the same way Pose2 is corrected
         self.dr_Pose3s.append(create_Pose3(dr_pose))
         self.dr_pose_raw.append(dr_pose)
@@ -884,27 +887,6 @@ class online_slam_2d:
 
         return best_id, best_range_2 ** (1 / 2)
 
-    @staticmethod
-    def correct_gt(uncorrected_gt: gtsam.Pose2):
-        """
-        This is part of the gt/dr mismatch
-        """
-        # TODO: fix gt/dr coordinates system mismatch
-        # return gtsam.Pose2(x=-uncorrected_gt.x(),
-        #                    y=uncorrected_gt.y(),
-        #                    theta=np.pi - uncorrected_gt.theta())
-        return uncorrected_gt
-
-    @staticmethod
-    def correct_dr(uncorrected_dr: gtsam.Pose2):
-        """
-        This is part of the gt/dr mismatch. Its appears that there is something off with converting from
-        sam/base_link from to the map frame, the results are mirrored about the y-axis.
-        This function will mirror the input pose about the y-axis.
-        """
-        return gtsam.Pose2(x=-uncorrected_dr.x(),
-                           y=uncorrected_dr.y(),
-                           theta=np.pi - uncorrected_dr.theta())
 
 class analyze_slam:
     """
@@ -1274,10 +1256,26 @@ class analyze_slam:
             camera_dr.append(image_dr_pose)
 
             # estimation
-            roll = self.slam.dr_pose_rpd[key][0]
-            pitch = self.slam.dr_pose_rpd[key][1]
+            """
+            Initially I saved the roll and pitch reported by dr odom and combined those with the estimated
+            yaw to for the new estimated 3d pose but that was giving strange results...
+            
+            New plan is to extract the roll and pith in the NOW corrected dr pose info. Then combine with the estimated
+            yaw to form the new 3d pose quaternion
+            """
+
+            # Roll, pitch, and depth are provided from the odometry
+            roll_old = self.slam.dr_pose_rpd[key][0]
+            pitch_old = self.slam.dr_pose_rpd[key][1]
+            # This quaternion is stored [w, x, y, z]
+            dr_q = self.slam.dr_pose_raw[key][3:7]
+            # This function expects a quaternions of the form [x, y, z, w]
+            dr_rpy = euler_from_quaternion([dr_q[3], dr_q[0], dr_q[1], dr_q[2]])
+            roll = dr_rpy[0]
+            pitch = dr_rpy[1]
             depth = self.slam.dr_pose_rpd[key][2]
 
+            # X, Y, and yaw are estimated using the factror graph
             est_x = self.posterior_poses[key, 0]
             est_y = self.posterior_poses[key, 1]
             est_yaw = self.posterior_poses[key, 2]
@@ -1293,3 +1291,14 @@ class analyze_slam:
         write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
         write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
         write_array_to_csv(file_path + 'camera_est.csv', camera_est)
+
+    def save_2d_poses(self, file_path=''):
+        """
+        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
+
+        :return:
+        """
+        write_array_to_csv(file_path + 'analysis_gt.csv', self.gt_poses)
+        write_array_to_csv(file_path + 'analysis_dr.csv', self.dr_poses)
+        write_array_to_csv(file_path + 'analysis_est.csv', self.posterior_poses)
