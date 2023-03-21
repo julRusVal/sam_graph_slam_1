@@ -1270,7 +1270,7 @@ class analyze_slam:
             # This quaternion is stored [w, x, y, z]
             dr_q = self.slam.dr_pose_raw[key][3:7]
             # This function expects a quaternions of the form [x, y, z, w]
-            dr_rpy = euler_from_quaternion([dr_q[3], dr_q[0], dr_q[1], dr_q[2]])
+            dr_rpy = euler_from_quaternion([dr_q[1], dr_q[2], dr_q[3], dr_q[0]])
             roll = dr_rpy[0]
             pitch = dr_rpy[1]
             depth = self.slam.dr_pose_rpd[key][2]
@@ -1282,7 +1282,8 @@ class analyze_slam:
 
             quats = quaternion_from_euler(roll, pitch, est_yaw)
 
-            image_est_pose = [est_x, est_y, depth,
+            # This quaternion is stored [w, x, y, z]
+            image_est_pose = [est_x, est_y, -depth,
                               quats[3], quats[0], quats[1], quats[2],
                               image_id]
             camera_est.append(image_est_pose)

@@ -257,8 +257,8 @@ class image_mapping:
         fig_num = 0
         base_scale = .5
         other_scale = 1
-        plot_base = [10, 11, 12, 13, 14]
-        plot_other = [10, 11, 12, 13, 14]
+        plot_base = [14]  # [10, 11, 12, 13, 14]
+        plot_other = [14]  # [10, 11, 12, 13, 14]
 
         fig = plt.figure(fig_num)
         axes = fig.add_subplot(projection='3d')
@@ -454,7 +454,7 @@ class image_mapping:
             camera_pose3 = self.camera_pose3s[current_pose_id]
 
             for plane_id, plane in enumerate(self.planes):
-                # Find which if plane to apply the image to
+                # Find which if any plane to apply the image to
                 c_center, c_direction = self.camera_center_point_direction(camera_pose3)
                 status, w_coords, p_coords, in_bounds = plane.find_intersection(c_center, c_direction)
 
@@ -464,8 +464,13 @@ class image_mapping:
 
                     # TODO remove hardcoded left camera
                     # TODO figure why this increment is need, should not be
-                    # mod_id = int(img_id + 1)
-                    mod_id = int(current_img_id + 1)
+                    if current_pose_id + 1 < len(self.camera_pose3s):
+                        next_img_id = int(self.base_pose[current_pose_id + 1][-1])
+                    else:
+                        continue
+
+                    # mod_id = int(current_img_id + 1)
+                    mod_id = next_img_id
                     img = cv2.imread(image_path + f"{mod_id}.jpg")
 
                     if not isinstance(img, np.ndarray):
