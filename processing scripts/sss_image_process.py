@@ -13,7 +13,8 @@ from matplotlib import pyplot as plt
 do_median_blur = True
 
 # Load image
-img = cv.imread('data/sss_data_2.png', cv.IMREAD_GRAYSCALE)
+file_name = 'sss_data_2'
+img = cv.imread(f'data/{file_name}.png', cv.IMREAD_GRAYSCALE)
 height_tot, width_tot = img.shape
 width_side = width_tot//2
 
@@ -34,4 +35,7 @@ plt.title('Port')
 plt.subplot(1, 2, 2)
 plt.imshow(grad_starboard, cmap='gray')
 plt.title('Starboard')
+
+complete_img = np.hstack((np.flip(grad_port), grad_starboard))
+cv.imwrite(f'data/{file_name}_grad.png', complete_img)
 
