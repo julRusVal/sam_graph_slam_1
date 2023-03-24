@@ -137,6 +137,10 @@ class rope_section:
         # Note:due to downward orientation of y the norm points into the plane
         self.normal = np.cross(self.v_x, self.v_y)
 
+        # normalize normal
+        norm_mag = np.sqrt(np.sum(np.multiply(self.normal, self.normal)))
+        self.normal = self.normal/norm_mag
+
         # Point on plane
         self.Q = self.start_coord
 
@@ -796,6 +800,51 @@ class image_mapping:
             # Save
             cv2.imwrite(path_name + f"rows/row_{row_id}.jpg",
                         row_img)
+
+    def plot_3d_map(self):
+        # Parameters
+        plane_offset = 0.1
+        stride = 10
+
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+
+        # Add axes labels
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+
+        for plane in self.planes:
+            # Will use the normal to apply small offset
+            normal = plane.normal
+            # Normalize, just in case
+            normal_mag = np.sqrt(np.sum(np.multiply(normal, normal)))
+            normal = normal / normal_mag
+
+            # Offset slightly for plotting
+            start_x, start_y, start_depth = plane.start_coord - normal * plane_offset
+            end_x, end_y, _ = plane.end_coord - normal * plane_offset
+            _, _, end_depth = plane.start_bottom_coord - normal * plane_offset
+
+            # Define the resolution of the meshgrid based on image
+            res_x = plane.final_image.shape[1]
+            res_h = plane.final_image.shape[0]
+
+            # Create the meshgrid
+            x_linspace = np.linspace(start_x, end_x, res_x)
+            y_linspace = np.linspace(start_y, end_y, res_x)
+            h_linspace = np.linspace(start_depth, end_depth, res_h)
+
+            X, Z = np.meshgrid(x_linspace, h_linspace)
+            Y, _ = np.meshgrid(y_linspace, h_linspace)
+
+            ax.plot_surface(X, Y, Z, rstride=stride, cstride=stride,
+                            facecolors=plane.final_image)
+
+        # Plot buoys
+        for buoy in self.buoys:
+            ax.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5)
+
 
 
 # %% Load and process data
