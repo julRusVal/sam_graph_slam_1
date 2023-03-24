@@ -12,6 +12,9 @@ import cv2
 from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array, read_csv_to_list
 import gtsam.utils.plot as gtsam_plot
 
+# 3D Plotting
+from mayavi import mlab
+
 
 # %% Functions
 def create_Pose3(input_pose):
@@ -112,7 +115,7 @@ class camera_model:
 
 
 class rope_section:
-    def __init__(self, start_buoy, end_buoy, start_coord, end_coord, depth):
+    def __init__(self, start_buoy, end_buoy, start_coord, end_coord, depth, spatial_2_pixel):
         self.start_buoy = start_buoy
         self.end_buoy = end_buoy
 
@@ -143,6 +146,11 @@ class rope_section:
 
         # Point on plane
         self.Q = self.start_coord
+
+        # Image info
+        self.spatial_2_pixel = spatial_2_pixel  # 1 meter = N pixels
+        self.pixel_width = int(self.mag_x * self.spatial_2_pixel // 1)
+        self.pixel_height = int((self.mag_y * self.spatial_2_pixel) // 1)
 
         # ===== Storage for images and masks
         self.images = []
@@ -235,10 +243,11 @@ class image_mapping:
         self.rows = rows
         self.depth = 7.5  # Used to define the vertical extent of the planes
 
+        self.spatial_2_pixel = 100  # 1 meter = 100 pixels
         self.planes = []
         self.build_planes_from_buoys_ropes()
 
-        self.spatial_2_pixel = 100  # 1 meter = 100 pixels
+
 
     @staticmethod
     def return_left_relative_pose():
@@ -324,7 +333,8 @@ class image_mapping:
                                                 end_buoy=end_buoy,
                                                 start_coord=start_coord,
                                                 end_coord=end_coord,
-                                                depth=self.depth))
+                                                depth=self.depth,
+                                                spatial_2_pixel=self.spatial_2_pixel))
 
     def plot_fancy(self, other_name=None):
         """
@@ -694,27 +704,21 @@ class image_mapping:
                                             img_verbose)
 
                             # perform extraction
-                            plane_spatial_width = plane.mag_x  # meters
-                            plane_spatial_height = plane.mag_y  # meters
-
-                            plane_pixel_width = int(plane_spatial_width * self.spatial_2_pixel // 1)
-                            plane_pixel_height = int((plane_spatial_height * self.spatial_2_pixel) // 1)
-
                             destination_corners = np.array([[0, 0],
-                                                            [plane_pixel_width - 1, 0],
-                                                            [0, plane_pixel_height - 1],
-                                                            [plane_pixel_width - 1, plane_pixel_height - 1]],
+                                                            [plane.pixel_width - 1, 0],
+                                                            [0, plane.pixel_height - 1],
+                                                            [plane.pixel_width - 1, plane.pixel_height - 1]],
                                                            dtype=np.float64)
 
                             homography = cv2.getPerspectiveTransform(corners.astype(np.float32),
                                                                      destination_corners.astype(np.float32))
                             # Apply homography to image
                             img_warped = cv2.warpPerspective(img, homography,
-                                                             (plane_pixel_width, plane_pixel_height))
+                                                             (plane.pixel_width, plane.pixel_height))
 
                             # apply homography to form a mask
                             mask_warped = cv2.warpPerspective(np.ones_like(img) * 255, homography,
-                                                              (plane_pixel_width, plane_pixel_height))
+                                                              (plane.pixel_width, plane.pixel_height))
 
                             # Add warped image and mask to the plane
                             self.planes[plane_id].images.append(img_warped)
@@ -769,32 +773,27 @@ class image_mapping:
             plane_widths = []
             plane_height = 0
             # Find the size of the total row
-            for plane in row:
-                plane_spatial_width = self.planes[plane].mag_x  # meters
-                plane_spatial_height = self.planes[plane].mag_y  # meters
+            for plane_id in row:
 
-                plane_pixel_width = int(plane_spatial_width * self.spatial_2_pixel // 1)
-                plane_pixel_height = int((plane_spatial_height * self.spatial_2_pixel) // 1)
-
-                plane_width += plane_pixel_width
-                plane_widths.append(plane_pixel_width)
-                plane_height = plane_pixel_height
+                plane_width += self.planes[plane_id].pixel_width
+                plane_widths.append(self.planes[plane_id].pixel_width)
+                plane_height = self.planes[plane_id].pixel_height
 
             # Allocate
             row_img = np.zeros((plane_height, plane_width, 3))
 
             current_width_index = 0
-            for i, plane in enumerate(row):
-                if self.planes[plane].final_image is None:
+            for i, plane_id in enumerate(row):
+                if self.planes[plane_id].final_image is None:
                     current_width_index += plane_widths[i]
                 else:
-                    img_height, img_width, _ = self.planes[plane].final_image.shape
+                    img_height, img_width, _ = self.planes[plane_id].final_image.shape
                     # Check if the img matches the expected size
                     if img_height != plane_height or img_width != plane_widths[i]:
                         print(" Mixmatch between expected and actual plane image size")
                         continue
                     next_width_index = current_width_index + plane_widths[i]
-                    row_img[:, current_width_index:next_width_index, :] = self.planes[plane].final_image[:, :, :]
+                    row_img[:, current_width_index:next_width_index, :] = self.planes[plane_id].final_image[:, :, :]
                     current_width_index = next_width_index
 
             # Save
@@ -803,8 +802,8 @@ class image_mapping:
 
     def plot_3d_map(self):
         # Parameters
-        plane_offset = 0.1
-        stride = 10
+        plane_offset = 0.01
+        stride = 5
 
         fig = plt.figure()
         ax = fig.add_subplot(projection='3d')
@@ -815,6 +814,11 @@ class image_mapping:
         ax.set_zlabel('Z')
 
         for plane in self.planes:
+            if plane.final_image is None:
+                img = np.zeros((plane.pixel_height, plane.pixel_width, 3))
+            else:
+                # internally images are BGR (openCV) matplotlib expects RGB within range of 0-1.0
+                img = np.flip(plane.final_image / 255, axis=2)
             # Will use the normal to apply small offset
             normal = plane.normal
             # Normalize, just in case
@@ -827,8 +831,8 @@ class image_mapping:
             _, _, end_depth = plane.start_bottom_coord - normal * plane_offset
 
             # Define the resolution of the meshgrid based on image
-            res_x = plane.final_image.shape[1]
-            res_h = plane.final_image.shape[0]
+            res_x = plane.pixel_width
+            res_h = plane.pixel_height
 
             # Create the meshgrid
             x_linspace = np.linspace(start_x, end_x, res_x)
@@ -839,14 +843,68 @@ class image_mapping:
             Y, _ = np.meshgrid(y_linspace, h_linspace)
 
             ax.plot_surface(X, Y, Z, rstride=stride, cstride=stride,
-                            facecolors=plane.final_image)
+                            facecolors=img)
 
         # Plot buoys
         for buoy in self.buoys:
             ax.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5)
 
+        plt.title("Image Map")
+        plt.show()
 
+    def plot_3d_map_mayavi(self):
+        # Parameters
+        plane_offset = 0.01
+        stride = 5
 
+        # fig = plt.figure()
+        # ax = fig.add_subplot(projection='3d')
+        #
+        # # Add axes labels
+        # ax.set_xlabel('X')
+        # ax.set_ylabel('Y')
+        # ax.set_zlabel('Z')
+
+        for plane in self.planes:
+            if plane.final_image is None:
+                img = np.zeros((plane.pixel_height, plane.pixel_width, 3))
+            else:
+                # internally images are BGR (openCV) matplotlib expects RGB within range of 0-1.0
+                img = np.flip(plane.final_image / 255, axis=2)
+            # Will use the normal to apply small offset
+            normal = plane.normal
+            # Normalize, just in case
+            normal_mag = np.sqrt(np.sum(np.multiply(normal, normal)))
+            normal = normal / normal_mag
+
+            # Offset slightly for plotting
+            start_x, start_y, start_depth = plane.start_coord - normal * plane_offset
+            end_x, end_y, _ = plane.end_coord - normal * plane_offset
+            _, _, end_depth = plane.start_bottom_coord - normal * plane_offset
+
+            # Define the resolution of the meshgrid based on image
+            res_x = plane.pixel_width
+            res_h = plane.pixel_height
+
+            # Create the meshgrid
+            x_linspace = np.linspace(start_x, end_x, res_x)
+            y_linspace = np.linspace(start_y, end_y, res_x)
+            h_linspace = np.linspace(start_depth, end_depth, res_h)
+
+            X, Z = np.meshgrid(x_linspace, h_linspace)
+            Y, _ = np.meshgrid(y_linspace, h_linspace)
+
+            # mlab.mesh(X, Y, Z, color=img)
+
+        # Plot buoys
+        for buoy in self.buoys:
+            mlab.points3d(buoy[0], buoy[1], buoy[2], color=(0,0,1))
+
+        mlab.xlabel("X")
+        mlab.ylabel("Y")
+        mlab.zlabel("Z")
+
+        mlab.title("Visual Map")
 # %% Load and process data
 # This is the gt of the base_link indexed for the left images
 # base_gt = read_csv_to_array('data/left_gt.csv')
@@ -881,12 +939,13 @@ img_map = image_mapping(gt_base_link_poses=gt_base,
                         rows=rows)
 
 # %% Plot
-img_map.plot_fancy(other_name="right")
+# img_map.plot_fancy(other_name="right")
 # img_map.plot_fancy(img_map.gt_camera_pose3s)  # plot the ground ruth as other
 # plot_fancy(base_gt_pose3s, left_gt_pose3s, buoy_info, points)
 img_map.process_images(path_name, ignore_first=8, verbose=True)  #
 img_map.simple_stitch_planes_images(max_dist=12)
 img_map.combine_row_images()
+img_map.plot_3d_map_mayavi()
 
 # %% Testing parameters
 do_testing_1 = False
