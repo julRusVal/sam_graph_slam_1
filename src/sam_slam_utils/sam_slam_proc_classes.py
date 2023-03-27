@@ -1230,12 +1230,13 @@ class analyze_slam:
 
     def save_for_camera_processing(self, file_path=''):
         """
-        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        Saves three things: camera_gt.csv, camera_dr.csv, camera_est.csv
         format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
 
         :return:
         """
 
+        # ===== Save base link (wrt map) poses =====
         camera_gt = []
         camera_dr = []
         camera_est = []
@@ -1288,10 +1289,21 @@ class analyze_slam:
                               image_id]
             camera_est.append(image_est_pose)
 
-        # Save
+        # write to files
         write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
         write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
         write_array_to_csv(file_path + 'camera_est.csv', camera_est)
+
+        # ===== Save buoy estimated positions =====
+        # only the x an y coords are estimated, buoys are assumed to have z = 0
+        buoys_est = np.zeros((len(self.b), 3))
+
+        for i in range(len(self.b)):
+            buoys_est[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
+            buoys_est[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+
+        # Write to file
+        write_array_to_csv(file_path + 'camera_buoys_est.csv', buoys_est)
 
     def save_2d_poses(self, file_path=''):
         """
