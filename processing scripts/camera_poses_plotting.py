@@ -339,8 +339,8 @@ class image_mapping:
         self.planes = []
         self.build_planes_from_buoys_ropes()
 
-        self.ground_plane = ground_plane(start_coord=[-10, 0],
-                                         x_width=20,
+        self.ground_plane = ground_plane(start_coord=[-15, 0],
+                                         x_width=30,
                                          y_width=20,
                                          depth=15,
                                          spatial_2_pixel=self.spatial_2_pixel)
@@ -526,10 +526,10 @@ class image_mapping:
 
     def find_fov_corner_coords(self, camera_name, plane_id, pose_id):
         """
-        Find the intersections of the fov with the define plane
+        Find the intersections of the fov with the defined plane, plane_id = -1 indicates the ground plane
 
         :param camera_name: "left" or " right" or "down"
-        :param plane_id:
+        :param plane_id: index of plane in self.planes, -1 will use self.ground_plane
         :param pose_id:
         :return:
         """
@@ -551,7 +551,7 @@ class image_mapping:
 
         # Compute an intersection for each ray
         for i_ray in range(4):
-            ray = self.fov_rays[i_ray]
+            ray = self.fov_rays[camera_name][i_ray]
             ray_end_point_point3 = pose3.transformFrom(ray)
 
             end = np.array([ray_end_point_point3[0],
@@ -564,8 +564,12 @@ class image_mapping:
 
             direction = end - start
 
-            corner_status, corner_w_coords, corner_p_coords, _ = self.planes[plane_id].find_intersection(start,
+            if plane_id == -1:
+                corner_status, corner_w_coords, corner_p_coords, _ = self.ground_plane.find_intersection(start,
                                                                                                          direction)
+            else:
+                corner_status, corner_w_coords, corner_p_coords, _ = self.planes[plane_id].find_intersection(start,
+                                                                                                             direction)
 
             corner_cords[i_ray, :] = corner_p_coords
 
@@ -978,8 +982,17 @@ class image_mapping:
 
             # properly oriented plane that is centrally located w.r.t. camera frame
             if status and in_bounds:
+
+                # This will find the corners of the specified plane in the field of view
                 corners = self.find_plane_corner_pixels(camera_name=camera_name, plane_id=plane_id,
                                                         pose_id=current_pose_id)
+
+                # This will find the coor
+                fov_corners = self.find_fov_corner_coords(camera_name=camera_name,
+                                                          plane_id=plane_id,
+                                                          pose_id=current_pose_id)
+
+                fov_corners = fov_corners * self.ground_plane.spatial_2_pixel
 
                 # Save
                 if verbose:
@@ -1004,20 +1017,22 @@ class image_mapping:
                         img_verbose = cv2.circle(img_verbose, (center_x, center_y), 5, (255, 0, 255),
                                                  -1)
 
-
                     cv2.imwrite(path_name + "images_ground/allignment_"
                                 + f"{camera_name}_{current_pose_id}_{used_img_id}_{plane_id}.jpg",
                                 img_verbose)
 
                 # perform extraction
-                destination_corners = np.array([[0, 0],
-                                                [plane.pixel_x_width - 1, 0],
-                                                [0, plane.pixel_x_width - 1],
-                                                [plane.pixel_x_width - 1, plane.pixel_x_width - 1]],
-                                               dtype=np.float64)
+                # Old method for horizontal and small planes
+                # destination_corners = np.array([[0, 0],
+                #                                 [plane.pixel_x_width - 1, 0],
+                #                                 [0, plane.pixel_x_width - 1],
+                #                                 [plane.pixel_x_width - 1, plane.pixel_x_width - 1]],
+                #                                dtype=np.float64)
 
-                homography = cv2.getPerspectiveTransform(corners.astype(np.float32),
-                                                         destination_corners.astype(np.float32))
+                img_corners = self.cameras["down"].orig_img_corners
+
+                homography = cv2.getPerspectiveTransform(img_corners.astype(np.float32),
+                                                         fov_corners.astype(np.float32))
                 # Apply homography to image
                 img_warped = cv2.warpPerspective(img, homography,
                                                  (plane.pixel_x_width, plane.pixel_y_width))
@@ -1044,7 +1059,6 @@ class image_mapping:
                 cv2.imwrite(path_name + "images_ground/mask_warp_"
                             + f"{camera_name}_{current_pose_id}_{used_img_id}_{plane_id}.jpg",
                             mask_warped)
-
 
     def simple_stitch_planes_images(self, max_dist=np.inf, verbose=False):
 
@@ -1241,8 +1255,10 @@ class image_mapping:
 # left_info = read_csv_to_list('data/left_info.csv')
 # buoy_info = read_csv_to_array('data/buoy_info.csv')
 
+# Mac
+path_name = "/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/online_testing/"
 # linux
-path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/'
+# path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/'
 
 gt_base = read_csv_to_array(path_name + 'camera_gt.csv')
 base = read_csv_to_array(path_name + 'camera_gt.csv')  # change to camera_gt.csv, camera_dr.csv, or camera_est.csv
