@@ -7,6 +7,7 @@ import gtsam
 import numpy as np
 import matplotlib.pyplot as plt
 import math
+import statistics
 import cv2
 
 from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array, read_csv_to_list
@@ -70,6 +71,7 @@ def projectPixelTo3dRay(u, v, cx, cy, fx, fy):
     return x, y, z
 
 
+# %% Classes
 class camera_model:
     """
     This mirrors the pinhole camera model of ROS perception.
@@ -152,12 +154,14 @@ class rope_section:
         self.pixel_width = int(self.mag_x * self.spatial_2_pixel // 1)
         self.pixel_height = int((self.mag_y * self.spatial_2_pixel) // 1)
 
-        # ===== Storage for images and masks
+        # ===== Storage for images and masks =====
         self.images = []
         self.masks = []
-        self.distances = []
-
         self.final_image = None
+
+        # ===== Quality =====
+        self.distances = []  # One for each image
+        self.similarity_scores = []  # one for each overlapping image pair
 
     def find_intersection(self, point, direction):
         """
@@ -781,11 +785,10 @@ class image_mapping:
             # There is a mind melting index error between the poses and the img id :(
             # current_img_id = int(self.base_pose[current_pose_id][-1])
 
-            check_x = self.gt_base_pose[current_pose_id][0]
-            check_y = self.gt_base_pose[current_pose_id][1]
-            check_img_id = int(self.base_pose[current_pose_id][-1])
-
-            print(f"{current_pose_id}: {check_x} - {check_y} - {check_img_id}")
+            # check_x = self.gt_base_pose[current_pose_id][0]
+            # check_y = self.gt_base_pose[current_pose_id][1]
+            # check_img_id = int(self.base_pose[current_pose_id][-1])
+            # print(f"{current_pose_id}: {check_x} - {check_y} - {check_img_id}")
 
             for camera_name in self.valid_camera_names:
                 camera_pose3 = self.cameras_pose3s[camera_name][current_pose_id]
@@ -1078,7 +1081,7 @@ class image_mapping:
                 # Build the final plane image starting with the most distant images.
                 # Nearer images will overwrite more distant images.
                 # This method is very suboptimal
-                final_img[mask > 0] = image[mask > 0]
+                final_img[mask >= 255 / 2] = image[mask >= 255 / 2]
 
             #
             plane.final_image = final_img
@@ -1248,6 +1251,122 @@ class image_mapping:
         mlab.title("Visual Map")
         mlab.show()
 
+    def quantify_registration(self, method='ccorr', min_overlap_threshold=0.05, verbose_output=False):
+        """
+        Simple method of quantify the registration between images associated with planes of the.
+
+        If there is a size mismatch or insufficient overlap, min_overlap_threshold, no comparison is performed
+        :return:
+        """
+        if method == "ccorr":
+            similarity_method = cv2.TM_CCORR_NORMED
+        elif method == "ccoeff":
+            similarity_method = cv2.TM_CCOEFF_NORMED
+        else:
+            similarity_method = cv2.TM_SQDIFF_NORMED
+
+        for plane_id, plane in enumerate(self.planes):
+            img_count = len(plane.images)
+            for base_id in range(img_count - 1):
+                base_img = plane.images[base_id]
+                base_mask = plane.masks[base_id]
+
+                # Record base shape information
+                base_img_shape = base_img.shape
+                base_mask_shape = base_mask.shape
+
+                for comp_id in range(base_id + 1, img_count):
+                    comp_img = plane.images[comp_id]
+                    comp_mask = plane.masks[comp_id]
+
+                    # Record shape information
+                    comp_img_shape = comp_img.shape
+                    comp_mask_shape = comp_mask.shape
+
+                    # Check for shape agreement
+                    if base_img_shape[0] != comp_img_shape[0] or base_img_shape[1] != comp_img_shape[1]:
+                        print("Image shape mismatch!")
+                        continue
+
+                    if base_mask_shape[0] != comp_mask_shape[0] or base_mask_shape[1] != comp_mask_shape[1]:
+                        print("mask shape mismatch!")
+                        continue
+
+                    if base_img_shape[0] != base_mask_shape[0] or comp_img_shape[1] != comp_mask_shape[1]:
+                        print("Image/mask shape mismatch!")
+                        continue
+
+                    height = base_img_shape[0]
+                    width = base_img_shape[1]
+
+                    """
+                    The similarity analysis will only be performed in regions with overlap. An alternative approach 
+                    would be to look for discontinuities across the seams. 
+                    This, for the time being, will be left to the reader as an exercise.
+                    """
+
+                    mask_overlap = np.full((height, width), False, dtype=bool)
+                    mask_overlap[np.logical_and(base_mask[:, :, 0] >= 255 / 2,
+                                                comp_mask[:, :, 0] >= 255 / 2)] = True
+
+                    # Check if there is sufficient overlap for analysis
+                    if np.sum(mask_overlap) / (width * height) < min_overlap_threshold:
+                        continue
+
+                    base_img_overlap = np.zeros_like(base_img)
+                    base_img_overlap[mask_overlap] = base_img[mask_overlap]
+
+                    comp_img_overlap = np.zeros_like(comp_img)
+                    comp_img_overlap[mask_overlap] = comp_img[mask_overlap]
+
+                    # Perform comparison
+                    similarity_result = cv2.matchTemplate(base_img_overlap, comp_img_overlap, similarity_method)[0][0]
+
+                    if verbose_output:
+                        cv2.imwrite(f"{path_name}quality/" +
+                                    f"plane_{plane_id}_quality_{similarity_result:.3f}_{base_id}_{comp_id}.jpg",
+                                    np.hstack((base_img_overlap, comp_img_overlap)))
+
+                    # record the similarity to the plane
+                    # The score is not associated with any pair
+                    plane.similarity_scores.append(similarity_result)
+
+    def report_registration_quality(self):
+
+        total_similarities = []
+
+        for i in range(len(self.planes) + 1):
+            # final loop
+            if i == len(self.planes):
+                # check for no similarities
+                if len(total_similarities) == 0:
+                    print("No similarity scores processed!")
+                    return
+
+                name = "Total"
+                current_list = total_similarities
+            # normal loop
+            else:
+                # Check for empty plane
+                if len(self.planes[i].similarity_scores) == 0:
+                    continue
+
+                name = i
+                current_list = self.planes[i].similarity_scores
+                total_similarities += current_list
+
+            # Analyze current similarity scores
+            curr_mean = statistics.mean(current_list)
+            curr_stdev = statistics.stdev(current_list, curr_mean)
+            curr_min = min(current_list)
+            curr_max = max(current_list)
+
+            print(f"{name}: {curr_mean:.3f} +/-{curr_stdev:.3f} ({curr_min:.3f}/{curr_max:.3f})")
+
+
+
+
+
 
 # %% Load and process data
 # This is the gt of the base_link indexed for the left images
@@ -1270,8 +1389,8 @@ down_info = read_csv_to_list(path_name + 'down_info.csv')
 # Select buoy position to use
 # buoys.csv contains the ground truth locations of the buoys
 # camera_buoys_est.csv contains the estimated locations of the buoys
-# buoy_info = read_csv_to_array(path_name + 'buoys.csv')
-buoy_info = read_csv_to_array(path_name + 'camera_buoys_est.csv')
+buoy_info = read_csv_to_array(path_name + 'buoys.csv')
+# buoy_info = read_csv_to_array(path_name + 'camera_buoys_est.csv')
 
 # Define structure of the farm
 # Define the connections between buoys
@@ -1292,18 +1411,28 @@ img_map = image_mapping(gt_base_link_poses=gt_base,
                         ropes=ropes,
                         rows=rows)
 
-# %% Plot
+# %%Plot base and camera poses
 # img_map.plot_fancy(other_name=None)
 # img_map.plot_fancy(other_name="left")
 # img_map.plot_fancy(other_name="down")
 # img_map.plot_fancy(img_map.gt_camera_pose3s)  # plot the ground ruth as other
 # plot_fancy(base_gt_pose3s, left_gt_pose3s, buoy_info, points)
+
+# %% Perform processing on images
 img_map.process_images(path_name, ignore_first=8, verbose=True)  #
-img_map.process_ground_plane_images(path_name, ignore_first=8, verbose=True)
-# img_map.simple_stitch_planes_images(max_dist=12)
-# img_map.combine_row_images()
+# img_map.process_ground_plane_images(path_name, ignore_first=8, verbose=True)  # ground plane processing incomplete
+img_map.simple_stitch_planes_images(max_dist=12)
+img_map.combine_row_images()
+
+# %% Produce 3d map
 # img_map.plot_3d_map(show_base=True)
 # img_map.plot_3d_map_mayavi()
+
+# %% Quantify quality of registration
+img_map.quantify_registration(method="other",  # "ccorr"
+                              min_overlap_threshold=0.05,
+                              verbose_output=True)
+img_map.report_registration_quality()
 
 # %% Testing parameters
 do_testing_1 = False
