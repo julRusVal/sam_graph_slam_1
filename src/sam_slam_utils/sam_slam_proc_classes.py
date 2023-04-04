@@ -709,7 +709,7 @@ class online_slam_2d:
         print("Done with  buoy setup")
         return
 
-    def add_first_pose(self, dr_pose, gt_pose, initial_estimate=None, id_string=None):
+    def add_first_pose(self, dr_pose, gt_pose, id_string=None):
         """
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
@@ -770,7 +770,7 @@ class online_slam_2d:
         """
         if not self.initial_pose_set:
             print("Attempting to update before initial pose")
-            self.add_first_pose(dr_pose, gt_pose)
+            self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
             return
 
         # Attempt at preventing saturation
@@ -1228,9 +1228,11 @@ class analyze_slam:
         plt.show()
         return
 
-    def save_for_camera_processing(self, file_path=''):
+    def save_for_sensor_processing(self, file_path=''):
         """
-        Saves three things: camera_gt.csv, camera_dr.csv, camera_est.csv
+        Saves three files related to the camera: camera_gt.csv, camera_dr.csv, camera_est.csv
+        Saves three files related to the sss: sss_gt.csv, sss_dr.csv, sss_est.csv
+        saves a file of the estimated buoy positions
         format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
 
         :return:
@@ -1241,22 +1243,31 @@ class analyze_slam:
         camera_dr = []
         camera_est = []
 
+        sss_gt = []
+        sss_dr = []
+        sss_est = []
+
         # form the required list of lists
         # exclude poses that do not correspond to captured images
         for key, value in self.slam.sensor_string_at_key.items():
+            # Extract node type from sensor_string_at_key
             if value == 'odometry' or value == 'detection':
                 continue
-            image_id = int(value)
+            if "_" in value:
+                sensor_type, sensor_id = value.split("_")
+                sensor_id = int(sensor_id)
+            else:
+                print("Malformed sensor information")
+                continue
 
-            image_gt_pose = self.slam.gt_pose_raw[key][0:7]
-            image_gt_pose.append(image_id)
-            camera_gt.append(image_gt_pose)
+            # DR and GT for the sensor reading
+            sensor_gt_pose = self.slam.gt_pose_raw[key][0:7]
+            sensor_gt_pose.append(sensor_id)
 
-            image_dr_pose = self.slam.dr_pose_raw[key][0:7]
-            image_dr_pose.append(image_id)
-            camera_dr.append(image_dr_pose)
+            sensor_dr_pose = self.slam.dr_pose_raw[key][0:7]
+            sensor_dr_pose.append(sensor_id)
 
-            # estimation
+            # Estimated pose for the sensor reading
             """
             Initially I saved the roll and pitch reported by dr odom and combined those with the estimated
             yaw to for the new estimated 3d pose but that was giving strange results...
@@ -1276,7 +1287,7 @@ class analyze_slam:
             pitch = dr_rpy[1]
             depth = self.slam.dr_pose_rpd[key][2]
 
-            # X, Y, and yaw are estimated using the factror graph
+            # X, Y, and yaw are estimated using the factor graph
             est_x = self.posterior_poses[key, 0]
             est_y = self.posterior_poses[key, 1]
             est_yaw = self.posterior_poses[key, 2]
@@ -1284,15 +1295,31 @@ class analyze_slam:
             quats = quaternion_from_euler(roll, pitch, est_yaw)
 
             # This quaternion is stored [w, x, y, z]
-            image_est_pose = [est_x, est_y, -depth,
-                              quats[3], quats[0], quats[1], quats[2],
-                              image_id]
-            camera_est.append(image_est_pose)
+            sensor_est_pose = [est_x, est_y, -depth,
+                               quats[3], quats[0], quats[1], quats[2],
+                               sensor_id]
 
-        # write to files
-        write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
-        write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
-        write_array_to_csv(file_path + 'camera_est.csv', camera_est)
+            if sensor_type == "cam":
+                camera_gt.append(sensor_gt_pose)
+                camera_dr.append(sensor_dr_pose)
+                camera_est.append(sensor_est_pose)
+            elif sensor_type == "sss":
+                sss_gt.append(sensor_gt_pose)
+                sss_dr.append(sensor_dr_pose)
+                sss_est.append(sensor_est_pose)
+            else:
+                print("Unknown sensor type")
+
+        # write to camera and sss files
+        if len(camera_gt) > 0:
+            write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
+            write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
+            write_array_to_csv(file_path + 'camera_est.csv', camera_est)
+
+        if len(sss_gt) > 0:
+            write_array_to_csv(file_path + 'sss_gt.csv', sss_gt)
+            write_array_to_csv(file_path + 'sss_dr.csv', sss_dr)
+            write_array_to_csv(file_path + 'sss_est.csv', sss_est)
 
         # ===== Save buoy estimated positions =====
         # only the x an y coords are estimated, buoys are assumed to have z = 0
@@ -1303,7 +1330,7 @@ class analyze_slam:
             buoys_est[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
 
         # Write to file
-        write_array_to_csv(file_path + 'camera_buoys_est.csv', buoys_est)
+        write_array_to_csv(file_path + 'buoys_est.csv', buoys_est)
 
     def save_2d_poses(self, file_path=''):
         """

@@ -27,6 +27,6 @@ def get_quaternion_from_euler(roll, pitch, yaw):
     return [qx, qy, qz, qw]
 
 
-qts = get_quaternion_from_euler(-2.865817, 0.005010, 2.034287)
+qts = get_quaternion_from_euler(0.0, 3.1416, 1.5707)
 print(qts)
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import numpy as np
+import sys
+from functools import partial
+
 import rospy
-import tf2_ros
-import tf2_geometry_msgs
 from std_msgs.msg import Time
 from std_msgs.msg import Float64
 from nav_msgs.msg import Odometry
@@ -10,14 +10,17 @@ from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image, CameraInfo
+from smarc_msgs.msg import Sidescan
 
 import tf
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
+import tf2_ros
+import tf2_geometry_msgs
 
 # cv_bridge and cv2 to convert and save images
 # from cv_bridge import CvBridge, CvBridgeError
+import numpy as np
 import cv2
-import sys
 
 from sam_slam_utils.sam_slam_helper_funcs import show_simple_graph_2d
 from sam_slam_utils.sam_slam_helper_funcs import write_array_to_csv
@@ -69,6 +72,8 @@ class sam_slam_listener:
 
         # ===== Topic names =====
         self.robot_name = robot_name
+
+        # === Dead reckoning and ground truth ===
         self.gt_topic = f'/{self.robot_name}/sim/odom'
         self.dr_topic = f'/{self.robot_name}/dr/odom'
         self.det_topic = f'/{self.robot_name}/payload/sidescan/detection_hypothesis'
@@ -78,6 +83,10 @@ class sam_slam_listener:
         self.pitch_topic = f'/{self.robot_name}/dr/pitch'
         self.depth_topic = f'/{self.robot_name}/dr/depth'
 
+        # === Sonar ===
+        self.sss_topic = f'/{self.robot_name}/payload/sidescan'
+
+        # === Cameras ===
         # Camera: down
         self.cam_down_image_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/image_color'
         self.cam_down_info_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/camera_info'
@@ -101,8 +110,12 @@ class sam_slam_listener:
 
         self.gt_poses_graph_file_path = self.file_path + 'gt_poses_graph.csv'
         self.dr_poses_graph_file_path = self.file_path + 'dr_poses_graph.csv'
-        self.detections_graph_file_path = self.file_path + 'detections_graph.csv'
         self.buoys_file_path = self.file_path + 'buoys.csv'
+
+        # === Sonar ===
+        # Currently detections are provided by the published buoy location
+        self.detections_graph_file_path = self.file_path + 'detections_graph.csv'
+        self.sss_graph_file_path = self.file_path + 'detections_graph.csv'
 
         # === Camera ===
         # Down
@@ -135,6 +148,11 @@ class sam_slam_listener:
         self.rolls = []
         self.pitches = []
         self.depths = []
+
+        # === Sonar logging ===
+        self.sss_buffer_len = 10
+        self.sss_data_len = 1000  # This is determined by the message
+        self.sss_buffer = np.zeros((self.sss_buffer_len, 2 * self.sss_data_len), dtype=np.ubyte)
 
         # === Camera stuff ===
         # down
@@ -174,8 +192,8 @@ class sam_slam_listener:
         self.gt_last_time = rospy.Time.now()
         self.gt_timeout = 5.0  # Time out used to save data at end of simulation
 
-        self.dr_last_time = rospy.Time.now()
         self.dr_update_time = 2.0  # Time for limiting the rate that odometry factors are added
+        self.dr_last_time = rospy.Time.now()
 
         self.detect_last_time = rospy.Time.now()
         self.detect_update_time = .5  # Time for limiting the rate that detection factors are added
@@ -183,6 +201,9 @@ class sam_slam_listener:
         self.camera_last_time = rospy.Time.now()
         self.camera_update_time = 1
         self.camera_last_seq = -1
+
+        self.sss_update_time = 1
+        self.sss_last_time = rospy.Time.now() - rospy.Time.from_sec(self.sss_update_time)
 
         # ===== Subscribers =====
         # Ground truth
@@ -209,15 +230,20 @@ class sam_slam_listener:
                                                  Float64,
                                                  self.depth_callback)
 
+        # Buoys
+        self.buoy_subscriber = rospy.Subscriber(self.buoy_topic,
+                                                MarkerArray,
+                                                self.buoy_callback)
+
         # Detections
         self.det_subscriber = rospy.Subscriber(self.det_topic,
                                                Detection2DArray,
                                                self.det_callback)
 
-        # Buoys
-        self.buoy_subscriber = rospy.Subscriber(self.buoy_topic,
-                                                MarkerArray,
-                                                self.buoy_callback)
+        # Sonar
+        self.sss_subscriber = rospy.Subscriber(self.sss_topic,
+                                               Sidescan,
+                                               self.sss_callback)
 
         # Cameras
         # Down camera
@@ -350,11 +376,11 @@ class sam_slam_listener:
             if self.online_graph is None:
                 return
             if self.online_graph.initial_pose_set is False and not self.online_graph.busy:
-                print("First update - x0")
+                print("DR - First update - x0")
                 self.online_graph.add_first_pose(dr_pose, gt_pose)
 
             elif not self.online_graph.busy:
-                print(f"Odometry update - x{self.online_graph.current_x_ind + 1}")
+                print(f"DR - Odometry update - x{self.online_graph.current_x_ind + 1}")
                 self.online_graph.online_update(dr_pose, gt_pose)
 
             else:
@@ -380,7 +406,7 @@ class sam_slam_listener:
 
     def det_callback(self, msg):
         # Check that topics have received messages
-        if not self.gt_updated or not self.roll_updated or not self.pitch_updated or not self.depth_updated:
+        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
             return
 
         # check elapsed time
@@ -434,6 +460,66 @@ class sam_slam_listener:
                                                              dtype=np.float64))
                 else:
                     print('Busy condition found')
+
+    def sss_callback(self, msg):
+        """
+        The sss callback is responsible for filling the sss_buffer.
+        """
+        # Record start time
+        sss_time_now = rospy.Time.now()
+
+        # Fill buffer regardless of other conditions
+        port = np.array(bytearray(msg.port_channel), dtype=np.ubyte)
+        stbd = np.array(bytearray(msg.starboard_channel), dtype=np.ubyte)
+        meas = np.concatenate([np.flip(port), stbd])
+        self.sss_buffer[1:, :] = self.sss_buffer[:-1, :]
+        self.sss_buffer[0, :] = meas
+
+        # Copy buffer
+        sss_current = np.copy(self.sss_buffer)
+
+        # Check that topics have received messages
+        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+            return
+
+        # check elapsed time
+        if (sss_time_now - self.sss_last_time).to_sec() < self.detect_update_time:
+            return
+
+        sss_id = msg.header.seq
+        print(f"sss frame: {sss_id}")
+
+        dr_pose = self.dr_poses[-1]
+        self.dr_poses_graph.append(dr_pose)
+        gt_pose = self.gt_poses[-1]
+        self.gt_poses_graph.append(gt_pose)
+
+        # TODO refactor as online update will check for initial pose set
+        if self.online_graph is not None \
+                and not self.online_graph.busy:
+
+            if self.online_graph.initial_pose_set is False:
+                print("SSS - First update w/ sss data")
+            else:
+                print(f"SSS - Odometry and sss update - {self.online_graph.current_x_ind + 1}")
+
+            # self.online_graph.add_first_pose(dr_pose, gt_pose,
+            #                                  initial_estimate=None,
+            #                                  id_string=f'sss_{sss_id}')
+
+            self.online_graph.online_update(dr_pose, gt_pose,
+                                            relative_detection=None,
+                                            id_string=f'sss_{sss_id}')
+
+            # Reset timer after successful completion
+            self.sss_last_time = rospy.Time.now()
+
+            # Write to 'disk'
+            if self.file_path is None or not isinstance(self.file_path, str):
+                save_path = f'sss_{sss_id}.jpg'
+            else:
+                save_path = self.file_path + f'/sss/{sss_id}.jpg'
+            cv2.imwrite(save_path, sss_current)
 
     def info_callback(self, msg, camera_id):
         if camera_id == 'down':
@@ -496,17 +582,17 @@ class sam_slam_listener:
             if self.online_graph is not None \
                     and self.online_graph.initial_pose_set is False \
                     and not self.online_graph.busy:
-                print("First update w/ camera data")
+                print("CAM - First update w/ camera data")
                 self.online_graph.add_first_pose(dr_pose, gt_pose,
                                                  initial_estimate=None,
-                                                 id_string=f'{current_id}')
+                                                 id_string=f'cam_{current_id}')
 
             elif self.online_graph is not None \
                     and not self.online_graph.busy:
-                print(f"Odometry and camera update - {self.online_graph.current_x_ind + 1}")
+                print(f"CAM - Odometry and camera update - {self.online_graph.current_x_ind + 1}")
                 self.online_graph.online_update(dr_pose, gt_pose,
                                                 relative_detection=None,
-                                                id_string=f'{current_id}')
+                                                id_string=f'cam_{current_id}')
 
         # === Debugging ===
         """
@@ -542,7 +628,7 @@ class sam_slam_listener:
 
         # Display call back info
         print(f'image callback - {camera_id}: {current_id}')
-        print(pose_current)
+        # print(pose_current)  # debugging
 
         # Convert to cv2 format
         cv2_img = imgmsg_to_cv2(msg)
@@ -586,7 +672,7 @@ class sam_slam_listener:
                 print("Print online graph")
 
                 analysis = analyze_slam(self.online_graph)
-                analysis.save_for_camera_processing(self.file_path)
+                analysis.save_for_sensor_processing(self.file_path)
                 analysis.save_2d_poses(self.file_path)
 
                 show_simple_graph_2d(graph=self.online_graph.graph,

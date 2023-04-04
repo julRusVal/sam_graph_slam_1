@@ -2,6 +2,7 @@ import tf.transformations
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 import numpy as np
 import gtsam
+from tf.transformations import quaternion_matrix
 
 if __name__ == '__main__':
     # RPY to convert: 90deg, 0, -90deg
@@ -65,3 +66,6 @@ rot3_yaw_check = rot3.yaw()
 
 rot3 = gtsam.Rot3.Quaternion(gt_q[3], gt_q[0], gt_q[1], gt_q[2])
 rot3_yaw_gt = rot3.yaw()
+
+# %% q to r.mat
+rot_mat = quaternion_matrix([-0.7070727, 0.7071408, -0.0000026, -0.0000026])[:3,:3]

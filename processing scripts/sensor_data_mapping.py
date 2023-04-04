@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-The Goal of this script is to load saved gt poses (base_link) and convert them to the camera poses in the map frame.
 This is part of the work towards projecting images onto a planes to make algae farm maps.
 """
 import gtsam
@@ -762,12 +761,18 @@ class image_mapping:
         process_images is used to map the gathered images and warp them on to the planes formed by the buoys.
         The 3d poses of the base link are provided as well as a list that describes the structure of the farm.
 
+        Verbose output marks images with registration points that correspond to the corners of the planes.
+        Addition points are drawn to show the horizontal rope. This is controlled by the vertical_offset parameter
+
         :param path_name:
-        :param image_path:
         :param ignore_first:
         :param verbose:
         :return:
         """
+
+        # Verbose parameters
+        vertical_offset = 2.0  # controls where additional registration points are drawn
+
         if ignore_first < 0:
             start_index = int(0)
         elif ignore_first >= len(self.base_pose3s):
@@ -859,7 +864,6 @@ class image_mapping:
                                 # Draw other features
                                 # p_0: offset from start buoy
                                 # p_1: offset from end buoy
-                                vertical_offset = 2.0  # Trying to mark the horizontal
                                 w_p_0 = plane.start_coord - [0, 0, vertical_offset]
                                 w_p_1 = plane.end_coord - [0, 0, vertical_offset]
 
@@ -1364,6 +1368,101 @@ class image_mapping:
             print(f"{name}: {curr_mean:.3f} +/-{curr_stdev:.3f} ({curr_min:.3f}/{curr_max:.3f})")
 
 
+class sss_mapping:
+    """
+
+    """
+
+    def __init__(self, sss_base_gt, sss_base_est, sss_data_path, buoys, ropes, rows):
+        # Pose information
+        self.sss_base_gt = sss_base_gt
+        self.sss_base_est = sss_base_est
+
+        # Convert above to list of gtsam.Pose3
+        self.sss_base_gt_Pose3s = convert_poses_to_Pose3(self.sss_base_gt)
+        self.sss_base_est_Pose3s = convert_poses_to_Pose3(self.sss_base_est)
+
+        # Path to file containing sss data
+        # These readings are saved as gray scale images
+        # These images include both the port and starboard sensor readings
+        # The most recent values are @ sss_data[0, :], the depth of the buffer is set by the sam_slam_listener class
+        self.sss_data_path = sss_data_path
+
+        # ===== Map info =====
+        self.buoys = buoys
+        self.ropes = ropes
+        self.rows = rows
+        # TODO hardcoded rope depth
+        self.rope_depth = 2.0
+
+        # ===== SSS parameters =====
+        # Currently hard coded to match the values found in the sam_auv.xml
+        self.range_min = 1.0
+        self.range_max = 100.0
+        self.bins = 2000
+
+        # === Port ===
+        # Relative translation
+        p_t_x = 0.634
+        p_t_y = 0.0
+        p_t_z = -0.07
+
+        # Relative rotation
+        # rpy values from sam_auv.xml converted to quaternion
+        # [-0.7070727236967076, 0.7071408370265622, -2.5972231371374297e-06, -2.597473331368259e-06]
+        p_r_x = -0.7070727
+        p_r_y = 0.7071408
+        p_r_z = -0.0000026
+        p_r_w = -0.0000026
+
+        # Constructor expects [x,y,z,q_w,q_x,q_y,q_z]
+        self.port_relative_pose = create_Pose3([p_t_x, p_t_y, p_t_z, p_r_w, p_r_x, p_r_y, p_r_z])
+
+        self.sss_gt_Pose3s = {"port": apply_transformPoseFrom(self.sss_base_gt_Pose3s,
+                                                              self.port_relative_pose)}
+
+        self.sss_est_Pose3s = {"port": apply_transformPoseFrom(self.sss_base_gt_Pose3s,
+                                                               self.port_relative_pose)}
+
+    def draw_farm(self):
+        """
+        Draw the basic structure of algae farm
+
+        Buoys
+        ropes
+        planes
+        :return:
+        """
+
+        # ===== Plot buoys =====
+        for buoy in self.buoys:
+            mlab.points3d(buoy[0], buoy[1], buoy[2], color=(0, 0, 1), scale_factor=0.25)
+
+        # ===== Plot ropes =====
+        for rope in self.ropes:
+            start_buoy = rope[0]
+            end_buoy = rope[1]
+
+            start_coords = self.buoys[start_buoy, :] - np.array([0, 0, self.rope_depth])
+            end_coords = self.buoys[end_buoy, :] - np.array([0, 0, self.rope_depth])
+
+            x_coords = np.array([start_coords[0], end_coords[0]])
+            y_coords = np.array([start_coords[1], end_coords[1]])
+            z_coords = np.array([start_coords[2], end_coords[2]])
+
+            mlab.plot3d(x_coords, y_coords, z_coords, color=(1, 1, 0), tube_radius=0.125)
+
+    def generate_3d_plot(self, farm=True, sss=False):
+        fig = mlab.figure()
+
+        if farm:
+            self.draw_farm()
+
+        if sss:
+            # TODO
+            print("Plotting of SSS data not implemented!")
+
+        mlab.show()
 
 
 
@@ -1375,10 +1474,11 @@ class image_mapping:
 # buoy_info = read_csv_to_array('data/buoy_info.csv')
 
 # Mac
-path_name = "/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/online_testing/"
+# path_name = "/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/online_testing/"
 # linux
-# path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/'
+path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/'
 
+# === Camera data ===
 gt_base = read_csv_to_array(path_name + 'camera_gt.csv')
 base = read_csv_to_array(path_name + 'camera_gt.csv')  # change to camera_gt.csv, camera_dr.csv, or camera_est.csv
 
@@ -1386,22 +1486,28 @@ left_info = read_csv_to_list(path_name + 'left_info.csv')
 right_info = read_csv_to_list(path_name + 'right_info.csv')
 down_info = read_csv_to_list(path_name + 'down_info.csv')
 
+# === SSS data ===
+sss_base_gt = read_csv_to_array(path_name + 'sss_gt.csv')
+sss_base_est = read_csv_to_array(path_name + 'sss_est.csv')
+sss_path = path_name + "sss/"
+
+# === Map information ===
 # Select buoy position to use
 # buoys.csv contains the ground truth locations of the buoys
 # camera_buoys_est.csv contains the estimated locations of the buoys
 buoy_info = read_csv_to_array(path_name + 'buoys.csv')
-# buoy_info = read_csv_to_array(path_name + 'camera_buoys_est.csv')
+# buoy_info = read_csv_to_array(path_name + 'buoys_est.csv')
 
 # Define structure of the farm
 # Define the connections between buoys
 # list of start and stop indices of buoys
-# TODO remove hard coded rope structure
+# TODO hard coded rope structure
 ropes = [[0, 4], [4, 2],
          [1, 5], [5, 3]]
 
 # Define which connections above form a row
 # Note: each rope section forms two planes for example [0, 4] and [4, 0], so that both sides can be imaged separately
-# TODO remove hard coded rows
+# TODO hard coded rows
 rows = [[0, 2], [3, 1], [4, 6], [7, 5]]
 
 img_map = image_mapping(gt_base_link_poses=gt_base,
@@ -1411,8 +1517,18 @@ img_map = image_mapping(gt_base_link_poses=gt_base,
                         ropes=ropes,
                         rows=rows)
 
+sss_map = sss_mapping(sss_base_gt=sss_base_gt,
+                      sss_base_est=sss_base_est,
+                      sss_data_path=sss_path,
+                      buoys=buoy_info,
+                      ropes=ropes,
+                      rows=rows)
+
+# %% sonar plotting
+sss_map.generate_3d_plot()
+
 # %%Plot base and camera poses
-# img_map.plot_fancy(other_name=None)
+img_map.plot_fancy(other_name=None)
 # img_map.plot_fancy(other_name="left")
 # img_map.plot_fancy(other_name="down")
 # img_map.plot_fancy(img_map.gt_camera_pose3s)  # plot the ground ruth as other
