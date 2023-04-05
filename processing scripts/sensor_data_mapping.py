@@ -2,12 +2,14 @@
 """
 This is part of the work towards projecting images onto a planes to make algae farm maps.
 """
-import gtsam
-import numpy as np
-import matplotlib.pyplot as plt
+import os
 import math
 import statistics
+import numpy as np
+import matplotlib.pyplot as plt
 import cv2
+
+import gtsam
 
 from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array, read_csv_to_list
 import gtsam.utils.plot as gtsam_plot
@@ -1418,19 +1420,26 @@ class sss_mapping:
         # Constructor expects [x,y,z,q_w,q_x,q_y,q_z]
         self.port_relative_pose = create_Pose3([p_t_x, p_t_y, p_t_z, p_r_w, p_r_x, p_r_y, p_r_z])
 
+        # This pose maintains the orientation of base_link but is centered at the sss's location
+        self.sss_relative_pose = create_Pose3([p_t_x, p_t_y, p_t_z, 1, 0, 0, 0])
+
         self.sss_gt_Pose3s = {"port": apply_transformPoseFrom(self.sss_base_gt_Pose3s,
-                                                              self.port_relative_pose)}
+                                                              self.port_relative_pose),
+                              "sensor": apply_transformPoseFrom(self.sss_base_gt_Pose3s,
+                                                                self.sss_relative_pose)}
 
         self.sss_est_Pose3s = {"port": apply_transformPoseFrom(self.sss_base_gt_Pose3s,
-                                                               self.port_relative_pose)}
+                                                               self.port_relative_pose),
+                               "sensor": apply_transformPoseFrom(self.sss_base_gt_Pose3s,
+                                                                 self.sss_relative_pose)}
 
     def draw_farm(self):
         """
         Draw the basic structure of algae farm
 
-        Buoys
-        ropes
-        planes
+        Buoys: Done
+        ropes: Done
+        planes: TODO
         :return:
         """
 
@@ -1450,33 +1459,81 @@ class sss_mapping:
             y_coords = np.array([start_coords[1], end_coords[1]])
             z_coords = np.array([start_coords[2], end_coords[2]])
 
-            mlab.plot3d(x_coords, y_coords, z_coords, color=(1, 1, 0), tube_radius=0.125)
+            mlab.plot3d(x_coords, y_coords, z_coords, color=(1, 1, 0), tube_radius=0.05)
 
-    def generate_3d_plot(self, farm=True, sss=False):
+    def draw_sss_positions(self, use_gt=True):
+        # Select which positions to plot: gt or est
+        if use_gt:
+            pose3s = self.sss_gt_Pose3s['sensor']
+        else:
+            pose3s = self.sss_est_Pose3s['sensor']
+
+        for pose3 in pose3s:
+            mlab.points3d(pose3.x(), pose3.y(), pose3.z(),  color=(1, 1, 1), scale_factor=0.1)
+
+    def draw_phony_sss_data(self, range=2.5, use_gt=True):
+        # Select which positions to plot: gt or est
+        if use_gt:
+            pose3s = self.sss_gt_Pose3s['sensor']
+        else:
+            pose3s = self.sss_est_Pose3s['sensor']
+
+        # define sonars to display [angle_start(rads), angle_end(rads), color(rgb tuple)]
+        sonars = [[3/2 * np.pi, 2 * np.pi, (1, 0, 0)],  # port
+                  [np.pi, 3/2 * np.pi, (0, 1, 0)]]  # starboard
+        for pose3 in pose3s:
+            center = [pose3.x(), pose3.y(), pose3.z()]
+            radius = range
+            rot_mat = pose3.rotation().matrix()
+
+            for sonar in sonars:
+                # Generate point of the circle
+                theta = np.linspace(sonar[0], sonar[1], num=100)
+                x = np.zeros_like(theta)
+                y = radius * np.cos(theta)
+                z = radius * np.sin(theta)
+
+                points_orig = np.stack([x, y, z], axis=1)
+                points = np.dot(points_orig, rot_mat.T)
+
+                # Apply position offset
+                points[:, 0] = points[:, 0] + center[0]
+                points[:, 1] = points[:, 1] + center[1]
+                points[:, 2] = points[:, 2] + center[2]
+
+                mlab.plot3d(points[:, 0], points[:, 1], points[:, 2], color=sonar[2], tube_radius=0.05)
+
+    def generate_3d_plot(self, farm=True, sss_pos=False, sss_data=False):
         fig = mlab.figure()
 
         if farm:
             self.draw_farm()
 
-        if sss:
+        if sss_pos:
+            self.draw_sss_positions()
+
+        if sss_data:
             # TODO
+            self.draw_phony_sss_data()
             print("Plotting of SSS data not implemented!")
+            print("Currently plotting phony stuff")
 
         mlab.show()
 
 
-
-
 # %% Load and process data
-# This is the gt of the base_link indexed for the left images
-# base_gt = read_csv_to_array('data/left_gt.csv')
-# left_info = read_csv_to_list('data/left_info.csv')
-# buoy_info = read_csv_to_array('data/buoy_info.csv')
+paths = {"mac": "/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/online_testing/",
+         "linux": "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/"}
 
-# Mac
-# path_name = "/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/online_testing/"
-# linux
-path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/'
+for path in paths.values():
+    if os.path.isdir(path):
+        path_name = path
+        break
+    else:
+        path_name = ''
+
+if len(path_name) == 0:
+    print("path_name was not assigned")
 
 # === Camera data ===
 gt_base = read_csv_to_array(path_name + 'camera_gt.csv')
@@ -1525,7 +1582,9 @@ sss_map = sss_mapping(sss_base_gt=sss_base_gt,
                       rows=rows)
 
 # %% sonar plotting
-sss_map.generate_3d_plot()
+sss_map.generate_3d_plot(farm=True,
+                         sss_pos=True,
+                         sss_data=True)
 
 # %%Plot base and camera poses
 img_map.plot_fancy(other_name=None)
@@ -1542,7 +1601,7 @@ img_map.combine_row_images()
 
 # %% Produce 3d map
 # img_map.plot_3d_map(show_base=True)
-# img_map.plot_3d_map_mayavi()
+img_map.plot_3d_map_mayavi()
 
 # %% Quantify quality of registration
 img_map.quantify_registration(method="other",  # "ccorr"
