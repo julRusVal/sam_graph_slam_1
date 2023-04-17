@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 This is part of the work towards projecting images onto a planes to make algae farm maps.
+
+this is behind sanesor_data_testing.py
 """
 import os
 import math
@@ -19,8 +21,6 @@ from mayavi import mlab
 
 
 # %% Functions
-
-# ===== GTSAM pose utlities =====
 def create_Pose3(input_pose):
     """
     Create a GTSAM Pose3 from the recorded poses in the form:
@@ -56,7 +56,7 @@ def apply_transformPoseFrom(pose3s, transform):
 
     return transformed_pose3s
 
-# ===== 3d geometry utilities =====
+
 def projectPixelTo3dRay(u, v, cx, cy, fx, fy):
     """
     From ROS-perception
@@ -73,10 +73,6 @@ def projectPixelTo3dRay(u, v, cx, cy, fx, fy):
     z = 1.0 / norm
     return x, y, z
 
-
-# ===== Image registration metric =====
-def ssim_custom(img_0, img_1):
-    print("here is where the magic is!!!")
 
 # %% Classes
 class camera_model:
@@ -464,7 +460,77 @@ class image_mapping:
                                                 depth=self.depth,
                                                 spatial_2_pixel=self.spatial_2_pixel))
 
-    # ===== Projective geometry stuff =====
+    def plot_fancy(self, other_name=None):
+        """
+        This might need some work
+        :param other_name:
+        :return:
+        """
+        # Parameters
+        fig_num = 0
+        base_scale = .5
+        other_scale = 1
+        plot_base = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
+        plot_other = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
+
+        fig = plt.figure(fig_num)
+        axes = fig.add_subplot(projection='3d')
+
+        axes.set_xlabel("X axis")
+        axes.set_ylabel("Y axis")
+        axes.set_zlabel("Z axis")
+
+        # Plot buoys and vertical 'ropes'
+        for buoy in self.buoys:
+            axes.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5)
+            axes.plot([buoy[0], buoy[0]],
+                      [buoy[1], buoy[1]],
+                      [buoy[2], buoy[2] - 10], c='g')
+
+        # plot base_link gt pose3s
+        for i_base, pose3 in enumerate(self.base_pose3s):
+            # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
+            if i_base in plot_base or len(plot_base) == 0:
+                gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
+
+        # plot camera gt pose3s
+        if other_name is not None:
+            other_pose3s = self.cameras_pose3s[other_name]
+            for i_other, pose3 in enumerate(other_pose3s):
+                # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
+                if i_other in plot_other or len(plot_other) == 0:
+                    gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
+                    # plot fov
+                    for i_ray, ray in enumerate(self.fov_rays[other_name]):
+                        point_end = pose3.transformFrom(5 * ray)
+                        x_comp = [pose3.x(), point_end[0]]
+                        y_comp = [pose3.y(), point_end[1]]
+                        z_comp = [pose3.z(), point_end[2]]
+                        # Plot (0,0) as magenta
+                        if i_ray == 0:
+                            axes.plot(x_comp, y_comp, z_comp, c='m')
+                        # Plot center line as yellow
+                        elif i_ray == 4:
+                            axes.plot(x_comp, y_comp, z_comp, c='b')
+                        # Other fov lines plotted as black
+                        else:
+                            axes.plot(x_comp, y_comp, z_comp, c='k')
+
+                    # plot intersection
+                    for plane in self.planes:
+                        # Find the center ray in the camera frame and then find the world coord given pose
+                        start, direction = self.camera_center_point_direction(camera_name=other_name, pose=pose3)
+
+                        intrcpt_status, intrcpt_w_coords, _, in_bounds = plane.find_intersection(start,
+                                                                                                 direction)
+
+                        if in_bounds:
+                            axes.scatter(intrcpt_w_coords[0], intrcpt_w_coords[1], intrcpt_w_coords[2], c='r')
+
+        # plt.axis('equal')
+        plt.title("Testing the transform")
+        plt.show()
+
     def find_fov_corner_coords(self, camera_name, plane_id, pose_id):
         """
         Find the intersections of the fov with the defined plane, plane_id = -1 indicates the ground plane
@@ -693,106 +759,6 @@ class image_mapping:
 
         return start, offset_directions
 
-    # ===== Visualizations =====
-    def plot_fancy(self, other_name=None):
-        """
-        This might need some work
-        :param other_name:
-        :return:
-        """
-        # Parameters
-        fig_num = 0
-        base_scale = .5
-        other_scale = 1
-        plot_base = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
-        plot_other = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
-
-        fig = plt.figure(fig_num)
-        axes = fig.add_subplot(projection='3d')
-
-        axes.set_xlabel("X axis")
-        axes.set_ylabel("Y axis")
-        axes.set_zlabel("Z axis")
-
-        # Plot buoys and vertical 'ropes'
-        for buoy in self.buoys:
-            axes.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5)
-            axes.plot([buoy[0], buoy[0]],
-                      [buoy[1], buoy[1]],
-                      [buoy[2], buoy[2] - 10], c='g')
-
-        # plot base_link gt pose3s
-        for i_base, pose3 in enumerate(self.base_pose3s):
-            # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
-            if i_base in plot_base or len(plot_base) == 0:
-                gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
-
-        # plot camera gt pose3s
-        if other_name is not None:
-            other_pose3s = self.cameras_pose3s[other_name]
-            for i_other, pose3 in enumerate(other_pose3s):
-                # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
-                if i_other in plot_other or len(plot_other) == 0:
-                    gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
-                    # plot fov
-                    for i_ray, ray in enumerate(self.fov_rays[other_name]):
-                        point_end = pose3.transformFrom(5 * ray)
-                        x_comp = [pose3.x(), point_end[0]]
-                        y_comp = [pose3.y(), point_end[1]]
-                        z_comp = [pose3.z(), point_end[2]]
-                        # Plot (0,0) as magenta
-                        if i_ray == 0:
-                            axes.plot(x_comp, y_comp, z_comp, c='m')
-                        # Plot center line as yellow
-                        elif i_ray == 4:
-                            axes.plot(x_comp, y_comp, z_comp, c='b')
-                        # Other fov lines plotted as black
-                        else:
-                            axes.plot(x_comp, y_comp, z_comp, c='k')
-
-                    # plot intersection
-                    for plane in self.planes:
-                        # Find the center ray in the camera frame and then find the world coord given pose
-                        start, direction = self.camera_center_point_direction(camera_name=other_name, pose=pose3)
-
-                        intrcpt_status, intrcpt_w_coords, _, in_bounds = plane.find_intersection(start,
-                                                                                                 direction)
-
-                        if in_bounds:
-                            axes.scatter(intrcpt_w_coords[0], intrcpt_w_coords[1], intrcpt_w_coords[2], c='r')
-
-        # plt.axis('equal')
-        plt.title("Testing the transform")
-        plt.show()
-
-    def mark_centers(self, camera_names=None):
-        """
-        Marks the centers of images. Used for debugging
-        :param camera_names: list of camera names(strings) that are to be marked
-        :return:
-        """
-        if camera_names is None:
-            camera_names = self.cameras.keys()
-
-        for pose in img_map.base_pose:
-            img_id = int(pose[-1])
-
-            for camera_name in camera_names:
-                img = cv2.imread(path_name + camera_name + f"/{img_id}.jpg")
-
-                # Check that image was able to be loaded
-                if not isinstance(img, np.ndarray):
-                    continue
-
-                center_x = img_map.cameras[camera_name].cx
-                center_y = img_map.cameras[camera_name].cy
-
-                img[:, int(center_x), :] = (0, 255, 255)
-                img[int(center_y), :, :] = (0, 255, 255)
-
-                cv2.imwrite(path_name + f"centers/{camera_name}_{img_id}.jpg", img)
-
-    # ===== Processing =====
     def process_images(self, path_name, ignore_first=0, verbose=False):
 
         """
@@ -1162,105 +1128,6 @@ class image_mapping:
             cv2.imwrite(path_name + f"rows/row_{row_id}.jpg",
                         row_img)
 
-    # ===== Visualizations =====
-    def plot_fancy(self, other_name=None):
-        """
-        This might need some work
-        :param other_name:
-        :return:
-        """
-        # Parameters
-        fig_num = 0
-        base_scale = .5
-        other_scale = 1
-        plot_base = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
-        plot_other = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
-
-        fig = plt.figure(fig_num)
-        axes = fig.add_subplot(projection='3d')
-
-        axes.set_xlabel("X axis")
-        axes.set_ylabel("Y axis")
-        axes.set_zlabel("Z axis")
-
-        # Plot buoys and vertical 'ropes'
-        for buoy in self.buoys:
-            axes.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5)
-            axes.plot([buoy[0], buoy[0]],
-                      [buoy[1], buoy[1]],
-                      [buoy[2], buoy[2] - 10], c='g')
-
-        # plot base_link gt pose3s
-        for i_base, pose3 in enumerate(self.base_pose3s):
-            # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
-            if i_base in plot_base or len(plot_base) == 0:
-                gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
-
-        # plot camera gt pose3s
-        if other_name is not None:
-            other_pose3s = self.cameras_pose3s[other_name]
-            for i_other, pose3 in enumerate(other_pose3s):
-                # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
-                if i_other in plot_other or len(plot_other) == 0:
-                    gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=other_scale)
-                    # plot fov
-                    for i_ray, ray in enumerate(self.fov_rays[other_name]):
-                        point_end = pose3.transformFrom(5 * ray)
-                        x_comp = [pose3.x(), point_end[0]]
-                        y_comp = [pose3.y(), point_end[1]]
-                        z_comp = [pose3.z(), point_end[2]]
-                        # Plot (0,0) as magenta
-                        if i_ray == 0:
-                            axes.plot(x_comp, y_comp, z_comp, c='m')
-                        # Plot center line as yellow
-                        elif i_ray == 4:
-                            axes.plot(x_comp, y_comp, z_comp, c='b')
-                        # Other fov lines plotted as black
-                        else:
-                            axes.plot(x_comp, y_comp, z_comp, c='k')
-
-                    # plot intersection
-                    for plane in self.planes:
-                        # Find the center ray in the camera frame and then find the world coord given pose
-                        start, direction = self.camera_center_point_direction(camera_name=other_name, pose=pose3)
-
-                        intrcpt_status, intrcpt_w_coords, _, in_bounds = plane.find_intersection(start,
-                                                                                                 direction)
-
-                        if in_bounds:
-                            axes.scatter(intrcpt_w_coords[0], intrcpt_w_coords[1], intrcpt_w_coords[2], c='r')
-
-        # plt.axis('equal')
-        plt.title("Testing the transform")
-        plt.show()
-
-    def mark_centers(self, camera_names=None):
-        """
-        Marks the centers of images. Used for debugging
-        :param camera_names: list of camera names(strings) that are to be marked
-        :return:
-        """
-        if camera_names is None:
-            camera_names = self.cameras.keys()
-
-        for pose in img_map.base_pose:
-            img_id = int(pose[-1])
-
-            for camera_name in camera_names:
-                img = cv2.imread(path_name + camera_name + f"/{img_id}.jpg")
-
-                # Check that image was able to be loaded
-                if not isinstance(img, np.ndarray):
-                    continue
-
-                center_x = img_map.cameras[camera_name].cx
-                center_y = img_map.cameras[camera_name].cy
-
-                img[:, int(center_x), :] = (0, 255, 255)
-                img[int(center_y), :, :] = (0, 255, 255)
-
-                cv2.imwrite(path_name + f"centers/{camera_name}_{img_id}.jpg", img)
-
     def plot_3d_map(self, show_base=False):
         # Parameters
         plane_offset = 0.01
@@ -1392,7 +1259,6 @@ class image_mapping:
         mlab.title("Visual Map")
         mlab.show()
 
-    # ===== Registration quality metrics =====
     def quantify_registration(self, method='ccorr', min_overlap_threshold=0.05, verbose_output=False):
         """
         Simple method of quantify the registration between images associated with planes of the.
@@ -1605,7 +1471,7 @@ class sss_mapping:
             pose3s = self.sss_est_Pose3s['sensor']
 
         for pose3 in pose3s:
-            mlab.points3d(pose3.x(), pose3.y(), pose3.z(), color=(1, 1, 1), scale_factor=0.1)
+            mlab.points3d(pose3.x(), pose3.y(), pose3.z(),  color=(1, 1, 1), scale_factor=0.1)
 
     def draw_phony_sss_data(self, range=2.5, use_gt=True):
         # Select which positions to plot: gt or est
@@ -1615,8 +1481,8 @@ class sss_mapping:
             pose3s = self.sss_est_Pose3s['sensor']
 
         # define sonars to display [angle_start(rads), angle_end(rads), color(rgb tuple)]
-        sonars = [[3 / 2 * np.pi, 2 * np.pi, (1, 0, 0)],  # port
-                  [np.pi, 3 / 2 * np.pi, (0, 1, 0)]]  # starboard
+        sonars = [[3/2 * np.pi, 2 * np.pi, (1, 0, 0)],  # port
+                  [np.pi, 3/2 * np.pi, (0, 1, 0)]]  # starboard
         for pose3 in pose3s:
             center = [pose3.x(), pose3.y(), pose3.z()]
             radius = range
@@ -1661,11 +1527,12 @@ class sss_mapping:
 paths = {"mac": "/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/online_testing/",
          "linux": "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing/"}
 
-path_name = ''
 for path in paths.values():
     if os.path.isdir(path):
         path_name = path
         break
+    else:
+        path_name = ''
 
 if len(path_name) == 0:
     print("path_name was not assigned")
@@ -1739,7 +1606,165 @@ img_map.combine_row_images()
 img_map.plot_3d_map_mayavi()
 
 # %% Quantify quality of registration
-img_map.quantify_registration(method="ccorr",  # "ccorr"
+img_map.quantify_registration(method="other",  # "ccorr"
                               min_overlap_threshold=0.05,
                               verbose_output=True)
 img_map.report_registration_quality()
+
+# %% Testing parameters
+do_testing_1 = False
+do_testing_2 = False
+do_testing_3 = False
+do_testing_4 = False
+# %% Testing 1
+if do_testing_1:
+    print("Testing 1")
+    camera_name = "left"
+    p_org = np.array([-5.0, 4.0, -0])
+    p_x = np.array([-5.0, 9.0, -0])
+    p_y = np.array([-5.0, 4.0, -15])
+
+    point = np.array([-4.0, 3.0, -6])
+    direction = np.array([-1.0, 0, 0])
+
+    a, b, c, d = img_map.planes[0].find_intersection(point, direction)
+
+    corner_coords = img_map.find_fov_corner_coords(camera_name=camera_name, plane_id=0, pose_id=25)
+
+    corner_pixels, offset, max_inds = img_map.convert_spatial_corners_to_pixel(0, corner_coords)
+
+    M = cv2.getPerspectiveTransform(img_map.cameras[camera_name].orig_img_corners.astype(np.float32),
+                                    corner_pixels.astype(np.float32))
+
+    img_id = int(img_map.base_pose[25, -1])
+
+    img = cv2.imread(f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{img_id}.jpg")
+
+    new_img = cv2.warpPerspective(img, M, (max_inds[0] + 1, max_inds[1] + 1))
+
+    # cv2.imshow('thing', new_img)
+
+    # cv2.imwrite('new_img.jpg', new_img)
+
+    # truncate warped image
+    x_original = corner_pixels[0] + offset
+
+    x_start = abs(offset[0]) + 76
+    x_size = int((img_map.planes[0].mag_x * img_map.spatial_2_pixel) // 1)
+    x_end = x_start + x_size
+
+    y_start = abs(offset[1])
+    y_size = int((img_map.planes[0].mag_y * img_map.spatial_2_pixel) // 1)
+    y_end = y_start + y_size
+
+    new_img = new_img[y_start:y_end, x_start:x_end]
+
+    cv2.imwrite('new_img.jpg', new_img)
+
+# %% Testing 2
+if do_testing_2:
+    print("Testing 2")
+    camera_name = "left"
+    pose_id = 25
+    proper_img_id = int(img_map.base_pose[pose_id, -1])
+    test_next_n = 3
+
+    # buoys
+    test_point_b0 = np.array([-5.0, 4.0, 0])
+    test_point_b1 = np.array([-5.0, 9.0, 0])
+
+    x_pix_0, y_pix_0 = img_map.find_pixels_of_3d_point(camera_name=camera_name,
+                                                       pose_id=pose_id,
+                                                       map_point=test_point_b0)
+
+    x_pix_1, y_pix_1 = img_map.find_pixels_of_3d_point(camera_name=camera_name,
+                                                       pose_id=pose_id,
+                                                       map_point=test_point_b1)
+
+    # Lower points
+    depth = 7.5
+    test_point_b0_deep = test_point_b0
+    test_point_b0_deep[2] = -depth
+
+    test_point_b1_deep = test_point_b1
+    test_point_b1_deep[2] = -depth
+
+    x_pix_0_d, y_pix_0_d = img_map.find_pixels_of_3d_point(camera_name=camera_name,
+                                                           pose_id=pose_id,
+                                                           map_point=test_point_b0_deep)
+    x_pix_1_d, y_pix_1_d = img_map.find_pixels_of_3d_point(camera_name=camera_name,
+                                                           pose_id=pose_id,
+                                                           map_point=test_point_b1_deep)
+
+    # Center
+    # test_point_c = np.array([-5.0, 6.592, -0.706])
+    # x_pix_c, y_pix_c = img_map.find_pixels_of_3d_point(pose_id, test_point_c)
+
+    # Mark images
+    for i in range(int(test_next_n + 1)):
+        img_id = proper_img_id + i
+        img = cv2.imread(f"/Users/julian/KTH/Degree project/sam_slam/processing scripts/data/left/l_{img_id}.jpg")
+
+        # Buoys
+        img_marked = cv2.circle(img, (int(x_pix_0 // 1), int(y_pix_0 // 1)), 5, (0, 0, 255), -1)
+        img_marked = cv2.circle(img_marked, (int(x_pix_1 // 1), int(y_pix_1 // 1)), 5, (0, 0, 255), -1)
+
+        # Lower points
+        img_marked = cv2.circle(img, (int(x_pix_0_d // 1), int(y_pix_0_d // 1)), 5, (255, 0, 255), -1)
+        img_marked = cv2.circle(img_marked, (int(x_pix_1_d // 1), int(y_pix_1_d // 1)), 5, (255, 0, 255), -1)
+
+        # Center
+        # img_marked = cv2.circle(img_marked, (int(x_pix_c // 1), int(y_pix_c // 1)), 5, (0, 255, 255), -1)
+
+        img_marked[:, int(img_map.cameras[camera_name].cx), :] = (0, 255, 255)
+        img_marked[int(img_map.cameras[camera_name].cy), :, :] = (0, 255, 255)
+
+        #
+        cv2.imshow(f"Marked Image: {img_id}", img_marked)
+        cv2.imwrite(f"Test2:{proper_img_id}_{img_id}.jpg", img_marked)
+
+    # Waits for a keystroke
+    cv2.waitKey(0)
+
+    # Destroys all the windows created
+    cv2.destroyAllWindows()
+
+# %% Testing 3 - checking rotation transforms and equivalences
+if do_testing_3:
+    """
+    Testing for the transform between base_link and left camera
+    """
+    pose_id = 25
+    base_pose3 = img_map.base_pose3s[pose_id]
+    # Ros transform using quaternions reported by ros
+    # stnfish using rpy in stonefish config -> quaternion w/ rpy_2_quat.py
+    ros_b_2_c = img_map.return_left_relative_pose()
+    stnfsh_b_2_c = img_map.return_left_relative_pose()
+
+    ros_left_pose3 = base_pose3.transformPoseFrom(ros_b_2_c)
+    stnfsh_left_pose3 = base_pose3.transformPoseFrom(stnfsh_b_2_c)
+
+    # Convert matrix to rpy w/ gtsam
+    ros_check = ros_b_2_c.rotation().rpy()
+    stnfsh_check = stnfsh_b_2_c.rotation().rpy()
+
+# %% Testing 4 - mark images with centers
+if do_testing_4:
+    camera_names = ["left", "right"]
+    for pose in img_map.base_pose:
+        img_id = int(pose[-1])
+
+        for camera_name in camera_names:
+            img = cv2.imread(path_name + camera_name + f"/{img_id}.jpg")
+
+            # Check that image was able to be loaded
+            if not isinstance(img, np.ndarray):
+                continue
+
+            center_x = img_map.cameras[camera_name].cx
+            center_y = img_map.cameras[camera_name].cy
+
+            img[:, int(center_x), :] = (0, 255, 255)
+            img[int(center_y), :, :] = (0, 255, 255)
+
+            cv2.imwrite(path_name + f"centers/centers_{img_id}.jpg", img)
