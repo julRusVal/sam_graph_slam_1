@@ -12,7 +12,7 @@ import math
 import numpy as np
 from numpy.random import default_rng
 import csv
-from sam_slam_utils.sam_slam_helper_funcs import angle_between_rads
+from sam_slam_utils.sam_slam_helpers import angle_between_rads
 
 
 # %% Function Definitions

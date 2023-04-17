@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os.path
 import sys
 from functools import partial
 
@@ -22,8 +23,8 @@ import tf2_geometry_msgs
 import numpy as np
 import cv2
 
-from sam_slam_utils.sam_slam_helper_funcs import show_simple_graph_2d
-from sam_slam_utils.sam_slam_helper_funcs import write_array_to_csv
+from sam_slam_utils.sam_slam_helpers import show_simple_graph_2d
+from sam_slam_utils.sam_slam_helpers import write_array_to_csv, overwrite_directory
 from sam_slam_utils.sam_slam_proc_classes import analyze_slam
 
 
@@ -99,14 +100,20 @@ class sam_slam_listener:
 
         # Frame names: For the most part everything is transformed to the map frame
         self.frame = frame_name
-        self.gt_frame_id = 'gt/sam/base_link'
+        self.gt_frame_id = 'gt/' + self.robot_name + '/base_link'
 
         # ===== File paths for logging =====
         self.file_path = path_name
-        if self.file_path is None or not isinstance(path_name, str):
-            self.file_path = ''
-        else:
+        if self.file_path is None or not os.path.isdir(self.file_path):
+            print("Invalid file path provided")
+
+        if self.file_path[-1] != '/':
             self.file_path = path_name + '/'
+
+        # Create folders for sensor data
+        data_folders = ['left', 'right', 'down', 'sss']
+        for data_folder in data_folders:
+            overwrite_directory(self.file_path + data_folder)
 
         self.gt_poses_graph_file_path = self.file_path + 'gt_poses_graph.csv'
         self.dr_poses_graph_file_path = self.file_path + 'dr_poses_graph.csv'
@@ -188,21 +195,26 @@ class sam_slam_listener:
         self.buoy_updated = False
         self.data_written = False
         self.image_received = False
+        self.simulated_detections = rospy.get_param("simulated_detections", True)
 
         self.gt_last_time = rospy.Time.now()
         self.gt_timeout = 5.0  # Time out used to save data at end of simulation
 
-        self.dr_update_time = 2.0  # Time for limiting the rate that odometry factors are added
         self.dr_last_time = rospy.Time.now()
+        # Time for limiting the rate that odometry factors are added to graph
+        self.dr_update_time = rospy.get_param("dr_update_time", 2.0)
 
         self.detect_last_time = rospy.Time.now()
-        self.detect_update_time = .5  # Time for limiting the rate that detection factors are added
+        # Time for limiting the rate that detection factors are added to graph
+        self.detect_update_time = rospy.get_param("detect_update_time", 0.5)
 
         self.camera_last_time = rospy.Time.now()
-        self.camera_update_time = 1
+        # Time for limiting the rate that pose with camera data are added to graph
+        self.camera_update_time = rospy.get_param("camera_update_time", 0.5)
         self.camera_last_seq = -1
 
-        self.sss_update_time = 1
+        # Time for limiting the rate that pose with camera data are added to graph
+        self.sss_update_time = rospy.get_param("sss_update_time", 1.0)
         self.sss_last_time = rospy.Time.now() - rospy.Time.from_sec(self.sss_update_time)
 
         # ===== Subscribers =====
@@ -338,7 +350,7 @@ class sam_slam_listener:
             # corrected_q = quaternion_from_euler(uncorrected_rpy[0], uncorrected_rpy[1], corrected_y)
             #
             # Correct? method
-            r_q = [0, -1, 0, 0]
+            r_q = [0, -1, 0, 0]  # The correct orientation correction factor
 
             dr_q = [dr_quaternion.x, dr_quaternion.y, dr_quaternion.z, dr_quaternion.w]
             corrected_q = tf.transformations.quaternion_multiply(r_q, dr_q)
@@ -515,11 +527,11 @@ class sam_slam_listener:
             self.sss_last_time = rospy.Time.now()
 
             # Write to 'disk'
-            if self.file_path is None or not isinstance(self.file_path, str):
-                save_path = f'sss_{sss_id}.jpg'
+            if self.file_path is None or not os.path.isdir(self.file_path):
+                print("Provide valid file path sss output")
             else:
                 save_path = self.file_path + f'/sss/{sss_id}.jpg'
-            cv2.imwrite(save_path, sss_current)
+                cv2.imwrite(save_path, sss_current)
 
     def info_callback(self, msg, camera_id):
         if camera_id == 'down':
@@ -578,18 +590,11 @@ class sam_slam_listener:
 
         if new_frame:
             print(f"Adding img-{current_id} to graph")
-
-            if self.online_graph is not None \
-                    and self.online_graph.initial_pose_set is False \
-                    and not self.online_graph.busy:
-                print("CAM - First update w/ camera data")
-                self.online_graph.add_first_pose(dr_pose, gt_pose,
-                                                 initial_estimate=None,
-                                                 id_string=f'cam_{current_id}')
-
-            elif self.online_graph is not None \
-                    and not self.online_graph.busy:
-                print(f"CAM - Odometry and camera update - {self.online_graph.current_x_ind + 1}")
+            if self.online_graph is not None and not self.online_graph.busy:
+                if self.online_graph.initial_pose_set:
+                    print(f"CAM - Odometry and camera update - {self.online_graph.current_x_ind + 1}")
+                else:
+                    print("CAM - First update w/ camera data")
                 self.online_graph.online_update(dr_pose, gt_pose,
                                                 relative_detection=None,
                                                 id_string=f'cam_{current_id}')
@@ -634,11 +639,11 @@ class sam_slam_listener:
         cv2_img = imgmsg_to_cv2(msg)
 
         # Write to 'disk'
-        if self.file_path is None or not isinstance(self.file_path, str):
-            save_path = f'{camera_id}_{current_id}.jpg'
+        if self.file_path is None or not os.path.isdir(self.file_path):
+            print("Provide valid file path image output")
         else:
             save_path = self.file_path + f'/{camera_id}/{current_id}.jpg'
-        cv2.imwrite(save_path, cv2_img)
+            cv2.imwrite(save_path, cv2_img)
 
         return
 

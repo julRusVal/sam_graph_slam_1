@@ -13,7 +13,7 @@ import cv2
 
 import gtsam
 
-from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array, read_csv_to_list
+from sam_slam_utils.sam_slam_helpers import read_csv_to_array, read_csv_to_list
 import gtsam.utils.plot as gtsam_plot
 
 # 3D Plotting
