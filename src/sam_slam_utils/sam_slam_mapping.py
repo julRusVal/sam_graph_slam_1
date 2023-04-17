@@ -12,7 +12,8 @@ import cv2
 import gtsam
 import gtsam.utils.plot as gtsam_plot
 
-from sam_slam_utils.sam_slam_helpers import read_csv_to_array, read_csv_to_list, overwrite_directory
+from sam_slam_utils.sam_slam_helpers import read_csv_to_array, read_csv_to_list, write_array_to_csv
+from sam_slam_utils.sam_slam_helpers import overwrite_directory
 from sam_slam_utils.sam_slam_helpers import create_Pose3, convert_poses_to_Pose3, apply_transformPoseFrom
 
 from sam_slam_utils.sam_slam_helpers import projectPixelTo3dRay
@@ -114,6 +115,7 @@ class rope_section:
         # ===== Storage for images and masks =====
         self.images = []
         self.masks = []
+        self.ranges = []
         self.final_image = None
 
         # ===== Quality =====
@@ -158,6 +160,34 @@ class rope_section:
 
         return True, intersection_point, (x_intercept, y_intercept), within_bounds
 
+    def calculate_range_map(self, point):
+        """
+        Generates a simple estimate of the depth map assuming a planer geometry. The extents of the seaweed    are ignored.    :param point:    :return:
+        """
+        # Offset slightly for plotting
+        start_x, start_y, start_depth = self.start_coord
+        end_x, end_y, _ = self.end_coord
+        _, _, end_depth = self.start_bottom_coord
+
+        # Define the resolution of the meshgrid based on image
+        res_x = self.pixel_width
+        res_h = self.pixel_height
+
+        # Create the meshgrid
+        x_linspace = np.linspace(start_x, end_x, res_x)
+        y_linspace = np.linspace(start_y, end_y, res_x)
+        h_linspace = np.linspace(start_depth, end_depth, res_h)
+
+        X, Z = np.meshgrid(x_linspace, h_linspace)
+        Y, _ = np.meshgrid(y_linspace, h_linspace)
+
+        X_delta = X - point[0]
+        Y_delta = Y - point[1]
+        Z_delta = Z - point[2]
+
+        delta = np.dstack((X_delta, Y_delta, Z_delta))
+        depth = np.sqrt(np.sum(np.square(delta), axis=2))
+        return depth
 
 class ground_plane:
     def __init__(self, start_coord, x_width, y_width, depth, spatial_2_pixel):
@@ -668,10 +698,12 @@ class image_mapping:
         registered_path_name = self.path_name + 'images_registered/'
         warped_path_name = self.path_name + 'images_warped/'
         masked_path_name = self.path_name + 'images_masked/'
+        range_path_name = self.path_name + 'ranges/'
 
         overwrite_directory(registered_path_name)
         overwrite_directory(warped_path_name)
         overwrite_directory(masked_path_name)
+        overwrite_directory(range_path_name)
 
         # Verbose parameters
         vertical_offset = 2.0  # controls where additional registration points are drawn
@@ -805,13 +837,17 @@ class image_mapping:
                             img_warped = cv2.warpPerspective(img, homography,
                                                              (plane.pixel_width, plane.pixel_height))
 
-                            # apply homography to form a mask
+                            # Apply homography to form a mask
                             mask_warped = cv2.warpPerspective(np.ones_like(img) * 255, homography,
                                                               (plane.pixel_width, plane.pixel_height))
+
+                            # === Range map ===
+                            range_map = plane.calculate_range_map(c_center)
 
                             # Add warped image and mask to the plane
                             self.planes[plane_id].images.append(img_warped)
                             self.planes[plane_id].masks.append(mask_warped)
+                            self.planes[plane_id].ranges.append(range_map)
 
                             # Add the distance between the camera and the interesction w/ the plane
                             delta = c_center - w_coords
@@ -827,6 +863,10 @@ class image_mapping:
                             cv2.imwrite(masked_path_name +
                                         f"{camera_name}_{current_pose_id}_{mod_id}_{plane_id}.jpg",
                                         mask_warped)
+
+                            write_array_to_csv(range_path_name +
+                                        f"{camera_name}_{current_pose_id}_{mod_id}_{plane_id}.csv",
+                                        range_map)
 
                             # Only associated each image with a plane once
                             break
