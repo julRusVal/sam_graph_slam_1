@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="robot_name" default="sam"/>
+
+    <node name="sam_slam_listener" pkg="sam_slam" type="sam_listener_online_slam_node.py" output="screen">
+        <!-- Node parameters -->
+        <param name="robot_name" value="$(arg robot_name)"/>
+        <param name="frame" value="map"/>
+        <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing"/>
+
+        <!-- Data parameters -->
+        <param name="dr_update_time" value="2.0"/>
+        <param name="detect_update_time" value="0.5"/>
+        <param name="simulated_detections" value="true"/>
+        <param name="camera_update_time" value="1.0"/>
+        <param name="sss_update_time" value="1.0"/>
+        <param name="sss_buffer_len" value="10"/>
+
+        <!-- Graph parameters -->
+        <!-- Currently using default ISAM2 parameters -->
+        <!-- Angles are in units of degrees, which are then converted to rads -->
+        <!-- Prior sigmas -->
+        <param name="prior_ang_sig_deg" value="1.0"/>
+        <param name="prior_dist_sig" value="0.5"/>
+        <!-- Buoy -->
+        <param name="buoy_dist_sig" value="0.5"/>
+        <!-- Odometry -->
+        <param name="odo_ang_sig_deg" value="0.1"/>
+        <param name="odo_dist_sig" value="0.1"/>
+        <!-- Detection sigmas -->
+        <param name="detect_ang_sig_deg" value="1.0"/>
+        <param name="detect_dist_sig" value="1.0"/>
+
+    </node>
+
+</launch>

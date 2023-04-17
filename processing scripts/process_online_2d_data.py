@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 import gtsam
 
 from sam_slam_utils.sam_slam_proc_classes import online_slam_2d, analyze_slam
-from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array
-from sam_slam_utils.sam_slam_helper_funcs import show_simple_graph_2d
+from sam_slam_utils.sam_slam_helpers import read_csv_to_array
+from sam_slam_utils.sam_slam_helpers import show_simple_graph_2d
 
 import gtsam.utils.plot as gtsam_plot
 

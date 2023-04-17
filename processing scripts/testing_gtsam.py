@@ -2,7 +2,7 @@
 import gtsam
 import numpy as np
 
-from sam_slam_utils.sam_slam_helper_funcs import create_Pose2
+from sam_slam_utils.sam_slam_helpers import create_Pose2
 
 # %%
 # %% Testing Junk #2

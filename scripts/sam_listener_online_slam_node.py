@@ -11,11 +11,12 @@ def main():
     rate = rospy.Rate(5)
 
     # Topic parameters
-    robot_name = 'sam'
-    frame = 'map'
+    robot_name = rospy.get_param('sam', 'sam')
+    frame = rospy.get_param('map', 'map')
 
     # Output parameters
-    path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing'
+    path_name = rospy.get_param('path_name',
+                                '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing')
     data_processed = False
 
     # ===== Start =====

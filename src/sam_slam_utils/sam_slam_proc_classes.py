@@ -21,10 +21,10 @@ import networkx as nx
 import gtsam
 
 import rospy
-from sam_slam_utils.sam_slam_helper_funcs import calc_pose_error
-from sam_slam_utils.sam_slam_helper_funcs import create_Pose2, pose2_list_to_nparray
-from sam_slam_utils.sam_slam_helper_funcs import create_Pose3, merge_into_Pose3
-from sam_slam_utils.sam_slam_helper_funcs import read_csv_to_array, write_array_to_csv
+from sam_slam_utils.sam_slam_helpers import calc_pose_error
+from sam_slam_utils.sam_slam_helpers import create_Pose2, pose2_list_to_nparray
+from sam_slam_utils.sam_slam_helpers import create_Pose3, merge_into_Pose3
+from sam_slam_utils.sam_slam_helpers import read_csv_to_array, write_array_to_csv
 
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
@@ -636,28 +636,28 @@ class online_slam_2d:
 
         # ===== Sigmas =====
         # Agent prior sigmas
-        self.ang_sig_init = np.pi / 180
-        self.dist_sig_init = 0.5
+        self.prior_ang_sig = rospy.get_param('prior_ang_sig_deg', 1.0) * np.pi / 180
+        self.prior_dist_sig = rospy.get_param('prior_dist_sig', 1.0)
         # buoy prior sigmas
-        self.buoy_dist_sig_init = 0.5
+        self.buoy_dist_sig_init = rospy.get_param('buoy_dist_sig', 1.0)
         # agent odometry sigmas
-        self.ang_sig = 0.1 * np.pi / 180
-        self.dist_sig = .1
+        self.odo_ang_sig = rospy.get_param('odo_ang_sig_deg', 0.1) * np.pi / 180
+        self.odo_dist_sig = rospy.get_param('dist_sig', 0.1)
         # detection sigmas
-        self.detect_ang_sig = 1 * np.pi / 180
-        self.detect_dist_sig = 1
+        self.detect_ang_sig = rospy.get_param('detect_ang_sig_deg', 1.0) * np.pi / 180
+        self.detect_dist_sig = rospy.get_param('detect_dis_sigma', 1.0)
 
         # ===== Noise models =====
-        self.prior_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.dist_sig_init,
-                                                                      self.dist_sig_init,
-                                                                      self.ang_sig_init]))
+        self.prior_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.prior_dist_sig,
+                                                                      self.prior_dist_sig,
+                                                                      self.prior_ang_sig]))
 
         self.prior_model_lm = gtsam.noiseModel.Diagonal.Sigmas((self.buoy_dist_sig_init,
                                                                 self.buoy_dist_sig_init))
 
-        self.odometry_model = gtsam.noiseModel.Diagonal.Sigmas((self.dist_sig,
-                                                                self.dist_sig,
-                                                                self.ang_sig))
+        self.odometry_model = gtsam.noiseModel.Diagonal.Sigmas((self.odo_dist_sig,
+                                                                self.odo_dist_sig,
+                                                                self.odo_ang_sig))
 
         self.detection_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.detect_dist_sig,
                                                                           self.detect_ang_sig]))
