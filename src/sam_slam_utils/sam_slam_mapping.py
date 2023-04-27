@@ -189,6 +189,7 @@ class rope_section:
         depth = np.sqrt(np.sum(np.square(delta), axis=2))
         return depth
 
+
 class ground_plane:
     def __init__(self, start_coord, x_width, y_width, depth, spatial_2_pixel):
         self.mag_x = abs(x_width)
@@ -865,8 +866,8 @@ class image_mapping:
                                         mask_warped)
 
                             write_array_to_csv(range_path_name +
-                                        f"{camera_name}_{current_pose_id}_{mod_id}_{plane_id}.csv",
-                                        range_map)
+                                               f"{camera_name}_{current_pose_id}_{mod_id}_{plane_id}.csv",
+                                               range_map)
 
                             # Only associated each image with a plane once
                             break
