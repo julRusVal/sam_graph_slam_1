@@ -6,6 +6,7 @@
         <!-- Node parameters -->
         <param name="robot_name" value="$(arg robot_name)"/>
         <param name="frame" value="map"/>
+        <param name="simulated_data" value="True"/>
         <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing"/>
 
         <!-- Data parameters -->

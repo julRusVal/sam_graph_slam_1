@@ -177,6 +177,10 @@ def show_simple_graph_2d(graph, x_keys, b_keys, values, label):
     """
     plot_limits = [-12.5, 12.5, -5, 20]
 
+    # Check for buoys
+    if b_keys is None:
+        b_keys = {}
+
     # Initialize network
     G = nx.Graph()
     for i in range(graph.size()):

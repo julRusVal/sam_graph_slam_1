@@ -67,9 +67,14 @@ class sam_slam_listener:
 
     """
 
-    def __init__(self, robot_name, frame_name='sam',
+    def __init__(self, robot_name, frame_name='sam', simulated_data=False,
                  path_name=None,
                  online_graph=None):
+
+        # ===== Real or simulated =====
+        self.simulated_data = simulated_data
+        self.simulated_detections = rospy.get_param("simulated_detections", True)
+        self.correct_dr = True
 
         # ===== Topic names =====
         self.robot_name = robot_name
@@ -88,15 +93,27 @@ class sam_slam_listener:
         self.sss_topic = f'/{self.robot_name}/payload/sidescan'
 
         # === Cameras ===
-        # Camera: down
-        self.cam_down_image_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/image_color'
-        self.cam_down_info_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/camera_info'
-        # Camera: left
-        self.cam_left_image_topic = f'/{self.robot_name}/perception/csi_cam_1/camera/image_color'
-        self.cam_left_info_topic = f'/{self.robot_name}/perception/csi_cam_1/camera/camera_info'
-        # Camera: right
-        self.cam_right_image_topic = f'/{self.robot_name}/perception/csi_cam_2/camera/image_color'
-        self.cam_right_info_topic = f'/{self.robot_name}/perception/csi_cam_2/camera/camera_info'
+        if self.simulated_data:
+            # Camera: down
+            self.cam_down_image_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/image_color'
+            self.cam_down_info_topic = f'/{self.robot_name}/perception/csi_cam_0/camera/camera_info'
+            # Camera: left
+            self.cam_left_image_topic = f'/{self.robot_name}/perception/csi_cam_1/camera/image_color'
+            self.cam_left_info_topic = f'/{self.robot_name}/perception/csi_cam_1/camera/camera_info'
+            # Camera: right
+            self.cam_right_image_topic = f'/{self.robot_name}/perception/csi_cam_2/camera/image_color'
+            self.cam_right_info_topic = f'/{self.robot_name}/perception/csi_cam_2/camera/camera_info'
+
+        else:
+            # Camera: down
+            self.cam_down_image_topic = f'/{self.robot_name}/payload/cam_down/image_raw'
+            self.cam_down_info_topic = f'/{self.robot_name}/payload/cam_down/camera_info'
+            # Camera: left
+            self.cam_left_image_topic = f'/{self.robot_name}/payload/cam_port/image_raw'
+            self.cam_left_info_topic = f'/{self.robot_name}/payload/cam_port/camera_info'
+            # Camera: right
+            self.cam_right_image_topic = f'/{self.robot_name}/payload/cam_starboard/image_raw'
+            self.cam_right_info_topic = f'/{self.robot_name}/payload/cam_starboard/camera_info'
 
         # Frame names: For the most part everything is transformed to the map frame
         self.frame = frame_name
@@ -141,7 +158,7 @@ class sam_slam_listener:
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         # Buoy positions
-        self.buoys = None
+        self.buoys = []
 
         # Online SLAM w/ iSAM2
         self.online_graph = online_graph
@@ -187,7 +204,11 @@ class sam_slam_listener:
         self.detections_graph = []
 
         # States and timings
-        self.gt_updated = False
+        if simulated_data:
+            self.gt_updated = False  # for simulated data updates are skipped until gt is received
+        else:
+            self.gt_updated = True
+
         self.dr_updated = False
         self.roll_updated = False
         self.pitch_updated = False
@@ -195,14 +216,14 @@ class sam_slam_listener:
         self.buoy_updated = False
         self.data_written = False
         self.image_received = False
-        self.simulated_detections = rospy.get_param("simulated_detections", True)
 
-        self.gt_last_time = rospy.Time.now()
-        self.gt_timeout = 5.0  # Time out used to save data at end of simulation
+        # self.gt_last_time = rospy.Time.now()
+        # self.gt_timeout = 10.0  # Time out used to save data at end of simulation
 
         self.dr_last_time = rospy.Time.now()
         # Time for limiting the rate that odometry factors are added to graph
         self.dr_update_time = rospy.get_param("dr_update_time", 2.0)
+        self.dr_timeout = 10.0  # Time out used to save data at end of simulation
 
         self.detect_last_time = rospy.Time.now()
         # Time for limiting the rate that detection factors are added to graph
@@ -227,7 +248,7 @@ class sam_slam_listener:
         self.dr_subscriber = rospy.Subscriber(self.dr_topic,
                                               Odometry,
                                               self.dr_callback,
-                                              True)  # bool to set if the dr is corrected
+                                              self.correct_dr)  # bool to set if the dr is corrected
 
         # Additional odometry topics: roll, pitch, depth
         self.roll_subscriber = rospy.Subscriber(self.roll_topic,
@@ -321,8 +342,8 @@ class sam_slam_listener:
         NOW: The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z, roll, pitch, depth].
         Note the position of q_w, this is for compatibility with gtsam and matlab
         """
-        # wait for gt
-        if not self.gt_updated or not self.roll_updated or not self.pitch_updated or not self.depth_updated:
+        # wait for gt (if this real)
+        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
             return
 
         # transform odom to the map frame
@@ -377,8 +398,11 @@ class sam_slam_listener:
             # Add to the dr and gt lists
             dr_pose = self.dr_poses[-1]
             self.dr_poses_graph.append(dr_pose)
-            gt_pose = self.gt_poses[-1]
-            self.gt_poses_graph.append(gt_pose)
+            if self.simulated_data:
+                gt_pose = self.gt_poses[-1]
+                self.gt_poses_graph.append(gt_pose)
+            else:
+                gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
             # Update time and state
             self.dr_last_time = time_now
@@ -444,8 +468,11 @@ class sam_slam_listener:
                 # First update dr and gr with the most current
                 dr_pose = self.dr_poses[-1]
                 self.dr_poses_graph.append(dr_pose)
-                gt_pose = self.gt_poses[-1]
-                self.gt_poses_graph.append(gt_pose)
+                if self.simulated_data:
+                    gt_pose = self.gt_poses[-1]
+                    self.gt_poses_graph.append(gt_pose)
+                else:
+                    gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
                 # detection position:
                 # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
@@ -503,8 +530,11 @@ class sam_slam_listener:
 
         dr_pose = self.dr_poses[-1]
         self.dr_poses_graph.append(dr_pose)
-        gt_pose = self.gt_poses[-1]
-        self.gt_poses_graph.append(gt_pose)
+        if self.simulated_data:
+            gt_pose = self.gt_poses[-1]
+            self.gt_poses_graph.append(gt_pose)
+        else:
+            gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
         # TODO refactor as online update will check for initial pose set
         if self.online_graph is not None \
@@ -557,7 +587,7 @@ class sam_slam_listener:
         Based
         """
         # Check that topics have received messages
-        if not self.gt_updated or not self.roll_updated or not self.pitch_updated or not self.depth_updated:
+        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
             return
 
         # Identifies frames
@@ -585,8 +615,11 @@ class sam_slam_listener:
 
         dr_pose = self.dr_poses[-1]
         self.dr_poses_graph.append(dr_pose)
-        gt_pose = self.gt_poses[-1]
-        self.gt_poses_graph.append(gt_pose)
+        if self.simulated_data:
+            gt_pose = self.gt_poses[-1]
+            self.gt_poses_graph.append(gt_pose)
+        else:
+            gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
         if new_frame:
             print(f"Adding img-{current_id} to graph")
@@ -666,8 +699,8 @@ class sam_slam_listener:
     def time_check_callback(self, event):
         if not self.dr_updated:
             return
-        delta_t = rospy.Time.now() - self.gt_last_time
-        if delta_t.to_sec() >= self.gt_timeout and not self.data_written:
+        delta_t = rospy.Time.now() - self.dr_last_time  # was self.gt_last_time
+        if delta_t.to_sec() >= self.dr_timeout and not self.data_written:  # was self.gt_timeout
             print('Data written')
             self.write_data()
             self.data_written = True
@@ -679,12 +712,14 @@ class sam_slam_listener:
                 analysis = analyze_slam(self.online_graph)
                 analysis.save_for_sensor_processing(self.file_path)
                 analysis.save_2d_poses(self.file_path)
+                analysis.show_graph_2d(label="Online Graph",
+                                       show_final=True)
 
-                show_simple_graph_2d(graph=self.online_graph.graph,
-                                     x_keys=self.online_graph.x,
-                                     b_keys=self.online_graph.b,
-                                     values=self.online_graph.current_estimate,
-                                     label="Online Graph")
+                # show_simple_graph_2d(graph=self.online_graph.graph,
+                #                      x_keys=self.online_graph.x,
+                #                      b_keys=self.online_graph.b,
+                #                      values=self.online_graph.current_estimate,
+                #                      label="Online Graph")
 
         return
 

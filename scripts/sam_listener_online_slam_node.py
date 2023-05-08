@@ -11,8 +11,9 @@ def main():
     rate = rospy.Rate(5)
 
     # Topic parameters
-    robot_name = rospy.get_param('sam', 'sam')
-    frame = rospy.get_param('map', 'map')
+    robot_name = rospy.get_param('robot_name', 'sam')
+    frame_name = rospy.get_param('frame', 'map')
+    simulated_data = rospy.get_param('simulated_data', False)
 
     # Output parameters
     path_name = rospy.get_param('path_name',
@@ -20,13 +21,19 @@ def main():
     data_processed = False
 
     # ===== Start =====
-    print("Initializing online graph")
+    print('SAM SLAM starting\n'
+          f'Robot name: {robot_name}\n'
+          f'Frame name: {frame_name}\n'
+          f'Simulated data: {simulated_data}')
+
+    print('Initializing online graph')
     online_graph = online_slam_2d()
 
     print('initializing listener')
-    listener = sam_slam_listener(robot_name,
-                                 frame,
-                                 path_name,
+    listener = sam_slam_listener(robot_name=robot_name,
+                                 frame_name=frame_name,
+                                 simulated_data=simulated_data,
+                                 path_name=path_name,
                                  online_graph=online_graph)
 
     while not rospy.is_shutdown():

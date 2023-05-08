@@ -662,10 +662,9 @@ class online_slam_2d:
         self.detection_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.detect_dist_sig,
                                                                           self.detect_ang_sig]))
 
-        # buoy prior map
+        # ===== buoy prior map =====
         self.n_buoys = None
         self.buoy_priors = None
-        self.buoy_map_present = False
 
         # ===== Optimizer and values =====
         # self.optimizer = None
@@ -684,6 +683,12 @@ class online_slam_2d:
         self.true_detect_loc = None
 
     def buoy_setup(self, buoys):
+        '''
+        Initializes the buoy landmarks in the factor graph, currently the only way to add landmarks.
+
+        :param buoys: list of buoy coords in the map frame
+        :return:
+        '''
         print("Buoys being added to online graph")
         if len(buoys) == 0:
             print("Invalid buoy object used!")
@@ -714,9 +719,9 @@ class online_slam_2d:
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
         # Wait to start building graph until the prior is received
-        if not self.buoy_map_present:
-            print("Waiting for buoy prior map")
-            return -1
+        # if not self.buoy_map_present:
+        #     print("Waiting for buoy prior map")
+        #     return -1
 
         if self.current_x_ind != 0:
             print("add_first_pose() called with a graph that already has a pose added")
@@ -912,20 +917,23 @@ class analyze_slam:
 
         # ===== Buoys =====
         self.buoy_priors = slam_object.buoy_priors
-        self.n_buoys = len(self.buoy_priors)
+        if self.buoy_priors is None:
+            self.n_buoys = 0
+        else:
+            self.n_buoys = len(self.buoy_priors)
 
         # ===== Build arrays for the poses and points of the posterior =====
         self.posterior_poses = np.zeros((len(self.x), 3))
-        self.posterior_points = np.zeros((len(self.b), 2))
-
         for i in range(len(self.x)):
             self.posterior_poses[i, 0] = self.current_estimate.atPose2(self.x[i]).x()
             self.posterior_poses[i, 1] = self.current_estimate.atPose2(self.x[i]).y()
             self.posterior_poses[i, 2] = self.current_estimate.atPose2(self.x[i]).theta()
 
-        for i in range(len(self.b)):
-            self.posterior_points[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
-            self.posterior_points[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+        if self.n_buoys > 0:
+            self.posterior_points = np.zeros((self.n_buoys, 2))
+            for i in range(self.n_buoys):
+                self.posterior_points[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
+                self.posterior_points[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
 
         # ===== Unpack more relevant data from the slam object =====
         """
@@ -1061,17 +1069,18 @@ class analyze_slam:
                     cluster_num = self.buoy2cluster[ind_buoy]
                     current_color = self.colors[cluster_num % len(self.colors)]
 
-                # Plot all the buoys
-                ax.scatter(self.buoy_priors[ind_buoy, 0],
-                           self.buoy_priors[ind_buoy, 1],
-                           color=current_color)
+                if self.n_buoys > 0:
+                    # Plot all the buoys
+                    ax.scatter(self.buoy_priors[ind_buoy, 0],
+                               self.buoy_priors[ind_buoy, 1],
+                               color=current_color)
 
-                # Plot buoy posteriors
-                ax.scatter(self.posterior_points[ind_buoy, 0],
-                           self.posterior_points[ind_buoy, 1],
-                           color=current_color,
-                           marker='+',
-                           s=75)
+                    # Plot buoy posteriors
+                    ax.scatter(self.posterior_points[ind_buoy, 0],
+                               self.posterior_points[ind_buoy, 1],
+                               color=current_color,
+                               marker='+',
+                               s=75)
 
         # Plot the posterior
         ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1], color='g', label='Posterior')
@@ -1136,7 +1145,7 @@ class analyze_slam:
                     G.add_node(key, pos=pos, color='black')
 
                 # Test if key corresponds to points
-                elif key in self.b.values():
+                elif self.b is not None and key in self.b.values():
                     pos = (values.atPoint2(key)[0], values.atPoint2(key)[1])
 
                     # Set color according to clustering
@@ -1159,7 +1168,7 @@ class analyze_slam:
                 for key_2_id, key_2 in enumerate(factor.keys()):
                     if key != key_2 and key_id < key_2_id:
                         # detections will have key corresponding to a landmark
-                        if key in self.b.values() or key_2 in self.b.values():
+                        if self.b is not None and (key in self.b.values() or key_2 in self.b.values()):
                             G.add_edge(key, key_2, color='red')
                         else:
                             G.add_edge(key, key_2, color='blue')
@@ -1207,7 +1216,7 @@ class analyze_slam:
         plt.axis(self.plot_limits)
         plt.grid(True)
 
-        for ind_buoy in range(self.buoy_priors.shape[0]):
+        for ind_buoy in range(self.n_buoys):
             cluster_num = self.buoy2cluster[ind_buoy]  # landmark_associations[ind_landmark]
             if cluster_num == -1:
                 current_color = 'k'
@@ -1323,14 +1332,15 @@ class analyze_slam:
 
         # ===== Save buoy estimated positions =====
         # only the x an y coords are estimated, buoys are assumed to have z = 0
-        buoys_est = np.zeros((len(self.b), 3))
+        if self.n_buoys > 0:
+            buoys_est = np.zeros((self.n_buoys, 3))
 
-        for i in range(len(self.b)):
-            buoys_est[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
-            buoys_est[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+            for i in range(self.n_buoys):
+                buoys_est[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
+                buoys_est[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
 
-        # Write to file
-        write_array_to_csv(file_path + 'buoys_est.csv', buoys_est)
+            # Write to file
+            write_array_to_csv(file_path + 'buoys_est.csv', buoys_est)
 
     def save_2d_poses(self, file_path=''):
         """
