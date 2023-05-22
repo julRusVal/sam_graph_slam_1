@@ -14,6 +14,7 @@ def main():
     robot_name = rospy.get_param('robot_name', 'sam')
     frame_name = rospy.get_param('frame', 'map')
     simulated_data = rospy.get_param('simulated_data', False)
+    record_gt = rospy.get_param('record_ground_truth', False)
 
     # Output parameters
     path_name = rospy.get_param('path_name',
@@ -33,6 +34,7 @@ def main():
     listener = sam_slam_listener(robot_name=robot_name,
                                  frame_name=frame_name,
                                  simulated_data=simulated_data,
+                                 record_gt=record_gt,
                                  path_name=path_name,
                                  online_graph=online_graph)
 
