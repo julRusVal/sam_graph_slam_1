@@ -13,14 +13,36 @@ import numpy as np
 
 # %% Classes
 class sss_detector:
-    def __init__(self, file_name):
+    def __init__(self, file_name, start_ind, end_ind, max_nadir_ind):
         # SSS parameters
-        self.resolution = 0.5
+        self.resolution = 0.05
+        # If this is set above 0 the nadir detection is not performed and is assumed to be at this index
+        # TODO: figure out nadir detection, this is a little ugly
+        self.max_nadir_ind = max_nadir_ind
 
         # Img info
         self.file_name = file_name
         self.img = cv.imread(file_name)  # cv.IMREAD_GRAYSCALE)
         self.height = self.img.shape[0]
+
+        # Check the clipping indices
+        if 0 < end_ind <= start_ind:
+            print('Improper clipping indices!')
+
+        if end_ind <= 0:
+            self.end_ind = self.height - 1
+        else:
+            self.end_ind = min(self.height - 1, end_ind)
+
+        if start_ind <= 0:
+            self.start_ind = 0
+        else:
+            self.start_ind = min(self.height - 1, self.end_ind - 1, start_ind)
+
+        # Apply Clipping
+        self.img = self.img[self.start_ind:self.end_ind, :]
+        self.height = self.img.shape[0]
+
         self.scan_width = self.img.shape[1] // 2
         self.port = np.flip(self.img[:, :self.scan_width], axis=1)
         self.starboard = self.img[:, self.scan_width:]
@@ -38,7 +60,7 @@ class sss_detector:
 
     def perform_detection(self, side=0):
         """
-
+        Note: this has the ability to use multiple detection methods, defined in cp_detector_local.py
         """
         # Select which side to perform detection on
         if side == 0:
@@ -51,7 +73,11 @@ class sss_detector:
         img_detections = np.copy(img_side).astype(np.uint8)
 
         for i, ping in enumerate(img_side):
-            ping_results = self.detector.detect(ping)
+
+            if self.max_nadir_ind > 0:
+                ping_results = self.detector.detect_rope_buoy(ping, self.max_nadir_ind)
+            else:
+                ping_results = self.detector.detect(ping)
 
             if ObjectID.NADIR in ping_results.keys():
                 img_detections[i, ping_results[ObjectID.NADIR]['pos'], :] = self.nadir_color
@@ -83,12 +109,39 @@ class sss_detector:
         plt.imshow(final)
         plt.show()
 
+    def plot_max(self):
 
-# %% Process
-detector_test = sss_detector('data/sss_data_1.png')
+        max = np.maximum(self.port, self.starboard)
+        plt.imshow(max)
+        plt.show()
 
-detector_test.perform_detection(0)
-detector_test.perform_detection(1)
 
-detector_test.plot_detections()
+if __name__ == '__main__':
+    # %% Processing parameters
+    data_file = 'data/sss_data_7608.jpg'  # 'data/sss_data_1.png'
+    start_ind = 3400  # 6300
+    end_ind = 5700  # 7200
+    max_nadir_depth = 0
+
+    show_max = True
+    perform_detections = False
+
+    # %% Process
+    detector_test = sss_detector(data_file,
+                                 start_ind=start_ind, end_ind=end_ind,
+                                 max_nadir_ind=max_nadir_depth)
+    # %% Max
+    """
+    The idea here is to use both channels to find the nadir as, depending on the sss beam widths and orientations
+    the two channels should detected the same approximate point as the nadir.
+    """
+    if show_max:
+        detector_test.plot_max()
+
+    # %% Main detections
+    if perform_detections:
+        detector_test.perform_detection(0)
+        detector_test.perform_detection(1)
+        detector_test.plot_detections()
+
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os.path
 import sys
-from functools import partial
 
 import rospy
 from std_msgs.msg import Time
@@ -9,7 +8,7 @@ from std_msgs.msg import Float64
 from nav_msgs.msg import Odometry
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose, PoseStamped
 from sensor_msgs.msg import Image, CameraInfo
 from smarc_msgs.msg import Sidescan
 
@@ -67,14 +66,23 @@ class sam_slam_listener:
 
     """
 
-    def __init__(self, robot_name, frame_name='sam', simulated_data=False,
+    def __init__(self, robot_name, frame_name='sam',
+                 simulated_data=False,
+                 record_gt=False,
                  path_name=None,
                  online_graph=None):
 
         # ===== Real or simulated =====
         self.simulated_data = simulated_data
-        self.simulated_detections = rospy.get_param("simulated_detections", True)
-        self.correct_dr = True
+        self.simulated_detections = rospy.get_param("simulated_detections", False)  # not used yet
+        if self.simulated_data:
+            self.correct_dr = True
+        else:
+            self.correct_dr = False
+        self.record_gt = record_gt
+
+        # ===== Provided information =====
+        self.manual_associations = rospy.get_param("manual_associations", False)
 
         # ===== Topic names =====
         self.robot_name = robot_name
@@ -83,7 +91,12 @@ class sam_slam_listener:
         self.gt_topic = f'/{self.robot_name}/sim/odom'
         self.dr_topic = f'/{self.robot_name}/dr/odom'
         self.det_topic = f'/{self.robot_name}/payload/sidescan/detection_hypothesis'
-        self.buoy_topic = f'/{self.robot_name}/sim/marked_positions'
+        if self.simulated_data:
+            self.gt_topic = f'/{self.robot_name}/sim/odom'
+            self.buoy_topic = f'/{self.robot_name}/sim/marked_positions'
+        else:
+            self.buoy_topic = f'/{self.robot_name}/real/marked_positions'
+            self.gt_topic = f'/{self.robot_name}/dr/gps_odom'
 
         self.roll_topic = f'/{self.robot_name}/dr/roll'
         self.pitch_topic = f'/{self.robot_name}/dr/pitch'
@@ -139,6 +152,7 @@ class sam_slam_listener:
         # === Sonar ===
         # Currently detections are provided by the published buoy location
         self.detections_graph_file_path = self.file_path + 'detections_graph.csv'
+        self.associations_graph_file_path = self.file_path + 'associations_graph.csv'
         self.sss_graph_file_path = self.file_path + 'detections_graph.csv'
 
         # === Camera ===
@@ -202,12 +216,15 @@ class sam_slam_listener:
         self.gt_poses_graph = []
         self.dr_poses_graph = []
         self.detections_graph = []
+        self.associations_graph = []
 
         # States and timings
-        if simulated_data:
-            self.gt_updated = False  # for simulated data updates are skipped until gt is received
-        else:
-            self.gt_updated = True
+        # TODO: make real gt work
+        # if simulated_data:
+        #     self.gt_updated = False  # for simulated data updates are skipped until gt is received
+        # else:
+        #     self.gt_updated = True
+        self.gt_updated = False
 
         self.dr_updated = False
         self.roll_updated = False
@@ -315,6 +332,17 @@ class sam_slam_listener:
         self.time_check = rospy.Timer(rospy.Duration(2),
                                       self.time_check_callback)
 
+        # ===== Verboseness parameters =====
+        self.verbose_DRs = rospy.get_param('verbose_listener_DRs', False)
+        self.verbose_detections = rospy.get_param('verbose_listener_detections', False)
+        self.verbose_sonars = rospy.get_param('verbose_listener_sonars', False)
+        self.verbose_buoys = rospy.get_param('verbose_listener_buoys', False)
+        self.verbose_cameras = rospy.get_param('verbose_listener_cameras', False)
+
+        print('Listener Initialized')
+        print(f'Check local value with parameter server value - self.verbose_detections: '
+              f'{self.verbose_detections}')
+
     # Subscriber callbacks
     def gt_callback(self, msg):
         """
@@ -322,6 +350,8 @@ class sam_slam_listener:
         The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z, time].
         Note the position of q_w, this is for compatibility with gtsam and matlab
         """
+        if not self.gt_updated:
+            print('Start recording ground truth')
         transformed_pose = self.transform_pose(msg.pose, from_frame=msg.header.frame_id, to_frame=self.frame)
 
         gt_position = transformed_pose.pose.position
@@ -333,7 +363,6 @@ class sam_slam_listener:
                               gt_time])
 
         self.gt_updated = True
-        self.gt_last_time = rospy.Time.now()
 
     def dr_callback(self, msg, correct_dr):
         """
@@ -398,11 +427,18 @@ class sam_slam_listener:
             # Add to the dr and gt lists
             dr_pose = self.dr_poses[-1]
             self.dr_poses_graph.append(dr_pose)
-            if self.simulated_data:
+            # TODO: make gt work
+            if self.record_gt:
                 gt_pose = self.gt_poses[-1]
                 self.gt_poses_graph.append(gt_pose)
             else:
                 gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
+
+            # if self.simulated_data:
+            #     gt_pose = self.gt_poses[-1]
+            #     self.gt_poses_graph.append(gt_pose)
+            # else:
+            #     gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
             # Update time and state
             self.dr_last_time = time_now
@@ -416,11 +452,12 @@ class sam_slam_listener:
                 self.online_graph.add_first_pose(dr_pose, gt_pose)
 
             elif not self.online_graph.busy:
-                print(f"DR - Odometry update - x{self.online_graph.current_x_ind + 1}")
+                if self.verbose_DRs:
+                    print(f"DR - Odometry update - x{self.online_graph.current_x_ind + 1}")
                 self.online_graph.online_update(dr_pose, gt_pose)
 
             else:
-                print('Busy condition found')
+                print('DR - Busy condition found')
 
     def roll_callback(self, msg):
         """
@@ -442,7 +479,7 @@ class sam_slam_listener:
 
     def det_callback(self, msg):
         # Check that topics have received messages
-        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+        if False in [self.dr_updated, self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
             return
 
         # check elapsed time
@@ -456,8 +493,11 @@ class sam_slam_listener:
         # Process detection
         for det_ind, detection in enumerate(msg.detections):
             for res_ind, result in enumerate(detection.results):
+
                 # Pose in base_link
                 det_pose_base = result.pose
+
+                det_da = int(result.score)
 
                 # Convert to map
                 det_pos_map = self.transform_pose(det_pose_base,
@@ -468,11 +508,18 @@ class sam_slam_listener:
                 # First update dr and gr with the most current
                 dr_pose = self.dr_poses[-1]
                 self.dr_poses_graph.append(dr_pose)
-                if self.simulated_data:
+                # TODO: make gt work
+                if self.record_gt:
                     gt_pose = self.gt_poses[-1]
                     self.gt_poses_graph.append(gt_pose)
                 else:
                     gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
+
+                # if self.simulated_data:
+                #     gt_pose = self.gt_poses[-1]
+                #     self.gt_poses_graph.append(gt_pose)
+                # else:
+                #     gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
                 # detection position:
                 # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
@@ -485,25 +532,36 @@ class sam_slam_listener:
                                               det_pose_base.pose.position.z,
                                               index])
 
+                if self.manual_associations:
+                    self.associations_graph.append([det_da])
+                else:
+                    self.associations_graph.append([-1])
+
                 # ===== Output =====
-                print(f'Detection callback: {index}')
+                if self.verbose_detections:
+                    print(f'Detection callback: {index}')
 
                 # ===== Online detection update =====
                 if self.online_graph is None:
                     return
                 if not self.online_graph.busy:
-                    print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
+                    if self.verbose_detections:
+                        print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
                     self.online_graph.online_update(dr_pose, gt_pose,
                                                     np.array((det_pose_base.pose.position.x,
-                                                              det_pose_base.pose.position.y),
-                                                             dtype=np.float64))
+                                                              det_pose_base.pose.position.y), dtype=np.float64),
+                                                    da_id=det_da)
                 else:
-                    print('Busy condition found')
+                    print('Detection - Busy condition found')
 
     def sss_callback(self, msg):
         """
         The sss callback is responsible for filling the sss_buffer.
         """
+        # Check that topics have received messages
+        if False in [self.dr_updated, self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+            return
+
         # Record start time
         sss_time_now = rospy.Time.now()
 
@@ -517,37 +575,38 @@ class sam_slam_listener:
         # Copy buffer
         sss_current = np.copy(self.sss_buffer)
 
-        # Check that topics have received messages
-        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
-            return
-
         # check elapsed time
         if (sss_time_now - self.sss_last_time).to_sec() < self.detect_update_time:
             return
 
         sss_id = msg.header.seq
-        print(f"sss frame: {sss_id}")
+
+        if self.verbose_sonars:
+            print(f"sss frame: {sss_id}")
 
         dr_pose = self.dr_poses[-1]
         self.dr_poses_graph.append(dr_pose)
-        if self.simulated_data:
+        # TODO: make gt work
+        if self.record_gt:
             gt_pose = self.gt_poses[-1]
             self.gt_poses_graph.append(gt_pose)
         else:
             gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
-        # TODO refactor as online update will check for initial pose set
+        # if self.simulated_data:
+        #     gt_pose = self.gt_poses[-1]
+        #     self.gt_poses_graph.append(gt_pose)
+        # else:
+        #     gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
+
         if self.online_graph is not None \
                 and not self.online_graph.busy:
 
             if self.online_graph.initial_pose_set is False:
                 print("SSS - First update w/ sss data")
             else:
-                print(f"SSS - Odometry and sss update - {self.online_graph.current_x_ind + 1}")
-
-            # self.online_graph.add_first_pose(dr_pose, gt_pose,
-            #                                  initial_estimate=None,
-            #                                  id_string=f'sss_{sss_id}')
+                if self.verbose_sonars:
+                    print(f"SSS - Odometry and sss update - {self.online_graph.current_x_ind + 1}")
 
             self.online_graph.online_update(dr_pose, gt_pose,
                                             relative_detection=None,
@@ -584,10 +643,12 @@ class sam_slam_listener:
 
     def image_callback(self, msg, camera_id):
         """
-        Based
+        Callback for camera images, the same callback is used for all the cameras. This was designed around the
+        simulator in which the three images were mostly synchronized. The hope was to record all the desired images and
+        only add one node in the graph for each set. Not sure if this holds for the actual AUV.
         """
         # Check that topics have received messages
-        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+        if False in [self.dr_updated, self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
             return
 
         # Identifies frames
@@ -603,28 +664,41 @@ class sam_slam_listener:
             self.camera_last_time = rospy.Time.now()
             new_frame = True  # Used to only add one node to graph for each camera frame: down, left, and right
             self.image_received = True
-            print(f'New camera frame: {camera_id} - {current_id}')
+            if self.verbose_cameras:
+                print(f'New camera frame: {camera_id} - {current_id}')
         elif current_id != self.camera_last_seq:
             return
         else:
             new_frame = False  # Do not add a node to the graph
-            print(f'Current camera frame: {camera_id} - {current_id}')
+            if self.verbose_cameras:
+                print(f'Current camera frame: {camera_id} - {current_id}')
 
         now_stamp = rospy.Time.now()
         msg_stamp = msg.header.stamp
 
         dr_pose = self.dr_poses[-1]
         self.dr_poses_graph.append(dr_pose)
-        if self.simulated_data:
+        # TODO: make gt work
+        if self.record_gt:
             gt_pose = self.gt_poses[-1]
             self.gt_poses_graph.append(gt_pose)
         else:
             gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
+        # if self.simulated_data:
+        #     gt_pose = self.gt_poses[-1]
+        #     self.gt_poses_graph.append(gt_pose)
+        # else:
+        #     gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
+
+        # A node is only add to the graph when a new 'frame' is detected
+        # Here frames are images from the different cameras with the same seq_id
         if new_frame:
-            print(f"Adding img-{current_id} to graph")
+            if self.verbose_cameras:
+                print(f"Adding img-{current_id} to graph")
+
             if self.online_graph is not None and not self.online_graph.busy:
-                if self.online_graph.initial_pose_set:
+                if self.verbose_cameras and self.online_graph.initial_pose_set:
                     print(f"CAM - Odometry and camera update - {self.online_graph.current_x_ind + 1}")
                 else:
                     print("CAM - First update w/ camera data")
@@ -665,8 +739,8 @@ class sam_slam_listener:
             return
 
         # Display call back info
-        print(f'image callback - {camera_id}: {current_id}')
-        # print(pose_current)  # debugging
+        if self.verbose_cameras:
+            print(f'image callback - {camera_id}: {current_id}')
 
         # Convert to cv2 format
         cv2_img = imgmsg_to_cv2(msg)
@@ -682,11 +756,22 @@ class sam_slam_listener:
 
     def buoy_callback(self, msg):
         if not self.buoy_updated:
-            self.buoys = []
+            print('Capturing buoy map positions')
+            marker_count = len(msg.markers)
+            self.buoys = [None for i in range(marker_count)]
+
             for marker in msg.markers:
-                self.buoys.append([marker.pose.position.x,
-                                   marker.pose.position.y,
-                                   marker.pose.position.z])
+                marker_id = int(marker.id)
+                if self.frame in marker.header.frame_id:
+                    self.buoys[marker_id] = [marker.pose.position.x, marker.pose.position.y, marker.pose.position.z]
+
+                else:
+                    # Convert to frame of interest, most work done in map
+                    marker_pos_map = self.transform_pose(marker.pose,
+                                                         from_frame=marker.header.frame_id,
+                                                         to_frame=self.frame)
+                    self.buoys[marker_id] = [marker_pos_map.pose.position.x, marker_pos_map.pose.position.y,
+                                             marker_pos_map.pose.position.z]
 
             if self.online_graph is not None:
                 # TODO buoy info to online graph
@@ -715,6 +800,8 @@ class sam_slam_listener:
                 analysis.show_graph_2d(label="Online Graph",
                                        show_final=True)
 
+                analysis.visualize_posterior()
+
                 # show_simple_graph_2d(graph=self.online_graph.graph,
                 #                      x_keys=self.online_graph.x,
                 #                      b_keys=self.online_graph.b,
@@ -725,9 +812,18 @@ class sam_slam_listener:
 
     # ===== Transforms and poses =====
     def transform_pose(self, pose, from_frame, to_frame):
-        trans = self.wait_for_transform(from_frame=from_frame,
-                                        to_frame=to_frame)
-        pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans)
+        trans = self.wait_for_transform(from_frame=from_frame, to_frame=to_frame)
+
+        # Perform the tranform
+        if isinstance(pose, Pose):
+            pose_to_transform = PoseStamped()
+            pose_to_transform.header.frame_id = from_frame
+            pose_to_transform.pose.position = pose.position
+            pose_to_transform.pose.orientation = pose.orientation
+            pose_transformed = tf2_geometry_msgs.do_transform_pose(pose_to_transform, trans)
+        else:
+            pose_transformed = tf2_geometry_msgs.do_transform_pose(pose, trans)
+
         return pose_transformed
 
     def wait_for_transform(self, from_frame, to_frame):
@@ -782,6 +878,7 @@ class sam_slam_listener:
         write_array_to_csv(self.dr_poses_graph_file_path, self.dr_poses_graph)
         write_array_to_csv(self.gt_poses_graph_file_path, self.gt_poses_graph)
         write_array_to_csv(self.detections_graph_file_path, self.detections_graph)
+        write_array_to_csv(self.associations_graph_file_path, self.associations_graph)
         write_array_to_csv(self.buoys_file_path, self.buoys)
 
         # === Camera ===

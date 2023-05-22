@@ -27,6 +27,10 @@ from sam_slam_utils.sam_slam_helpers import create_Pose3, merge_into_Pose3
 from sam_slam_utils.sam_slam_helpers import read_csv_to_array, write_array_to_csv
 
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
+from geometry_msgs.msg import Quaternion
+
+# rviz
+from visualization_msgs.msg import Marker
 
 
 # %% Functions
@@ -595,6 +599,9 @@ class offline_slam_2d:
 class online_slam_2d:
     def __init__(self, path_name=None):
         graph = gtsam.NonlinearFactorGraph()
+        self.manual_associations = rospy.get_param("manual_associations", False)
+
+        print(f"Manual associations: {self.manual_associations}")
 
         # ===== File path for data logging =====
         self.file_path = path_name
@@ -681,6 +688,20 @@ class online_slam_2d:
         self.da_check = {}
         self.est_detect_loc = None
         self.true_detect_loc = None
+
+        # marker publisher
+        self.est_detect_loc_pub = rospy.Publisher('/sam_slam/est_detection_positions', Marker, queue_size=10)
+        self.da_pub = rospy.Publisher('/sam_slam/da_positions', Marker, queue_size=10)
+        self.est_pos_pub = rospy.Publisher('/sam_slam/est_positions', Marker, queue_size=10)
+        self.marker_scale = 1.0
+
+        # ===== Verboseness parameters =====
+        self.verbose_graph_update = rospy.get_param('verbose_graph_update', False)
+        self.verbose_graph_detections = rospy.get_param('verbose_graph_detections', False)
+
+        print('Graph Initialized')
+        print(f'Check local value with parameter server value - self.verbose_graph_detections: '
+              f'{self.verbose_graph_detections}')
 
     def buoy_setup(self, buoys):
         '''
@@ -769,7 +790,7 @@ class online_slam_2d:
             print("problem")
         return
 
-    def online_update(self, dr_pose, gt_pose, relative_detection=None, id_string=None):
+    def online_update(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None):
         """
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
@@ -831,22 +852,30 @@ class online_slam_2d:
             detect_bearing = computed_est.bearing(self.est_detect_loc)
             detect_range = computed_est.range(self.est_detect_loc)
 
-            buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
-
-            # ===== DA debugging =====
-            # Apply relative detection to gt to find the true DA
-            self.true_detect_loc = self.gt_Pose2s[-1].transformFrom(np.array(relative_detection, dtype=np.float64))
-            true_association_id, true_association_dist = self.associate_detection(self.true_detect_loc)
-
-            if buoy_association_id == true_association_id:
-                self.da_check[self.current_x_ind] = [True,
-                                                     buoy_association_id, true_association_id,
-                                                     buoy_association_dist, true_association_dist]
+            if self.manual_associations:
+                buoy_association_id = da_id
             else:
-                self.da_check[self.current_x_ind] = [False,
-                                                     buoy_association_id, true_association_id,
-                                                     buoy_association_dist, true_association_dist]
+                buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
 
+                # ===== DA debugging =====
+                # Apply relative detection to gt to find the true DA
+                self.true_detect_loc = self.gt_Pose2s[-1].transformFrom(np.array(relative_detection, dtype=np.float64))
+                true_association_id, true_association_dist = self.associate_detection(self.true_detect_loc)
+
+                if buoy_association_id == true_association_id:
+                    self.da_check[self.current_x_ind] = [True,
+                                                         buoy_association_id, true_association_id,
+                                                         buoy_association_dist, true_association_dist]
+                else:
+                    self.da_check[self.current_x_ind] = [False,
+                                                         buoy_association_id, true_association_id,
+                                                         buoy_association_dist, true_association_dist]
+
+            if self.verbose_graph_detections and relative_detection is not None:
+                print(
+                    f'Detection - range: {detect_range}  bearing: {detect_bearing.theta()}  DA: {buoy_association_id}')
+
+            # ===== Add detection to graph =====
             self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
                                                       self.b[buoy_association_id],
                                                       detect_bearing,
@@ -869,9 +898,19 @@ class online_slam_2d:
         # Release the graph
         self.busy = False
 
-        print(f"Done with update - x{self.current_x_ind}: {update_time} s")
+        # ===== debugging and visualizations =====
+        # Log to terminal
+        if self.verbose_graph_update:
+            print(f"Done with update - x{self.current_x_ind}: {update_time} s")
+
+        # Debug publishing
+        self.publish_estimated_pos_marker(computed_est)
+        if relative_detection is not None:
+            self.publish_detection_markers(buoy_association_id)
+
         if self.x is None:
             print("problem")
+
         return
 
     def associate_detection(self, detection_map_location):
@@ -891,6 +930,85 @@ class online_slam_2d:
                 best_id = i
 
         return best_id, best_range_2 ** (1 / 2)
+
+    def publish_detection_markers(self, da_id):
+        """
+        Publishes some markers for debugging estimated detection location and the DA location
+        """
+
+        # Estimated detection location
+        detection_marker = Marker()
+        detection_marker.header.frame_id = 'map'
+        detection_marker.type = Marker.SPHERE
+        detection_marker.action = Marker.ADD
+        detection_marker.id = 0
+        detection_marker.lifetime = rospy.Duration(10)
+        detection_marker.pose.position.x = self.est_detect_loc[0]
+        detection_marker.pose.position.y = self.est_detect_loc[1]
+        detection_marker.pose.position.z = 0.0
+        detection_marker.pose.orientation.x = 0
+        detection_marker.pose.orientation.y = 0
+        detection_marker.pose.orientation.z = 0
+        detection_marker.pose.orientation.w = 1
+        detection_marker.scale.x = self.marker_scale
+        detection_marker.scale.y = self.marker_scale
+        detection_marker.scale.z = self.marker_scale
+        detection_marker.color.r = 0.0
+        detection_marker.color.g = 1.0
+        detection_marker.color.b = 1.0
+        detection_marker.color.a = 1.0
+
+        # Data association marker
+        da_marker = Marker()
+        da_marker.header.frame_id = 'map'
+        da_marker.type = Marker.CYLINDER
+        da_marker.action = Marker.ADD
+        da_marker.id = 0
+        da_marker.lifetime = rospy.Duration(10)
+        da_marker.pose.position.x = self.buoy_priors[da_id][0]
+        da_marker.pose.position.y = self.buoy_priors[da_id][1]
+        da_marker.pose.position.z = 0.0
+        da_marker.pose.orientation.x = 0
+        da_marker.pose.orientation.y = 0
+        da_marker.pose.orientation.z = 0
+        da_marker.pose.orientation.w = 1
+        da_marker.scale.x = self.marker_scale / 2
+        da_marker.scale.y = self.marker_scale / 2
+        da_marker.scale.z = self.marker_scale * 2
+        da_marker.color.r = 0.0
+        da_marker.color.g = 1.0
+        da_marker.color.b = 1.0
+        da_marker.color.a = 1.0
+
+        self.est_detect_loc_pub.publish(detection_marker)
+        self.da_pub.publish(da_marker)
+
+    def publish_estimated_pos_marker(self, est_pos):
+        """
+        Publishes some markers for debugging estimated detection location and the DA location
+        """
+        heading_quat = quaternion_from_euler(0, 0, est_pos.theta())
+
+        # Estimated detection location
+        marker = Marker()
+        marker.header.frame_id = 'map'
+        marker.type = Marker.ARROW
+        marker.action = Marker.ADD
+        marker.id = 0
+        marker.lifetime = rospy.Duration(0)
+        marker.pose.position.x = est_pos.x()
+        marker.pose.position.y = est_pos.y()
+        marker.pose.position.z = 0.0
+        marker.pose.orientation = Quaternion(*heading_quat)
+        marker.scale.x = self.marker_scale
+        marker.scale.y = self.marker_scale / 4
+        marker.scale.z = self.marker_scale / 4
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+
+        self.est_pos_pub.publish(marker)
 
 
 class analyze_slam:
@@ -943,8 +1061,8 @@ class analyze_slam:
         initial_estimate: The dr poses serve as the initial estimate for the offline version
         da_check: The online version uses the ground truth and the relative detection data to find the DA ground truth
         """
-        # TODO Unify the online and offline versions
-        # TODO
+        # TODO Unify the online and offline versions of the analysis
+
         if hasattr(slam_object, 'detections_graph'):
             self.detections = slam_object.detections_graph
             self.n_detections = len(self.detections)
@@ -1052,25 +1170,37 @@ class analyze_slam:
                        label='Dead reckoning')
 
         # ===== Plot buoys w/ cluster colors =====
-        if plot_buoy:
-            # Plot the true location of the buoys
+        if plot_buoy and self.n_buoys > 0:
             for ind_buoy in range(self.n_buoys):
-                # Determine cluster color
-                # Graph according to cluster for offline
-                # Graphing the buoy colors not supported for online yet
                 # TODO: Improve visualizations for online slam
+                # Plot prior and posterior buoy positions for online
+                # These buoys are not clustered
                 if self.buoy2cluster is None:
                     buoy_prior_color = 'k'
                     buoy_post_color = self.post_color
 
-                elif self.buoy2cluster[ind_buoy] == -1:
-                    current_color = 'k'
-                else:
-                    cluster_num = self.buoy2cluster[ind_buoy]
-                    current_color = self.colors[cluster_num % len(self.colors)]
+                    # Plot buoy priors
+                    ax.scatter(self.buoy_priors[ind_buoy, 0],
+                               self.buoy_priors[ind_buoy, 1],
+                               color=buoy_prior_color)
 
-                if self.n_buoys > 0:
-                    # Plot all the buoys
+                    # Plot buoy posteriors
+                    ax.scatter(self.posterior_points[ind_buoy, 0],
+                               self.posterior_points[ind_buoy, 1],
+                               color=buoy_post_color,
+                               marker='+',
+                               s=75)
+
+                # Plot prior and posterior buoy positions for offline processing
+                # buoys can be plotted to show the clustering results
+                else:
+                    if self.buoy2cluster[ind_buoy] == -1:
+                        current_color = 'k'
+                    else:
+                        cluster_num = self.buoy2cluster[ind_buoy]
+                        current_color = self.colors[cluster_num % len(self.colors)]
+
+                    # Plot buoy priors
                     ax.scatter(self.buoy_priors[ind_buoy, 0],
                                self.buoy_priors[ind_buoy, 1],
                                color=current_color)
@@ -1117,32 +1247,41 @@ class analyze_slam:
 
         plt.show()
 
-    def show_graph_2d(self, label, show_final=True):
+    def show_graph_2d(self, label, show_final=True, show_dr=True):
         """
 
         """
+        # Check that the graph is has initial and estimated values
+        if self.current_estimate is None:
+            print('Perform optimization before it can be graphed')
+            return
+        if self.initial_estimate is None:
+            print('Initialize estimate before it can be graphed')
+            return
+
         # Select which values to graph
         if show_final:
-            if self.current_estimate is None:
-                print('Perform optimization before it can be graphed')
-                return
             values = self.current_estimate
         else:
-            if self.initial_estimate is None:
-                print('Initialize estimate before it can be graphed')
-                return
             values = self.initial_estimate
 
         # ===== Unpack the factor graph using networkx =====
         # Initialize network
         G = nx.Graph()
+
+        # Add the raw DR poses to the graph
+        if show_dr:
+            for dr_i, dr_pose in enumerate(self.dr_poses):
+                pos = (dr_pose[0], dr_pose[1])
+                G.add_node(dr_i, pos=pos, color='red')
+
         for i in range(self.graph.size()):
             factor = self.graph.at(i)
             for key_id, key in enumerate(factor.keys()):
                 # Test if key corresponds to a pose
                 if key in self.x.values():
                     pos = (values.atPose2(key).x(), values.atPose2(key).y())
-                    G.add_node(key, pos=pos, color='black')
+                    G.add_node(key, pos=pos, color='green')
 
                 # Test if key corresponds to points
                 elif self.b is not None and key in self.b.values():
@@ -1169,9 +1308,9 @@ class analyze_slam:
                     if key != key_2 and key_id < key_2_id:
                         # detections will have key corresponding to a landmark
                         if self.b is not None and (key in self.b.values() or key_2 in self.b.values()):
-                            G.add_edge(key, key_2, color='red')
-                        else:
                             G.add_edge(key, key_2, color='blue')
+                        else:
+                            G.add_edge(key, key_2, color='red')
 
         # ===== Plot the graph using matplotlib =====
         # Matplotlib options
