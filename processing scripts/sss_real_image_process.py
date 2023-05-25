@@ -14,31 +14,19 @@ from matplotlib import pyplot as plt
 from scipy import signal
 import sllib
 from PIL import Image
+from cp_detector_local import CPDetector, ObjectID
 import math
-
-# Parameters
-do_median_blur = False
-process_sam_sss = False
-process_boat_sss = False
-sam_file_name = 'sss_data_7608.jpg'
-seq_file_name = 'sss_seqs_7608.csv'
-boat_file_name = 'Sonar_2023-05-03_20.51.26.sl2'
-
-detections = [[7106, 1092], [6456, 1064],
-              [5570, 956], [4894, 943],
-              [4176, 956], [3506, 924],
-              [2356, 911], [1753, 949],
-              [1037, 941], [384, 943]]
 
 
 class process_sss:
-    def __init__(self, data_file_name, seq_file_name, start_ind=None, end_ind=None, max_range_ind=None):
+    def __init__(self, data_file_name, seq_file_name, start_ind=None, end_ind=None, max_range_ind=None,
+                 cpd_max_depth=None, cpd_ratio=None):
         # Parameters
         self.canny_l_threshold = 100
         self.canny_h_threshold = 175
         self.canny_kernel_size = 5
 
-        #
+        # Data file names
         self.data_file_name = data_file_name
         self.data_label = self.data_file_name.split(sep='.')[0]
         self.seq_file_name = seq_file_name
@@ -83,8 +71,24 @@ class process_sss:
         self.img = np.hstack((np.fliplr(self.img_port), self.img_starboard))
         self.img_height, self.img_width = self.img.shape[0:2]
 
+        # Change point detector
+        self.cpd_max_depth = cpd_max_depth
+        self.cpd_ratio = cpd_ratio
+        if cpd_ratio is None:
+            self.detector = CPDetector()
+        else:
+            self.detector = CPDetector(min_mean_diff_ratio=self.cpd_ratio)
+        self.nadir_color = np.array([255, 0, 0], dtype=np.uint8)
+        self.rope_color = np.array([0, 255, 0], dtype=np.uint8)
+        self.buoy_color = np.array([0, 0, 255], dtype=np.uint8)
+        self.port_detections = None  # np.zeros(self.img_port_original.shape, dtype=np.uint8)
+        self.starboard_detections = None  # np.zeros(self.img_starboard_original.shape, dtype=np.uint8)
+
         # Perform some processing
         self.img_canny = cv.Canny(self.img, self.canny_l_threshold, self.canny_h_threshold)
+
+        # List of operations
+        self.operations_list = []
 
     def set_working_to_original(self):
         # Extract area of interest
@@ -92,6 +96,9 @@ class process_sss:
         self.img_port = np.copy(self.img_port_original)[self.start_ind:self.end_ind, :self.max_range_ind]
         self.img_starboard = np.copy(self.img_starboard_original)[self.start_ind:self.end_ind, :self.max_range_ind]
         self.img = np.hstack((np.fliplr(self.img_port), self.img_starboard))
+
+        # Clear operations list
+        self.operations_list = []
 
     def row_fft(self, channel='PORT'):
         if channel.upper() == 'PORT':
@@ -122,6 +129,43 @@ class process_sss:
 
         fft_fig.show()
 
+    def filter_threshold(self, threshold=128, show=False):
+        if threshold <= 0:
+            return
+        elif threshold > 255:
+            threshold = 255
+
+        # Before filter image
+        img_before = np.hstack((np.fliplr(self.img_port), self.img_starboard))
+
+        # Perform median filter
+        self.img_port[self.img_port >= threshold] = 255
+        self.img_port[self.img_port < threshold] = 0
+        self.img_starboard[self.img_starboard >= threshold] = 255
+        self.img_starboard[self.img_starboard < threshold] = 0
+
+        # update complete image
+        img_filtered = np.hstack((np.fliplr(self.img_port), self.img_starboard))
+        self.img = np.copy(img_filtered)
+
+        if show:
+            thresh_fig, (ax1, ax2) = plt.subplots(1, 2)
+            thresh_fig.suptitle(f'Threshold filter, Threshold: {threshold}\n'
+                                f'Previous Operations: {self.operations_list}')
+
+            ax1.title.set_text('Before filtering')
+            ax1.imshow(img_before)
+
+            ax2.title.set_text('After filtering')
+            ax2.imshow(img_filtered)
+            thresh_fig.show()
+
+        # Record the operation and save the output
+        self.operations_list.append(f't_{threshold}')
+        cv.imwrite(f'data/{self.data_label}_thresh.png', img_filtered)
+
+        return img_filtered
+
     def filter_median(self, kernel_size=5, show=False):
         if kernel_size not in [3, 5, 7, 9]:
             return
@@ -139,7 +183,8 @@ class process_sss:
 
         if show:
             med_fig, (ax1, ax2) = plt.subplots(1, 2)
-            med_fig.suptitle(f'Median filter, Kernel: {kernel_size}')
+            med_fig.suptitle(f'Median filter, Kernel: {kernel_size}\n'
+                             f'Previous Operations: {self.operations_list}')
 
             ax1.title.set_text('Before filtering')
             ax1.imshow(img_before)
@@ -148,6 +193,8 @@ class process_sss:
             ax2.imshow(img_filtered)
             med_fig.show()
 
+        # Record the operation and save the output
+        self.operations_list.append(f'm_{kernel_size}')
         cv.imwrite(f'data/{self.data_label}_med.png', img_filtered)
 
     def filter_gaussian(self, kernel_size=5, show=False):
@@ -158,14 +205,15 @@ class process_sss:
         img_before = np.hstack((np.fliplr(self.img_port), self.img_starboard))
 
         # Perform median filter
-        self.img_port = cv.GaussianBlur(self.img_port, (kernel_size,kernel_size), 0)
-        self.img_starboard = cv.GaussianBlur(self.img_starboard, (kernel_size,kernel_size), 0)
+        self.img_port = cv.GaussianBlur(self.img_port, (kernel_size, kernel_size), 0)
+        self.img_starboard = cv.GaussianBlur(self.img_starboard, (kernel_size, kernel_size), 0)
         img_filtered = np.hstack((np.fliplr(self.img_port), self.img_starboard))
         self.img = np.copy(img_filtered)
 
         if show:
             med_fig, (ax1, ax2) = plt.subplots(1, 2)
-            med_fig.suptitle(f'Gaussian filter, Kernel: {kernel_size}')
+            med_fig.suptitle(f'Gaussian filter, Kernel: {kernel_size}\n'
+                             f'Previous Operations: {self.operations_list}')
 
             ax1.title.set_text('Before filtering')
             ax1.imshow(img_before)
@@ -174,6 +222,8 @@ class process_sss:
             ax2.imshow(img_filtered)
             med_fig.show()
 
+        # Record the operation and save the output
+        self.operations_list.append(f'gauss_{kernel_size}')
         cv.imwrite(f'data/{self.data_label}_gauss.png', img_filtered)
 
     def gradient_cross_track(self, kernel_size=5, show=False):
@@ -186,16 +236,23 @@ class process_sss:
         grad_starboard = cv.Sobel(self.img_starboard, cv.CV_8U, 1, 0, ksize=kernel_size)
         complete_img = np.hstack((np.fliplr(grad_port), grad_starboard))
 
+        self.img_port = np.copy(grad_port)
+        self.img_starboard = np.copy(grad_starboard)
+        self.img = np.copy(complete_img)
+
         if show:
             grad_fig, (ax1, ax2) = plt.subplots(1, 2)
-            grad_fig.suptitle(f'Gradients, kernel: {kernel_size}')
+            grad_fig.suptitle(f'Gradients, kernel: {kernel_size}\n'
+                              f'Previous operations: {self.operations_list}')
 
             ax1.title.set_text('Image input')
             ax1.imshow(img_before)
 
             ax2.title.set_text('Image gradient')
-            ax2.imshow(complete_img)
+            ax2.imshow(self.img)
 
+        # Record the operation and save the output
+        self.operations_list.append(f'grad_{kernel_size}')
         cv.imwrite(f'data/{self.data_label}_grad.png', complete_img)
 
         return complete_img
@@ -204,13 +261,14 @@ class process_sss:
         """
         The
 
+        :param show:
+        :param s_size: size of sobel kernel, [3, 5, 7, 9]
         :param g_size: size of gaussian filter, [3, 5, 7, 9]
         :param m_size: size of median filter, [3, 5, 7, 9]
         :param l_threshold: lower canny threshold
         :param h_threshold: upper canny threshold
         :return:
         """
-
 
         self.set_working_to_original()
         if m_size in [3, 5, 7, 9]:
@@ -251,8 +309,6 @@ class process_sss:
 
             return custom_canny
 
-
-
     def combined_points(self):
         # Reset current image
         self.set_working_to_original()
@@ -264,7 +320,11 @@ class process_sss:
         img_combined = np.multiply(sss_analysis.img_canny, gradient)
         cv.imwrite(f'data/combined_canny_grad.png', img_combined)
 
-    def mark_detections(self):
+    def mark_manual_detections(self):
+        """
+        Mark manual detections
+        :return:
+        """
         if self.detections is None:
             return
         grey_img = np.copy(self.img_original)
@@ -284,50 +344,192 @@ class process_sss:
         for detection in detections:
             self.buoy_seq_ids.append(self.seq_ids[detection[0]])
 
+    def cpd_perform_detection(self, side=0):
+        """
+        Note: this has the ability to use multiple detection methods, defined in cp_detector_local.py
+        """
+        # Select which side to perform detection on
+        if side == 0:
+            img_side = self.img_port
+        else:
+            img_side = self.img_starboard
 
-# %% Process SAM SSS
-sss_analysis = process_sss(sam_file_name, seq_file_name, start_ind=0, end_ind=2500, max_range_ind=225)
-sss_analysis.filter_median(0, show=True)
-sss_analysis.filter_gaussian(0, show=True)
-sss_analysis.gradient_cross_track(5, show=True)
+        # Allocate array for detections
+        img_detections = np.zeros((img_side.shape[0], img_side.shape[1], 3), dtype=np.uint8)
+        # img_detections = np.copy(img_side).astype(np.uint8)
 
-canny_custom = sss_analysis.canny_custom(5, 5, 5, 175, 225)
-sss_analysis.set_working_to_original()
-image_raw = sss_analysis.img
+        for i, ping in enumerate(img_side):
 
-# %%
-lines = cv.HoughLines(canny_custom, rho=1, theta=np.pi / 180, threshold=25)
-linesP = cv.HoughLinesP(canny_custom, rho=1, theta=np.pi / 180, threshold=25, minLineLength=25, maxLineGap=10)
+            if self.cpd_max_depth > 0:
+                ping_results = self.detector.detect_rope(ping, self.cpd_max_depth)
+            else:
+                ping_results = self.detector.detect(ping)
 
-image_raw = np.copy(sss_analysis.img)
-image_color = cv.cvtColor(image_raw, cv.COLOR_GRAY2BGR)
-# Draw the detected lines on the original image
-if linesP is not None:
-        for i in range(0, len(linesP)):
-            l = linesP[i][0]
-            cv.line(image_color, (l[0], l[1]), (l[2], l[3]), (0,0,255), 3, cv.LINE_AA)
+            if ObjectID.NADIR in ping_results.keys():
+                img_detections[i, ping_results[ObjectID.NADIR]['pos'], :] = self.nadir_color
 
-# Display the image with detected lines
-lines_fig = plt.figure()
-plt.imshow(cv.cvtColor(image_color, cv.COLOR_BGR2RGB))
+            if ObjectID.ROPE in ping_results.keys():
+                img_detections[i, ping_results[ObjectID.ROPE]['pos'], :] = self.rope_color
 
-#sss_analysis.combined_points()
-# sss_analysis.row_fft()
+            if ObjectID.BUOY in ping_results.keys():
+                img_detections[i, ping_results[ObjectID.BUOY]['pos'], :] = self.buoy_color
 
-# %% Process boat sss
-if process_boat_sss:
-    boat_data = []
-    with open(f'data/{boat_file_name}', 'rb') as f:
-        reader = sllib.Reader(f)
-        header = reader.header
-        print(header.format)
-        for frame in reader:
-            raw_sonar = np.frombuffer(frame.packet, dtype=np.uint8)
-            boat_data.append(raw_sonar)
+        # Save results
+        if side == 0:
+            self.port_detections = np.copy(img_detections[:, :, :])
+        else:
+            self.starboard_detections = np.copy(img_detections[:, :, :])
 
-    data_array = np.flipud(np.asarray(boat_data))
-    data_len = data_array.shape[0]
+    def cpd_plot_detections(self):
+        """
+        Plot the detections
+        """
+        # Form yellow center band, helps to separate the port and starboard returns
+        band = np.ones((self.img_height, 5, 3), dtype=np.uint8) * 255
+        band[:, :, 2] = 0
 
-    # Save sonar as jpg
-    data_image = Image.fromarray(data_array)
-    data_image.save(f'data/sss_boat_data_{data_len}.jpg')
+        final = np.hstack((np.flip(self.port_detections, axis=1),
+                           band,
+                           self.starboard_detections))
+
+        plt.figure()
+        plt.title('CPD detections')
+        plt.imshow(final)
+        plt.show()
+
+    def show_detections(self, grad_results = None, canny_results = None):
+
+        # convert cpd detections
+        cpd_port_detections_mono = np.copy(self.port_detections.max(axis=2))
+        cpd_star_detections_mono = np.copy(self.starboard_detections.max(axis=2))
+        cpd_detections_mono = np.hstack((np.fliplr(cpd_port_detections_mono), cpd_star_detections_mono))
+
+        if grad_results is None:
+            grad_mono = np.zeros_like(self.img)
+        else:
+            grad_mono = np.copy(grad_results)
+
+        if canny_results is None:
+            canny_mono = np.zeros_like(self.img)
+        else:
+            canny_mono = np.copy(canny_results)
+
+        combined_detections = np.dstack((cpd_detections_mono, grad_mono, canny_mono))
+
+        plt.figure()
+        plt.title('Combined detections\n'
+                  'CPD: Red  -  Gradient: Green  -  Canny: Blue')
+        plt.imshow(combined_detections)
+        plt.show()
+
+
+
+
+if __name__ == '__main__':
+    # Parameters
+    # process_sam_sss = False
+    # ===== Gradient method =====
+    perform_grad_method = True
+    grad_med_size = 7
+    grad_gauss_size = 5
+    grad_grad_size = 5
+    grad_show = True
+    # ===== Canny edge detector =====
+    perform_canny = True
+    canny_med_size = 7
+    canny_gauss_size = 5
+    canny_sobel_size = 5
+    canny_l_thresh = 175
+    canny_h_thresh = 225
+    canny_show = True
+    # ===== CPD method =====
+    perform_cpd = True
+    cpd_max_depth = 100
+    cpd_ratio = 1.55  # 1.55 was default
+    cpd_med_size = 0
+    cpd_show = True
+    # ===== Boat sonar data =====
+    process_boat_sss = False
+
+    sam_file_name = 'sss_data_7608.jpg'
+    seq_file_name = 'sss_seqs_7608.csv'
+    boat_file_name = 'Sonar_2023-05-03_20.51.26.sl2'
+
+    start_ind = 3400  # 3400  # 6300
+    end_ind = 5700 # 4600  # 7200
+    max_range_ing = 225
+
+    detections = [[7106, 1092], [6456, 1064],
+                  [5570, 956], [4894, 943],
+                  [4176, 956], [3506, 924],
+                  [2356, 911], [1753, 949],
+                  [1037, 941], [384, 943]]
+
+    # %% Process SAM SSS
+    sss_analysis = process_sss(sam_file_name, seq_file_name,
+                               start_ind=start_ind, end_ind=end_ind,
+                               max_range_ind=max_range_ing,
+                               cpd_max_depth=cpd_max_depth, cpd_ratio=cpd_ratio)
+
+    if perform_grad_method:
+        sss_analysis.filter_median(grad_med_size, show=grad_show)
+        sss_analysis.filter_gaussian(grad_gauss_size, show=grad_show)
+        sss_analysis.gradient_cross_track(grad_grad_size, show=grad_show)
+        grad_method_results = sss_analysis.filter_threshold(threshold=200, show=grad_show)
+
+    if perform_canny:
+        canny_custom = sss_analysis.canny_custom(canny_med_size,
+                                                 canny_gauss_size,
+                                                 canny_sobel_size,
+                                                 canny_l_thresh, canny_h_thresh,
+                                                 show=canny_show)
+        sss_analysis.set_working_to_original()
+        image_raw = sss_analysis.img
+
+    if perform_cpd:
+        sss_analysis.set_working_to_original()
+        sss_analysis.filter_median(cpd_med_size, show=cpd_show)
+        sss_analysis.cpd_perform_detection(0)
+        sss_analysis.cpd_perform_detection(1)
+        if cpd_show:
+            sss_analysis.cpd_plot_detections()
+
+    sss_analysis.show_detections(grad_results=grad_method_results,
+                                 canny_results=canny_custom)
+
+    # %%
+    # lines = cv.HoughLines(canny_custom, rho=1, theta=np.pi / 180, threshold=25)
+    # linesP = cv.HoughLinesP(canny_custom, rho=1, theta=np.pi / 180, threshold=25, minLineLength=25, maxLineGap=10)
+    #
+    # image_raw = np.copy(sss_analysis.img)
+    # image_color = cv.cvtColor(image_raw, cv.COLOR_GRAY2BGR)
+    # # Draw the detected lines on the original image
+    # if linesP is not None:
+    #         for i in range(0, len(linesP)):
+    #             l = linesP[i][0]
+    #             cv.line(image_color, (l[0], l[1]), (l[2], l[3]), (0,0,255), 3, cv.LINE_AA)
+    #
+    # # Display the image with detected lines
+    # lines_fig = plt.figure()
+    # plt.imshow(cv.cvtColor(image_color, cv.COLOR_BGR2RGB))
+
+    # sss_analysis.combined_points()
+    # sss_analysis.row_fft()
+
+    # %% Process boat sss
+    if process_boat_sss:
+        boat_data = []
+        with open(f'data/{boat_file_name}', 'rb') as f:
+            reader = sllib.Reader(f)
+            header = reader.header
+            print(header.format)
+            for frame in reader:
+                raw_sonar = np.frombuffer(frame.packet, dtype=np.uint8)
+                boat_data.append(raw_sonar)
+
+        data_array = np.flipud(np.asarray(boat_data))
+        data_len = data_array.shape[0]
+
+        # Save sonar as jpg
+        data_image = Image.fromarray(data_array)
+        data_image.save(f'data/sss_boat_data_{data_len}.jpg')

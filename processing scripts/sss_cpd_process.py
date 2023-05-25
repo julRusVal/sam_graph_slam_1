@@ -13,7 +13,7 @@ import numpy as np
 
 # %% Classes
 class sss_detector:
-    def __init__(self, file_name, start_ind, end_ind, max_nadir_ind):
+    def __init__(self, file_name, start_ind, end_ind, max_nadir_ind, cpd_ratio=None):
         # SSS parameters
         self.resolution = 0.05
         # If this is set above 0 the nadir detection is not performed and is assumed to be at this index
@@ -46,11 +46,13 @@ class sss_detector:
         self.scan_width = self.img.shape[1] // 2
         self.port = np.flip(self.img[:, :self.scan_width], axis=1)
         self.starboard = self.img[:, self.scan_width:]
-        self.port_detections = np.zeros(self.port.shape, dtype=np.uint8)
-        self.starboard_detections = np.zeros(self.port.shape, dtype=np.uint8)
+        e
 
         # Detector
-        self.detector = CPDetector()
+        if cpd_ratio is None:
+            self.detector = CPDetector()
+        else:
+            self.detector = CPDetector(min_mean_diff_ratio=cpd_ratio)
         self.nadir_color = np.array([255, 0, 0], dtype=np.uint8)
         self.rope_color = np.array([0, 255, 0], dtype=np.uint8)
         self.buoy_color = np.array([0, 0, 255], dtype=np.uint8)
@@ -75,7 +77,7 @@ class sss_detector:
         for i, ping in enumerate(img_side):
 
             if self.max_nadir_ind > 0:
-                ping_results = self.detector.detect_rope_buoy(ping, self.max_nadir_ind)
+                ping_results = self.detector.detect_rope(ping, self.max_nadir_ind)
             else:
                 ping_results = self.detector.detect(ping)
 
@@ -111,25 +113,26 @@ class sss_detector:
 
     def plot_max(self):
 
-        max = np.maximum(self.port, self.starboard)
-        plt.imshow(max)
+        sss_max = np.maximum(self.port, self.starboard)
+        plt.imshow(sss_max)
         plt.show()
 
 
 if __name__ == '__main__':
     # %% Processing parameters
     data_file = 'data/sss_data_7608.jpg'  # 'data/sss_data_1.png'
-    start_ind = 3400  # 6300
-    end_ind = 5700  # 7200
-    max_nadir_depth = 0
+    start_ind = 0  # 3400  # 3400  # 6300
+    end_ind = 0  # 4600  # 5700  # 7200
+    max_nadir_depth = 100
 
     show_max = True
-    perform_detections = False
+    perform_detections = True
 
     # %% Process
     detector_test = sss_detector(data_file,
                                  start_ind=start_ind, end_ind=end_ind,
-                                 max_nadir_ind=max_nadir_depth)
+                                 max_nadir_ind=max_nadir_depth,
+                                 cpd_ratio=1.0)  # 1.55 is the previous standard ration
     # %% Max
     """
     The idea here is to use both channels to find the nadir as, depending on the sss beam widths and orientations

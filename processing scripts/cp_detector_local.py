@@ -48,7 +48,7 @@ class CPDetector:
             }
         return detections
 
-    def detect_rope_buoy(self, ping, max_idx=150):
+    def detect_rope(self, ping, max_idx=150):
         """Detection returns a dictionary with key being ObjectID and
         value being a dictionary of position and confidence of the
         detection.
@@ -57,17 +57,11 @@ class CPDetector:
         detections = {}
 
         rope = self._detect_rope(ping, max_idx)
-        buoy = self._detect_buoy(ping, max_idx)
 
         if rope:
             detections[ObjectID.ROPE] = {
                 'pos': rope[0][0],
                 'confidence': rope[1]
-            }
-        if buoy:
-            detections[ObjectID.BUOY] = {
-                'pos': buoy[0][0],
-                'confidence': buoy[1]
             }
         return detections
 
