@@ -34,8 +34,8 @@
     <param name="odo_ang_sig_deg" value="2.5"/>
     <param name="odo_dist_sig" value="1"/>
     <!-- Detection sigmas -->
-    <param name="detect_ang_sig_deg" value="1.0"/>
-    <param name="detect_dist_sig" value="0.25"/>
+    <param name="detect_ang_sig_deg" value="0.25"/>
+    <param name="detect_dist_sig" value="0.1"/>
 
     <!-- Output parameters -->
     <param name="verbose_listener_DRs" value="false"/>
@@ -48,18 +48,22 @@
     <param name="verbose_graph_detections" value="true"/>
 
     <!-- NODES -->
-    <!-- Play the ROS bag -->
+    <!-- start rviz -->
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find sam_slam)/rviz/rviz_real.rviz"/>
 
-    <!-- Play the ROS bag -->
+    <!-- Sam SLAM -->
     <node name="sam_slam_listener" pkg="sam_slam" type="sam_listener_online_slam_node.py" output="screen"/>
 
     <!-- Play the ROS bag -->
-    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 2 --clock /home/julian/sam_real_algae_330.bag"/>
+    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 2 --clock /home/julian/sam_real_algae_2.bag"/>
 
     <!-- gps and buoy node -->
     <node name="gps_buoy_node" pkg="sam_dead_reckoning" type="algae_map_markers.py" output="screen" />
 
     <!-- Manual detector -->
     <node name="manual_detection_node" pkg="sss_object_detection" type="sss_detection_manual_publisher.py" output="screen" />
+
+    <!-- dr and gt markers -->
+    <node name="dr_gt_markers" pkg="sam_slam" type="odom_marker_republisher.py" output="screen" />
 
 </launch>

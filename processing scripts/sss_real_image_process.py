@@ -20,7 +20,7 @@ import math
 
 class process_sss:
     def __init__(self, data_file_name, seq_file_name, start_ind=None, end_ind=None, max_range_ind=None,
-                 cpd_max_depth=None, cpd_ratio=None):
+                 cpd_max_depth=None, cpd_ratio=None, flipping_regions=None, flip_original=False):
         # Parameters
         self.canny_l_threshold = 100
         self.canny_h_threshold = 175
@@ -33,15 +33,25 @@ class process_sss:
         self.seq_ids = np.genfromtxt(f'data/{self.seq_file_name}', delimiter=',')
         self.buoy_seq_ids = None
 
+        # Data manipulations and manual detections
+        self.flip_original = flip_original
+        self.flipped_region = flipping_regions
+        self.detections = None
+        self.detections_mask = None
+
         # Load data
         self.img_original = cv.imread(f'data/{self.data_file_name}', cv.IMREAD_GRAYSCALE)
+
+        if flip_original:
+            self.flip_data(self.flipped_region, show=False, overwrite_orig=True)
+
         # Determine the shape of the original data
         self.original_height, self.original_width = self.img_original.shape[0:2]
         self.channel_size = self.original_width // 2
 
         # Separate the channels
         # The port side is stored flipped so that all distances increase to the right
-        self.img_port_original = np.flip(self.img_original[:, :self.channel_size], axis=1)
+        self.img_port_original = np.fliplr(self.img_original[:, :self.channel_size])
         self.img_starboard_original = self.img_original[:, self.channel_size:]
 
         # Set the region of interest
@@ -90,6 +100,8 @@ class process_sss:
         # List of operations
         self.operations_list = []
 
+        # Manul
+
     def set_working_to_original(self):
         # Extract area of interest
         # self.img = np.copy(self.img_original)[self.start_ind:self.end_ind, :]
@@ -99,6 +111,59 @@ class process_sss:
 
         # Clear operations list
         self.operations_list = []
+
+    def flip_data(self, flipped_sections=None, show=False, overwrite_orig=False):
+        '''
+        Flips the sss data based on the specified flip regions, does not check for overlapping regions so be careful!
+
+        :param show:
+        :param flipped_sections: [[start_ind, end_ind],[...]...]
+        :return:
+        '''
+        if flipped_sections is None:
+            return
+
+        if len(flipped_sections) <= 0:
+            return
+
+        local_img = np.copy(self.img_original)
+        local_height = local_img.shape[0]
+
+        seq_id_starts = []
+        seq_id_ends = []
+
+        for section in flipped_sections:
+            if len(section) != 2:
+                print('malformed flip request')
+                continue
+            # Check the bound of the flipping inds
+            if section[0] < 0:
+                flip_start_ind = 0
+            else:
+                flip_start_ind = section[0]
+
+            if section[1] > local_height or section[1] <= flip_start_ind:
+                flip_end_ind = local_height
+            else:
+                flip_end_ind = section[1]
+
+            # Perform flip
+            local_img[flip_start_ind:flip_end_ind, :] = local_img[flip_start_ind:flip_end_ind, ::-1]
+
+            # Sequence ids
+            # recording here to add to the manual detector, will flip seq ids in the ranges
+            seq_id_starts.append(int(self.seq_ids[flip_start_ind]))
+            seq_id_ends.append(int(self.seq_ids[flip_end_ind - 1]))
+
+            if show:
+                plt.imshow(local_img)
+                plt.title('Flipped data results\n'
+                          f'Starts: {seq_id_starts}\n'
+                          f'Ends: {seq_id_ends}')
+                plt.show()
+
+            if overwrite_orig:
+                self.img_original = np.copy(local_img)
 
     def row_fft(self, channel='PORT'):
         if channel.upper() == 'PORT':
@@ -320,30 +385,6 @@ class process_sss:
         img_combined = np.multiply(sss_analysis.img_canny, gradient)
         cv.imwrite(f'data/combined_canny_grad.png', img_combined)
 
-    def mark_manual_detections(self):
-        """
-        Mark manual detections
-        :return:
-        """
-        if self.detections is None:
-            return
-        grey_img = np.copy(self.img_original)
-        color_img = np.dstack((grey_img, grey_img, grey_img))
-        for detection in detections:
-            cv.circle(color_img, (detection[1], detection[0]), 30, (255, 0, 0), 10)
-
-        marked_fig, ax1 = plt.subplots(1, 1)
-        marked_fig.suptitle('Manually marked detections')
-        ax1.imshow(color_img)
-        marked_fig.show()
-
-    def extract_seq_ids(self, detections):
-        if self.detections is None or self.seq_ids is None:
-            return
-        self.buoy_seq_ids = []
-        for detection in detections:
-            self.buoy_seq_ids.append(self.seq_ids[detection[0]])
-
     def cpd_perform_detection(self, side=0):
         """
         Note: this has the ability to use multiple detection methods, defined in cp_detector_local.py
@@ -388,7 +429,7 @@ class process_sss:
         band = np.ones((self.img_height, 5, 3), dtype=np.uint8) * 255
         band[:, :, 2] = 0
 
-        final = np.hstack((np.flip(self.port_detections, axis=1),
+        final = np.hstack((np.fliplr(self.port_detections),
                            band,
                            self.starboard_detections))
 
@@ -397,7 +438,7 @@ class process_sss:
         plt.imshow(final)
         plt.show()
 
-    def show_detections(self, grad_results = None, canny_results = None):
+    def show_detections(self, grad_results=None, canny_results=None):
 
         # convert cpd detections
         cpd_port_detections_mono = np.copy(self.port_detections.max(axis=2))
@@ -422,14 +463,73 @@ class process_sss:
         plt.imshow(combined_detections)
         plt.show()
 
+    def show_detections_overlay(self, grad_results=None, canny_results=None, show_manual=False):
 
+        grey_img = np.copy(self.img_original)
+        color_img = np.dstack((grey_img, grey_img, grey_img))
+
+        # convert cpd detections
+        cpd_port_detections_mono = np.copy(self.port_detections.max(axis=2))
+        cpd_star_detections_mono = np.copy(self.starboard_detections.max(axis=2))
+        cpd_detections_mono = np.hstack((np.fliplr(cpd_port_detections_mono), cpd_star_detections_mono))
+
+        if grad_results is not None:
+            grad_mono = np.zeros_like(self.img)
+        else:
+            grad_mono = np.copy(grad_results)
+
+        if canny_results is None:
+            canny_mono = np.zeros_like(self.img)
+        else:
+            canny_mono = np.copy(canny_results)
+
+        combined_detections = np.dstack((cpd_detections_mono, grad_mono, canny_mono))
+
+        plt.figure()
+        plt.title('Combined detections\n'
+                  'CPD: Red  -  Gradient: Green  -  Canny: Blue')
+        plt.imshow(combined_detections)
+        plt.show()
+
+    def mark_manual_detections(self, manual_detections=None):
+        """
+        Mark manual detections
+        :return:
+        """
+        self.detections = manual_detections
+
+        if self.detections is None:
+            return
+        grey_img = np.copy(self.img_original)
+        color_img = np.dstack((grey_img, grey_img, grey_img))
+        for detection in detections:
+            cv.circle(color_img, (detection[1], detection[0]), 15, (0, 255, 255), 5)  # Yellow
+
+        marked_fig, ax1 = plt.subplots(1, 1)
+        marked_fig.suptitle('Manually marked detections')
+        ax1.imshow(color_img)
+        # marked_fig.show()
+        plt.show()
+
+        cv.imwrite(f'data/{self.data_label}_marked.jpg', color_img)
+
+    def extract_seq_ids(self, detections):
+        if self.detections is None or self.seq_ids is None:
+            return
+        self.buoy_seq_ids = []
+        for detection in detections:
+            self.buoy_seq_ids.append(self.seq_ids[detection[0]])
 
 
 if __name__ == '__main__':
     # Parameters
     # process_sam_sss = False
+    # ===== Data preprocessing and manual detections =====
+    show_flipping = False
+    show_manual_detection = False
+    perform_flipping = True
     # ===== Gradient method =====
-    perform_grad_method = True
+    perform_grad_method = False
     grad_med_size = 7
     grad_gauss_size = 5
     grad_grad_size = 5
@@ -445,37 +545,56 @@ if __name__ == '__main__':
     # ===== CPD method =====
     perform_cpd = True
     cpd_max_depth = 100
-    cpd_ratio = 1.55  # 1.55 was default
+    cpd_ratio = 1.25  # 1.55 was default
     cpd_med_size = 0
     cpd_show = True
+    # ===== Combined detector output =====
+    perform_combined_detector = True
     # ===== Boat sonar data =====
     process_boat_sss = False
 
     sam_file_name = 'sss_data_7608.jpg'
-    seq_file_name = 'sss_seqs_7608.csv'
+    seq_file_name = 'sss_seqs_7608.csv'  # this data is produced by the sss_raw_saver.py
     boat_file_name = 'Sonar_2023-05-03_20.51.26.sl2'
 
     start_ind = 3400  # 3400  # 6300
-    end_ind = 5700 # 4600  # 7200
+    end_ind = 5700  # 4600  # 7200
     max_range_ing = 225
 
-    detections = [[7106, 1092], [6456, 1064],
+    # detections = [[7106, 1092], [6456, 1064],
+    #               [5570, 956], [4894, 943],
+    #               [4176, 956], [3506, 924],
+    #               [2356, 911], [1753, 949],
+    #               [1037, 941], [384, 943]]
+
+    detections = [[7096, 907], [6452, 937],
                   [5570, 956], [4894, 943],
                   [4176, 956], [3506, 924],
                   [2356, 911], [1753, 949],
                   [1037, 941], [384, 943]]
 
+    flipped_regions = [[5828, -1]]
+
     # %% Process SAM SSS
     sss_analysis = process_sss(sam_file_name, seq_file_name,
                                start_ind=start_ind, end_ind=end_ind,
                                max_range_ind=max_range_ing,
-                               cpd_max_depth=cpd_max_depth, cpd_ratio=cpd_ratio)
+                               cpd_max_depth=cpd_max_depth, cpd_ratio=cpd_ratio,
+                               flipping_regions=flipped_regions,
+                               flip_original=perform_flipping)
+    # if show_flipping:
+    #     sss_analysis.flip_data(flipped_sections=flipped_regions)
+
+    if show_manual_detection:
+        sss_analysis.mark_manual_detections(detections)
 
     if perform_grad_method:
         sss_analysis.filter_median(grad_med_size, show=grad_show)
         sss_analysis.filter_gaussian(grad_gauss_size, show=grad_show)
         sss_analysis.gradient_cross_track(grad_grad_size, show=grad_show)
         grad_method_results = sss_analysis.filter_threshold(threshold=200, show=grad_show)
+    else:
+        grad_method_results = None
 
     if perform_canny:
         canny_custom = sss_analysis.canny_custom(canny_med_size,
@@ -483,8 +602,8 @@ if __name__ == '__main__':
                                                  canny_sobel_size,
                                                  canny_l_thresh, canny_h_thresh,
                                                  show=canny_show)
-        sss_analysis.set_working_to_original()
-        image_raw = sss_analysis.img
+    else:
+        canny_custom = None
 
     if perform_cpd:
         sss_analysis.set_working_to_original()
@@ -494,8 +613,9 @@ if __name__ == '__main__':
         if cpd_show:
             sss_analysis.cpd_plot_detections()
 
-    sss_analysis.show_detections(grad_results=grad_method_results,
-                                 canny_results=canny_custom)
+    if perform_combined_detector:
+        sss_analysis.show_detections(grad_results=grad_method_results,
+                                     canny_results=canny_custom)
 
     # %%
     # lines = cv.HoughLines(canny_custom, rho=1, theta=np.pi / 180, threshold=25)

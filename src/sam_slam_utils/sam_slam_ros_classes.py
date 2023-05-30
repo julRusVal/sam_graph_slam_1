@@ -17,6 +17,9 @@ from tf.transformations import quaternion_from_euler, euler_from_quaternion
 import tf2_ros
 import tf2_geometry_msgs
 
+# Detector
+from sss_object_detection.consts import ObjectID
+
 # cv_bridge and cv2 to convert and save images
 # from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
@@ -56,6 +59,7 @@ class sam_slam_listener:
     Detections are saved in two lists. {There is no need for both}
     detections format: [x_map, y_map, z_map, q_w, q_x, q_y, q_z, corresponding dr id, score]
     detections_graph format: [x_map, y_map, z_map, x_rel, y_rel, z_vel, corresponding dr id]
+    rope_detections_graph format: [x_map, y_map, z_map, x_rel, y_rel, z_vel, corresponding dr id]
 
     Online
     If an online_graph object is passed to the listener it will be updated at every detection
@@ -80,6 +84,7 @@ class sam_slam_listener:
         else:
             self.correct_dr = False
         self.record_gt = record_gt
+        self.prioritize_buoy_detections = True
 
         # ===== Provided information =====
         self.manual_associations = rospy.get_param("manual_associations", False)
@@ -152,8 +157,9 @@ class sam_slam_listener:
         # === Sonar ===
         # Currently detections are provided by the published buoy location
         self.detections_graph_file_path = self.file_path + 'detections_graph.csv'
+        self.rope_detections_graph_file_path = self.file_path + 'rope_detections_graph.csv'
         self.associations_graph_file_path = self.file_path + 'associations_graph.csv'
-        self.sss_graph_file_path = self.file_path + 'detections_graph.csv'
+        # self.sss_graph_file_path = self.file_path + 'detections_graph.csv'
 
         # === Camera ===
         # Down
@@ -216,6 +222,7 @@ class sam_slam_listener:
         self.gt_poses_graph = []
         self.dr_poses_graph = []
         self.detections_graph = []
+        self.rope_detections_graph = []
         self.associations_graph = []
 
         # States and timings
@@ -485,6 +492,26 @@ class sam_slam_listener:
         # check elapsed time
         detect_time_now = rospy.Time.now()
         if (detect_time_now - self.detect_last_time).to_sec() < self.detect_update_time:
+            detection_is_current = True
+        else:
+            detection_is_current = False
+
+        # Check if detection is of a buoy
+        detection_is_buoy = False
+        for detection in msg.detections:
+            for result in detection.results:
+                if result.id == ObjectID.BUOY.value:  # nadir:0 rope:1 buoy:2
+                    detection_is_buoy = True
+                    break
+            if detection_is_buoy:
+                break
+
+        # Buoy detections can be fairly rare so it might be desirable to use all buoy detections while
+        # limiting the rate that rope detections are added to the graph
+        if not self.prioritize_buoy_detections and detection_is_current:
+            return
+
+        if self.prioritize_buoy_detections and detection_is_current and not detection_is_buoy:
             return
 
         # Reset timer
@@ -493,16 +520,16 @@ class sam_slam_listener:
         # Process detection
         for det_ind, detection in enumerate(msg.detections):
             for res_ind, result in enumerate(detection.results):
+                # detection type is specified by ObjectID
+                detection_type = result.id
 
-                # Pose in base_link
+                # Pose in base_link, convert to map
                 det_pose_base = result.pose
-
-                det_da = int(result.score)
-
-                # Convert to map
                 det_pos_map = self.transform_pose(det_pose_base,
                                                   from_frame=msg.header.frame_id,
                                                   to_frame=self.frame)
+
+                index = len(self.dr_poses_graph)
 
                 # ===== Log data for the graph =====
                 # First update dr and gr with the most current
@@ -521,38 +548,70 @@ class sam_slam_listener:
                 # else:
                 #     gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
-                # detection position:
-                # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
-                index = len(self.dr_poses_graph) - 1
-                self.detections_graph.append([det_pos_map.pose.position.x,
-                                              det_pos_map.pose.position.y,
-                                              det_pos_map.pose.position.z,
-                                              det_pose_base.pose.position.x,
-                                              det_pose_base.pose.position.y,
-                                              det_pose_base.pose.position.z,
-                                              index])
-
-                if self.manual_associations:
-                    self.associations_graph.append([det_da])
-                else:
-                    self.associations_graph.append([-1])
-
                 # ===== Output =====
                 if self.verbose_detections:
-                    print(f'Detection callback: {index}')
+                    print(f'Detection callback - Index:{index}  Type:{detection_type}')
 
-                # ===== Online detection update =====
-                if self.online_graph is None:
-                    return
-                if not self.online_graph.busy:
-                    if self.verbose_detections:
-                        print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
-                    self.online_graph.online_update(dr_pose, gt_pose,
-                                                    np.array((det_pose_base.pose.position.x,
-                                                              det_pose_base.pose.position.y), dtype=np.float64),
-                                                    da_id=det_da)
-                else:
-                    print('Detection - Busy condition found')
+                # ===== Handle buoy detections
+                if detection_type == ObjectID.BUOY.value:
+                    # Log detection position
+                    # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
+                    self.detections_graph.append([det_pos_map.pose.position.x,
+                                                  det_pos_map.pose.position.y,
+                                                  det_pos_map.pose.position.z,
+                                                  det_pose_base.pose.position.x,
+                                                  det_pose_base.pose.position.y,
+                                                  det_pose_base.pose.position.z,
+                                                  index])
+
+                    # Data association
+                    if self.manual_associations:
+                        det_da = int(result.score)
+                    else:
+                        det_da = - ObjectID.BUOY.value  # -2
+
+                    self.associations_graph.append([det_da])
+
+                    # ===== Online detection update =====
+                    if self.online_graph is None:
+                        return
+                    if not self.online_graph.busy:
+                        if self.verbose_detections:
+                            print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
+                        self.online_graph.online_update(dr_pose, gt_pose,
+                                                        np.array((det_pose_base.pose.position.x,
+                                                                  det_pose_base.pose.position.y), dtype=np.float64),
+                                                        da_id=det_da)
+                    else:
+                        print('Detection - Busy condition found')
+
+                # ===== Handle rope detections =====
+                if detection_type == ObjectID.ROPE.value:
+                    # Log detection position
+                    # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
+                    self.rope_detections_graph.append([det_pos_map.pose.position.x,
+                                                       det_pos_map.pose.position.y,
+                                                       det_pos_map.pose.position.z,
+                                                       det_pose_base.pose.position.x,
+                                                       det_pose_base.pose.position.y,
+                                                       det_pose_base.pose.position.z,
+                                                       index])
+
+                    det_da = - ObjectID.ROPE.value  # -1
+
+                    # ===== Online detection update =====
+                    if self.online_graph is None:
+                        return
+                    if not self.online_graph.busy:
+                        if self.verbose_detections:
+                            print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
+                        self.online_graph.online_update(dr_pose, gt_pose,
+                                                        np.array((det_pose_base.pose.position.x,
+                                                                  det_pose_base.pose.position.y),
+                                                                 dtype=np.float64),
+                                                        da_id=det_da)
+                    else:
+                        print('Detection - Busy condition found')
 
     def sss_callback(self, msg):
         """
@@ -797,7 +856,7 @@ class sam_slam_listener:
                 analysis = analyze_slam(self.online_graph)
                 analysis.save_for_sensor_processing(self.file_path)
                 analysis.save_2d_poses(self.file_path)
-                analysis.show_graph_2d(label="Online Graph",
+                analysis.show_graph_2d(label="Final Estimate",
                                        show_final=True)
 
                 analysis.visualize_posterior()

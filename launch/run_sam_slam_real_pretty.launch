@@ -1,0 +1,81 @@
+<?xml version="1.0"?>
+<launch>
+
+    <arg name="debug" default="0"/>
+    <arg name="mode" default="default"/>
+    <arg name="namespace_dr" default="sam"/>
+    <arg name="namespace_est" default="sam"/>
+    <arg name="robot_name" default="estimated"/>
+
+    <group ns="dr_model">
+        <param name="robot_description"
+           command="$(find xacro)/xacro '$(find sam_description)/robots/sam_auv_$(arg mode).urdf.xacro' debug:=$(arg debug) namespace:=$(arg namespace_dr)" />
+    </group>
+
+    <group ns="est_model">
+        <param name="robot_description"
+           command="$(find xacro)/xacro '$(find sam_description)/robots/sam_auv_$(arg mode).urdf.xacro' debug:=$(arg debug) namespace:=$(arg namespace_est)" />
+    </group>
+    
+    <!-- Node parameters -->
+    <param name="robot_name" value="$(arg robot_name)"/>
+    <param name="frame" value="map"/>
+
+    <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing"/>
+
+    <!-- Data parameters -->
+    <param name="dr_update_time" value="2.0"/>
+    <param name="detect_update_time" value="0.5"/>
+
+    <param name="camera_update_time" value="2.0"/>
+    <param name="sss_update_time" value="2.0"/>
+    <param name="sss_buffer_len" value="10"/>
+
+    <!-- Detection and association parameters -->
+    <param name="simulated_data" value="False"/>
+    <param name="record_ground_truth" value="True"/>
+    <param name="manual_associations" value="True"/>
+    <param name="simulated_detections" value="True"/>
+
+    <!-- Graph parameters -->
+    <!-- Currently using default ISAM2 parameters -->
+    <!-- Angles are in units of degrees, which are then converted to rads -->
+    <!-- Prior sigmas -->
+    <param name="prior_ang_sig_deg" value="10.0"/>
+    <param name="prior_dist_sig" value="10.0"/>
+    <!-- Buoy -->
+    <param name="buoy_dist_sig" value="0.5"/>
+    <!-- Odometry -->
+    <param name="odo_ang_sig_deg" value="2.5"/>
+    <param name="odo_dist_sig" value="1"/>
+    <!-- Detection sigmas -->
+    <param name="detect_ang_sig_deg" value="0.25"/>
+    <param name="detect_dist_sig" value="0.1"/>
+
+    <!-- Output parameters -->
+    <param name="verbose_listener_DRs" value="false"/>
+    <param name="verbose_listener_detections" value="true"/>
+    <param name="verbose_listener_sonars" value="false"/>
+    <param name="verbose_listener_buoys" value="true"/>
+    <param name="verbose_listener_cameras" value="false"/>
+
+    <param name="verbose_graph_update" value="false"/>
+    <param name="verbose_graph_detections" value="true"/>
+
+    <!-- NODES -->
+    <!-- start rviz -->
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find sam_slam)/rviz/rviz_real.rviz"/>
+
+    <!-- Play the ROS bag -->
+    <node name="sam_slam_listener" pkg="sam_slam" type="sam_listener_online_slam_node.py" output="screen"/>
+
+    <!-- Play the ROS bag -->
+    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 2 --clock /home/julian/sam_real_algae_2.bag"/>
+
+    <!-- gps and buoy node -->
+    <node name="gps_buoy_node" pkg="sam_dead_reckoning" type="algae_map_markers.py" output="screen" />
+
+    <!-- Manual detector -->
+    <node name="manual_detection_node" pkg="sss_object_detection" type="sss_detection_manual_publisher.py" output="screen" />
+
+</launch>

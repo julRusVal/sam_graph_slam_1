@@ -83,7 +83,7 @@ def report_on_progress(graph: gtsam.NonlinearFactorGraph,
         plt.title(f"Step: {step_num} - Detection: ")
     else:
         plt.title(f"Step: {step_num} - Odometry")
-    plt.pause(1)
+    plt.pause(.5)
 
 # %% ROS node start
 rospy.init_node('slam_listener', anonymous=False)
@@ -107,7 +107,7 @@ rospy.set_param("prior_dist_sig", 5.0)
 rospy.set_param("buoy_dist_sig", 0.5)
 rospy.set_param("odo_ang_sig_deg", 2.5)
 rospy.set_param("odo_dist_sig", 1)
-rospy.set_param("detect_ang_sig_deg", 1.0)
+rospy.set_param("detect_ang_sig_deg", 0.5)
 rospy.set_param("detect_dist_sig", 0.25)
 rospy.set_param("manual_associations", manual_associations)
 

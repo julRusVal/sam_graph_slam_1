@@ -19,7 +19,7 @@ if len(path_name) == 0:
 
 # === Camera data ===
 gt_base = read_csv_to_array(path_name + 'camera_gt.csv')
-base = read_csv_to_array(path_name + 'camera_gt.csv')  # change to camera_gt.csv, camera_dr.csv, or camera_est.csv
+base = read_csv_to_array(path_name + 'camera_est.csv')  # change to camera_gt.csv, camera_dr.csv, or camera_est.csv
 
 left_info = read_csv_to_list(path_name + 'left_info.csv')
 right_info = read_csv_to_list(path_name + 'right_info.csv')
