@@ -7,9 +7,11 @@ Script for processing data from SMaRC's Stonefish simulation
 # %% Imports
 from __future__ import annotations
 import itertools
+import queue
 
 # Maths
 import numpy as np
+import math
 import matplotlib.pyplot as plt
 
 # Clustering
@@ -26,7 +28,8 @@ import rospy
 import tf
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from geometry_msgs.msg import Quaternion
-from visualization_msgs.msg import Marker
+from visualization_msgs.msg import Marker, MarkerArray
+from std_msgs.msg import ColorRGBA
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 
@@ -605,7 +608,6 @@ class offline_slam_2d:
 
 class online_slam_2d:
     def __init__(self, path_name=None):
-        graph = gtsam.NonlinearFactorGraph()
         self.manual_associations = rospy.get_param("manual_associations", False)
 
         print(f"Manual associations: {self.manual_associations}")
@@ -629,6 +631,8 @@ class online_slam_2d:
         self.x = None  # Poses
         self.b = None  # Buoys
         self.r = None  # Ropes
+
+        self.buffer = queue.Queue()
 
         # === dr ===
         self.dr_Pose2s = None
@@ -656,8 +660,11 @@ class online_slam_2d:
         self.prior_dist_sig = rospy.get_param('prior_dist_sig', 1.0)
         # buoy prior sigmas
         self.buoy_dist_sig_init = rospy.get_param('buoy_dist_sig', 1.0)
-        # buoy prior sigmas
+        # rope prior sigmas
+        # This is used in the naive
         self.rope_dist_sig_init = rospy.get_param('rope_dist_sig', 15.0)
+        self.rope_along_sig_init = rospy.get_param('rope_along_sig', 15.0)
+        self.rope_cross_sig_init = rospy.get_param('rope_cross_sig', 2.0)
         # agent odometry sigmas
         self.odo_ang_sig = rospy.get_param('odo_ang_sig_deg', 0.1) * np.pi / 180
         self.odo_dist_sig = rospy.get_param('dist_sig', 0.1)
@@ -683,10 +690,19 @@ class online_slam_2d:
         self.detection_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.detect_dist_sig,
                                                                           self.detect_ang_sig]))
 
+        # Noise models of rope detections constructed during rope_setup()
+
         # ===== buoy prior map =====
         self.n_buoys = None
         self.buoy_priors = None
+        self.rope_priors = None
         self.buoy_average = None
+
+        # ===== rope prior map =====
+        self.n_ropes = None
+        self.rope_priors = None
+        self.rope_centers = None
+        self.rope_noise_models = None
 
         # ===== Optimizer and values =====
         # self.optimizer = None
@@ -696,21 +712,30 @@ class online_slam_2d:
 
         # ===== Graph states =====
         self.buoy_map_present = False
+        self.rope_map_present = False
         self.initial_pose_set = False
         self.busy = False
+        self.busy_queue = False
 
         # ===== Debugging =====
         self.da_check = {}
         self.est_detect_loc = None
         self.true_detect_loc = None
 
-        # Rviz publishers
+        # ===== Rviz publishers =====
+        # Buoy detections and associations
         self.est_detect_loc_pub = rospy.Publisher('/sam_slam/est_detection_positions', Marker, queue_size=10)
         self.da_pub = rospy.Publisher('/sam_slam/da_positions', Marker, queue_size=10)
-        self.est_pos_pub = rospy.Publisher('/sam_slam/est_positions', Marker, queue_size=10)
         self.marker_scale = 1.0
+        # Current estimated pose
+        self.est_pos_pub = rospy.Publisher('/sam_slam/est_positions', Marker, queue_size=10)
         self.est_marker_x, self.est_marker_y, self.est_marker_z = 3, .5, .5
+        # Complete estimated trajectory
         self.est_path_pub = rospy.Publisher('/sam_slam/est_path', Path, queue_size=10)
+        # Rope detections
+        self.est_rope_pub = rospy.Publisher('/sam_slam/est_rope', MarkerArray, queue_size=10)
+        self.rope_marker_scale = 0.5
+        self.rope_marker_color = ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.75)
 
         # ===== Verboseness parameters =====
         self.verbose_graph_update = rospy.get_param('verbose_graph_update', False)
@@ -750,8 +775,43 @@ class online_slam_2d:
 
         # Calculate average buoy position - rough prior for ropes
         self.buoy_average = np.sum(self.buoy_priors, axis=0) / self.n_buoys
-        print("Done with  buoy setup")
+        print("Done with buoy setup")
         return
+
+    def rope_setup(self, ropes):
+        """
+        Calculate relevant stuff for adding rope priors to the detections
+
+        Assumptions:
+        - nominally horizontal rows, more checks need to handle vertical. This will effect the cross and along variances
+        - along variance is not currently scaled to the length of the rope
+            This is done in testing_covar.py
+        :param ropes:
+        :return:
+        """
+        self.rope_priors = ropes
+        self.n_ropes = len(ropes)
+        self.rope_map_present = True
+
+        self.rope_centers = {}
+        self.rope_noise_models = {}
+        for rope_ind, rope in enumerate(self.rope_priors):
+            start_x, start_y = rope[0][0], rope[0][1]
+            end_x, end_y = rope[1][0], rope[1][1]
+
+            self.rope_centers[rope_ind] = online_slam_2d.calculate_center(start_x, start_y, end_x, end_y)
+
+            # This is the 'basic' covariance, it needs to be rotated to align with the rope
+            cov_matrix = np.array([[self.rope_along_sig_init ** 2, 0.0],
+                                   [0.0, self.rope_cross_sig_init ** 2]])
+
+            # Rotate the cov_matrix to align with the rope
+            rope_angle = online_slam_2d.calculate_angle(start_x, start_y, end_x, end_y)
+            rotation_matrix = np.array([[np.cos(rope_angle), -np.sin(rope_angle)],
+                                        [np.sin(rope_angle), np.cos(rope_angle)]])
+            rot_cov_matrix = rotation_matrix @ cov_matrix @ rotation_matrix.transpose()
+
+            self.rope_noise_models[rope_ind] = gtsam.noiseModel.Gaussian.Covariance(rot_cov_matrix)
 
     def add_first_pose(self, dr_pose, gt_pose, id_string=None):
         """
@@ -957,7 +1017,8 @@ class online_slam_2d:
 
         # === Debug publishing ===
         self.publish_estimated_pos_marker_and_transform(computed_est)
-        self.publish_est_path()
+        # TODO publish path
+        # self.publish_est_path()
         # Buoy detection
         if relative_detection is not None and da_id != -ObjectID.ROPE.value:
             self.publish_detection_markers(buoy_association_id)
@@ -965,6 +1026,178 @@ class online_slam_2d:
         if self.x is None:
             print("problem")
 
+        return
+
+    def online_update_queued(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None):
+        """
+        Pose format [x, y, z, q_w, q_x, q_y, q_z]
+        """
+        if not self.initial_pose_set:
+            print("Attempting to update before initial pose")
+            self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
+            return
+
+        # NEW queue
+        self.buffer.put((dr_pose, gt_pose, relative_detection, id_string, da_id))
+
+        if not self.busy_queue:
+            self.busy_queue = True
+            while not self.buffer.empty():
+                try:
+                    buffered_data = self.buffer.get(block=False)
+                except queue.Empty:
+                    print("Buffer is empty.")
+                    break
+
+                dr_pose, gt_pose, relative_detection, id_string, da_id = buffered_data
+
+                # === Record relevant poses ===
+                # dr
+                self.dr_Pose2s.append(correct_dr(create_Pose2(dr_pose[:7])))
+                self.dr_Pose3s.append(create_Pose3(dr_pose))
+                self.dr_pose_raw.append(dr_pose)
+                if self.dr_pose_rpd is not None and len(dr_pose) == 10:
+                    self.dr_pose_rpd.append(dr_pose[7:10])
+
+                # gt
+                self.gt_Pose2s.append(create_Pose2(gt_pose))
+                self.gt_Pose3s.append(create_Pose3(gt_pose))
+                self.gt_pose_raw.append(gt_pose)
+
+                # Find the relative odometry between dr_poses
+                between_odometry = self.dr_Pose2s[-2].between(self.dr_Pose2s[-1])
+                self.between_Pose2s.append(between_odometry)
+
+                # Add label
+                self.current_x_ind += 1
+                self.x[self.current_x_ind] = gtsam.symbol('x', self.current_x_ind)
+
+                # Add type or sensor identifier
+                # This used to associate nodes of the graph with sensor reading, processed offline
+                if relative_detection is None and id_string is None:
+                    self.sensor_string_at_key[self.current_x_ind] = 'odometry'
+                elif relative_detection is not None and id_string is None:
+                    self.sensor_string_at_key[self.current_x_ind] = 'detection'
+                else:
+                    self.sensor_string_at_key[self.current_x_ind] = id_string
+
+                # ===== Add the between factor =====
+                self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
+                                                        self.x[self.current_x_ind],
+                                                        between_odometry,
+                                                        self.odometry_model))
+
+                # Compute initialization value from the current estimate and odometry
+                computed_est = self.current_estimate.atPose2(self.x[self.current_x_ind - 1]).compose(between_odometry)
+
+                # Update initial estimate
+                self.initial_estimate.insert(self.x[self.current_x_ind], computed_est)
+
+                # ===== Process detection =====
+                # === Buoy ===
+                # TODO this might need to be more robust, not assume detections will lead to graph update
+                if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+                    # Calculate the map location of the detection given relative measurements and current estimate
+                    self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
+                    detect_bearing = computed_est.bearing(self.est_detect_loc)
+                    detect_range = computed_est.range(self.est_detect_loc)
+
+                    if self.manual_associations and da_id != -ObjectID.BUOY.value:
+                        buoy_association_id = da_id
+                    else:
+                        buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
+
+                        # ===== DA debugging =====
+                        # Apply relative detection to gt to find the true DA
+                        self.true_detect_loc = self.gt_Pose2s[-1].transformFrom(
+                            np.array(relative_detection, dtype=np.float64))
+                        true_association_id, true_association_dist = self.associate_detection(self.true_detect_loc)
+
+                        if buoy_association_id == true_association_id:
+                            self.da_check[self.current_x_ind] = [True,
+                                                                 buoy_association_id, true_association_id,
+                                                                 buoy_association_dist, true_association_dist]
+                        else:
+                            self.da_check[self.current_x_ind] = [False,
+                                                                 buoy_association_id, true_association_id,
+                                                                 buoy_association_dist, true_association_dist]
+
+                    if self.verbose_graph_detections and relative_detection is not None:
+                        print(
+                            f'Detection - range: {detect_range}  bearing: {detect_bearing.theta()}  DA: {buoy_association_id}')
+
+                    # ===== Add detection to graph =====
+                    self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                              self.b[buoy_association_id],
+                                                              detect_bearing,
+                                                              detect_range,
+                                                              self.detection_model))
+
+                # === Rope ===
+                if relative_detection is not None and da_id == -ObjectID.ROPE.value:
+                    # Calculate the map location of the detection given relative measurements and current estimate
+                    self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
+                    detect_bearing = computed_est.bearing(self.est_detect_loc)
+                    detect_range = computed_est.range(self.est_detect_loc)
+
+                    if self.verbose_graph_detections:
+                        print(f'Rope detection - range: {detect_range}  bearing: {detect_bearing.theta()}')
+
+                    # ===== Add detection to graph =====
+                    # Add the rope landmark
+                    self.current_r_ind += 1
+                    self.r[self.current_r_ind] = gtsam.symbol('r', self.current_r_ind)
+
+                    # Initial estimate
+                    self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
+
+                    # Add new landmarks prior and noise
+                    # Naive method
+                    if self.rope_priors is None:
+                        rope_prior = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
+                        self.graph.addPriorPoint2(self.r[self.current_r_ind], rope_prior, self.prior_model_rope)
+                    # Slightly less naive method
+                    else:
+                        rope_association_ind = self.associate_rope_detection(self.est_detect_loc)
+                        self.graph.addPriorPoint2(self.r[self.current_r_ind],
+                                                  self.rope_centers[rope_association_ind],
+                                                  self.rope_noise_models[rope_association_ind])
+
+                    # Add factor between current x and current r
+                    self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                              self.r[self.current_r_ind],
+                                                              detect_bearing,
+                                                              detect_range,
+                                                              self.detection_model))
+
+                # Time update process
+                start_time = rospy.Time.now()
+
+                # Incremental update
+                self.isam.update(self.graph, self.initial_estimate)
+                self.current_estimate = self.isam.calculateEstimate()
+
+                # self.graph.resize(0)
+                self.initial_estimate.clear()
+
+                end_time = rospy.Time.now()
+                update_time = (end_time - start_time).to_sec()
+
+                # ===== debugging and visualizations =====
+                # Log to terminal
+                if self.verbose_graph_update:
+                    print(f"Done with update - x{self.current_x_ind}: {update_time} s")
+
+                # === Debug publishing ===
+                self.publish_estimated_pos_marker_and_transform(computed_est)
+                self.publish_est_path()
+                self.publish_rope_detections()
+                # Buoy detection
+                if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+                    self.publish_detection_markers(buoy_association_id)
+
+            self.busy_queue = False
+            return
         return
 
     def associate_detection(self, detection_map_location):
@@ -984,6 +1217,32 @@ class online_slam_2d:
                 best_id = i
 
         return best_id, best_range_2 ** (1 / 2)
+
+    def associate_rope_detection(self, detection_map_location):
+        """
+        Basic association of rope detections to rope priors.
+
+        See test_covar.py for
+        :param detection_map_location:
+        :return:
+        """
+
+        # Find the correspondence between detection and rope prior, closest for now
+        min_distance = np.inf
+        min_ind = -1
+        for rope_ind, rope in enumerate(self.rope_priors):
+            start_x, start_y = rope[0][0], rope[0][1]
+            end_x, end_y = rope[1][0], rope[1][1]
+
+            distance = online_slam_2d.calculate_line_point_distance(start_x, start_y, end_x, end_y,
+                                                                    detection_map_location[0],
+                                                                    detection_map_location[1])
+
+            if distance < min_distance:
+                min_distance = distance
+                min_ind = rope_ind
+
+        return min_ind
 
     def publish_detection_markers(self, da_id):
         """
@@ -1084,8 +1343,10 @@ class online_slam_2d:
         poses_path = Path()
         poses_path.header.frame_id = 'map'
 
-        for key in self.x.values():
+        # Copy as elements can be added to the graph will looping over the elements
+        key_dict_copy = self.x.copy()
 
+        for key in key_dict_copy.values():
             pose = self.current_estimate.atPose2(key)
             pose_stamped = PoseStamped()
             pose_stamped.pose.position.x = pose.x()
@@ -1101,6 +1362,108 @@ class online_slam_2d:
             poses_path.poses.append(pose_stamped)
 
         self.est_path_pub.publish(poses_path)
+
+    def publish_rope_detections(self):
+        """
+        This is responsible for publishing the current estimated rope detections
+        :return:
+        """
+        # Check that self.r has been initialized
+        if self.r is None:
+            return
+
+        # Copy as elements can be added to the graph will looping over the elements
+        key_dict_copy = self.r.copy()
+
+        # Check for the existence of rope detections
+        if len(key_dict_copy) <= 0:
+            return
+
+        rope_detections = MarkerArray()
+        valid_detection_count = 0  # Was having a problem with keys being present in self.r but not in the values
+
+        for detection_ind, key in enumerate(key_dict_copy.values()):
+            if not self.current_estimate.exists(key):
+                print('publish_rope_detections: Key not found!')
+                continue
+            valid_detection_count += 1
+            detection_point = self.current_estimate.atPoint2(key)
+            marker = Marker()
+            marker.header.frame_id = 'map'
+            marker.header.stamp = rospy.Time.now()
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.id = detection_ind
+            marker.lifetime = rospy.Duration(0)
+            marker.pose.position.x = detection_point[0]
+            marker.pose.position.y = detection_point[1]
+            marker.pose.position.z = 0.0
+            marker.pose.orientation.x = 0
+            marker.pose.orientation.y = 0
+            marker.pose.orientation.z = 0
+            marker.pose.orientation.w = 1
+            marker.scale.x = self.rope_marker_scale
+            marker.scale.y = self.rope_marker_scale
+            marker.scale.z = self.rope_marker_scale
+            marker.color = self.rope_marker_color
+
+            rope_detections.markers.append(marker)
+
+        if valid_detection_count > 0:
+            self.est_rope_pub.publish(rope_detections)
+
+    @staticmethod
+    def calculate_angle(x1, y1, x2, y2):
+        dx = x2 - x1
+        dy = y2 - y1
+        angle = math.atan2(dy, dx)
+        return angle
+
+    @staticmethod
+    def calculate_distance(x1, y1, x2, y2):
+        distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        return distance
+
+    @staticmethod
+    def calculate_center(x1, y1, x2, y2):
+        x_center = (x1 + x2) / 2.0
+        y_center = (y1 + y2) / 2.0
+        return np.array((x_center, y_center), dtype=np.float64)
+
+    @staticmethod
+    def calculate_line_point_distance(x1, y1, x2, y2, x3, y3):
+        """
+        points 1 and 2 form a line segment, point 3 is
+        :param x1:
+        :param y1:
+        :param x2:
+        :param y2:
+        :param x3:
+        :param y3:
+        :return:
+        """
+        if x1 == x2 and y1 == y2:
+            return -1
+
+        # Calculate the length of the line segment
+        line_mag_sqrd = (x2 - x1) ** 2 + (y2 - y1) ** 2
+        u = ((x3 - x1) * (x2 - x1) + (y3 - y1) * (y2 - y1)) / line_mag_sqrd
+
+        if 0 < u < 1.0:
+            x_perpendicular = x1 + u * (x2 - x1)
+            y_perpendicular = y1 + u * (y2 - y1)
+
+            return math.sqrt((x_perpendicular - x3) ** 2 + (y_perpendicular - y3) ** 2)
+
+        else:
+            # Calculate the distance from the third point to each endpoint of the line segment
+            distance_line_end_1 = math.sqrt((x3 - x1) ** 2 + (y3 - y1) ** 2)
+            distance_line_end_2 = math.sqrt((x3 - x2) ** 2 + (y3 - y2) ** 2)
+
+            # Find the minimum distance
+            min_distance = min(distance_line_end_1, distance_line_end_2)
+
+            return min_distance
 
 
 class analyze_slam:

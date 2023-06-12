@@ -8,14 +8,22 @@ This script is intended to process the real data collected at the algae farm.
 
 # %% Imports
 import os
+
+import cv2
 import numpy as np
 import cv2 as cv
 from matplotlib import pyplot as plt
 from scipy import signal
 import sllib
 from PIL import Image
-from cp_detector_local import CPDetector, ObjectID
+
 import math
+
+# Choose detector as of 5/30 the detectors are the same but this could change!!!
+# originally I just copied the detector script but later made a fork the smarc_perception
+# from cp_detector_local import CPDetector, ObjectID  # My old version
+from sss_object_detection.consts import ObjectID
+from sss_object_detection.cpd_detector import CPDetector
 
 
 class process_sss:
@@ -336,6 +344,7 @@ class process_sss:
         """
 
         self.set_working_to_original()
+
         if m_size in [3, 5, 7, 9]:
             self.filter_median(m_size)
 
@@ -343,22 +352,36 @@ class process_sss:
             self.filter_gaussian(g_size)
 
         if s_size in [3, 5, 7, 9]:
-            dx_port = cv.Sobel(self.img_port, cv.CV_8U, 1, 0, ksize=s_size)
-            dx_star = cv.Sobel(self.img_starboard, cv.CV_8U, 1, 0, ksize=s_size)
+            dx_port = cv.Sobel(self.img_port, cv.CV_16S, 1, 0, ksize=s_size)
+            dx_star = cv.Sobel(self.img_starboard, cv.CV_16S, 1, 0, ksize=s_size)
 
+            # gradients along the each ping
+            # Negative gradient is used for visualizing
+            dx_port_neg = np.copy(dx_port)
+            dx_star_neg = np.copy(dx_star)
+
+            dx_port_neg[dx_port_neg > 0] = 0
+            dx_star_neg[dx_star_neg > 0] = 0
+
+            dx_port_neg = np.abs(dx_port_neg)
+            dx_star_neg = np.abs(dx_star_neg)
+
+            dx_neg = np.hstack((np.fliplr(dx_port_neg), dx_star_neg)).astype(np.int16)
+
+            # Only the positive gradient is used for edge detection
             dx_port[dx_port < 0] = 0
             dx_star[dx_star < 0] = 0
 
             dx = np.hstack((np.fliplr(dx_port), dx_star)).astype(np.int16)
 
-            dy = cv.Sobel(self.img, cv.CV_16S, 0, 1, ksize=s_size)
+            # dy = cv.Sobel(self.img, cv.CV_16S, 0, 1, ksize=s_size)
             dy = np.zeros_like(dx)
             custom_canny = cv.Canny(dx=dx, dy=dy, threshold1=l_threshold, threshold2=h_threshold, L2gradient=True)
             cv.imwrite(f'data/canny_custom.png', custom_canny)
 
             if show:
-                med_fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
-                med_fig.suptitle(f'Custom canny, m_size: {m_size}  g_size: {g_size}, s_size: {s_size}')
+                custom_canny_fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4)
+                custom_canny_fig.suptitle(f'Custom canny, m_size: {m_size}  g_size: {g_size}, s_size: {s_size}')
 
                 ax1.title.set_text('Input image')
                 ax1.imshow(self.img)
@@ -370,9 +393,49 @@ class process_sss:
 
                 ax3.title.set_text('Gradient, dx, of input image')
                 ax3.imshow(dx)
-                med_fig.show()
 
-            return custom_canny
+                ax4.title.set_text('Gradient, dy, of input image')
+                ax4.imshow(dx_neg)
+
+                # custom_canny_fig.show()
+                plt.show()
+
+            return custom_canny, dx, dx_neg
+
+    def canny_standard(self, m_size=5, l_threshold=100, h_threshold=200, show=True):
+        """
+        The
+
+        :param show:
+        :param m_size: size of median filter, [3, 5, 7, 9]
+        :param l_threshold: lower canny threshold
+        :param h_threshold: upper canny threshold
+        :return:
+        """
+
+        self.set_working_to_original()
+
+        if m_size in [3, 5, 7, 9]:
+            self.filter_median(m_size)
+
+        standard_canny = cv.Canny(self.img, threshold1=l_threshold, threshold2=h_threshold, L2gradient=True)
+        cv.imwrite(f'data/canny_standard.png', standard_canny)
+
+        if show:
+            standard_canny_fig, (ax1, ax2) = plt.subplots(1, 2)
+            standard_canny_fig.suptitle(f'standard canny, m_size: {m_size}')
+
+            ax1.title.set_text('Input image')
+            ax1.imshow(self.img)
+
+            ax2.title.set_text('Custom canny results')
+            img_color = np.dstack((self.img, self.img, self.img))
+            img_color[standard_canny > 0] = [255, 0, 0]
+            ax2.imshow(img_color)
+
+            plt.show()
+
+        return standard_canny
 
     def combined_points(self):
         # Reset current image
@@ -402,7 +465,7 @@ class process_sss:
         for i, ping in enumerate(img_side):
 
             if self.cpd_max_depth > 0:
-                ping_results = self.detector.detect_rope(ping, self.cpd_max_depth)
+                ping_results = self.detector.detect_rope_buoy(ping, self.cpd_max_depth)
             else:
                 ping_results = self.detector.detect(ping)
 
@@ -520,6 +583,127 @@ class process_sss:
         for detection in detections:
             self.buoy_seq_ids.append(self.seq_ids[detection[0]])
 
+    def show_thresholds(self, data, l_threshold, h_threshold, data_label='NO LABEL', reference_data=False):
+        """
+        plots original data, data less than l_threshold, data between l and h threshold, and greater than h_threshold
+
+        :param data:
+        :param l_threshold:
+        :param h_threshold:
+        :return:
+        """
+
+        low_data = np.zeros_like(data, np.uint8)
+        mid_data = np.zeros_like(data, np.uint8)
+        high_data = np.zeros_like(data, np.uint8)
+
+        low_data[data < l_threshold] = 255
+        mid_data[data >= l_threshold] = 255
+        mid_data[data >= h_threshold] = 0
+        high_data[data >= h_threshold] = 255
+
+        thresholding_fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4)
+        thresholding_fig.suptitle(f'Thresholding of {data_label}\n'
+                                  f'Low threshold: {l_threshold}  High threshold: {h_threshold}')
+
+        ax1.title.set_text('Input image')
+        if reference_data is True:
+            ax1.imshow(self.img)
+        else:
+            ax1.imshow(data)
+
+        ax2.title.set_text(f'data < {l_threshold}')
+        ax2.imshow(low_data)
+
+        ax3.title.set_text(f'{l_threshold} < data < {h_threshold}')
+        ax3.imshow(mid_data)
+
+        ax4.title.set_text(f'data > {h_threshold}')
+        ax4.imshow(high_data)
+
+        plt.show()
+
+    def find_rising_edges(self, data, threshold, max_count=2, debug=False):
+
+        height, width = data.shape[:2]
+
+        data_local = np.copy(data)
+        data_threshold = np.zeros_like(data_local)
+
+        # Threshold the data
+        data_threshold[data_local > threshold] = 1
+
+        data_port = np.fliplr(data_threshold[:, 0: width // 2])
+        data_star = data_threshold[:, width // 2:]
+
+        detections_port = np.zeros_like(data_port)
+        detections_star = np.zeros_like(data_star)
+
+        # this is mostly here to save the data and look at it in matlab
+        port_detection_inds = np.zeros((height, 2), dtype=np.int16)
+
+        for row in range(height):
+            # === Port ===
+            where_port = np.where((data_port[row, :-1] == 0) & (data_port[row, 1:] == 1))
+            if len(where_port[0] > 0):
+                max_where_ind = min(len(where_port[0]), max_count)
+                for detect_num, index in enumerate(where_port[0][:max_where_ind]):
+                    detections_port[row, index] = 255  # detect_num + 1
+
+                    if detect_num < port_detection_inds.shape[1]:
+                        port_detection_inds[row, detect_num] = index
+
+            # Starboard
+            where_star = np.where((data_star[row, :-1] == 0) & (data_star[row, 1:] == 1))
+            if len(where_star[0] > 0):
+                max_where_ind = min(len(where_star[0]), max_count)
+                for index in where_star[0][:max_where_ind]:
+                    detections_star[row, index] = 255  # detect_num + 1
+
+        if debug:
+            np.savetxt("data/port_detection_inds.csv", port_detection_inds, delimiter=",")
+
+        data_detections = np.hstack((np.fliplr(detections_port), detections_star))
+
+        grad_detect_fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        grad_detect_fig.suptitle(f'Threshold Detections\n'
+                                 f'Threshold: {threshold}  max: {max_count}')
+
+        ax1.title.set_text('Input image')
+        ax1.imshow(data_local)
+
+        ax2.title.set_text(f'Image thresholded')
+        ax2.imshow(data_threshold)
+
+        ax3.title.set_text(f'Detections')
+        ax3.imshow(data_detections)
+
+        plt.show()
+
+    def construct_template_kernel(self, size, sigma, feature_width):
+
+        gaussian_kernel = cv2.getGaussianKernel(size, sigma)
+
+        kernel = np.outer(np.ones(size), gaussian_kernel)
+
+        # apply feature width
+        center = size//2
+        # Find half width
+        if feature_width <= 0:
+            return kernel
+        elif int(feature_width) % 2 == 0:
+            half_width = (feature_width - 1) // 2
+        else:
+            half_width = feature_width // 2
+
+        if center - half_width > 0:
+            kernel[0:center-half_width, :] = -1 * kernel[0:center-half_width, :]
+            kernel[center + half_width + 1:, :] = -1 * kernel[center + half_width + 1:, :]
+
+        return kernel
+
+
+
 
 if __name__ == '__main__':
     # Parameters
@@ -535,21 +719,32 @@ if __name__ == '__main__':
     grad_grad_size = 5
     grad_show = True
     # ===== Canny edge detector =====
-    perform_canny = True
+    perform_custom_canny = True
     canny_med_size = 7
     canny_gauss_size = 5
     canny_sobel_size = 5
     canny_l_thresh = 175
     canny_h_thresh = 225
-    canny_show = True
+    canny_show = False
+    do_blob = False
+    do_template = True
+    template_size = 21
+    template_sigma = 2
+    template_feature_width = 10
+    # ===== Standard canny detector =====
+    perform_standard_canny = False
+    standard_canny_med_size = 7
+    standard_canny_l_thresh = 175
+    standard_canny_h_thresh = 225
+    standard_canny_show = True
     # ===== CPD method =====
-    perform_cpd = True
+    perform_cpd = False
     cpd_max_depth = 100
-    cpd_ratio = 1.25  # 1.55 was default
+    cpd_ratio = 1.1  # 1.55 was default
     cpd_med_size = 0
     cpd_show = True
     # ===== Combined detector output =====
-    perform_combined_detector = True
+    perform_combined_detector = False
     # ===== Boat sonar data =====
     process_boat_sss = False
 
@@ -557,8 +752,8 @@ if __name__ == '__main__':
     seq_file_name = 'sss_seqs_7608.csv'  # this data is produced by the sss_raw_saver.py
     boat_file_name = 'Sonar_2023-05-03_20.51.26.sl2'
 
-    start_ind = 3400  # 3400  # 6300
-    end_ind = 5700  # 4600  # 7200
+    start_ind = 0  # 2000  # 3400  # 3400  # 6300
+    end_ind = 0  # 6000  # 5700  # 4600  # 7200
     max_range_ing = 225
 
     # detections = [[7106, 1092], [6456, 1064],
@@ -591,19 +786,76 @@ if __name__ == '__main__':
     if perform_grad_method:
         sss_analysis.filter_median(grad_med_size, show=grad_show)
         sss_analysis.filter_gaussian(grad_gauss_size, show=grad_show)
-        sss_analysis.gradient_cross_track(grad_grad_size, show=grad_show)
+        grad_output = sss_analysis.gradient_cross_track(grad_grad_size, show=grad_show)
         grad_method_results = sss_analysis.filter_threshold(threshold=200, show=grad_show)
+
     else:
         grad_method_results = None
 
-    if perform_canny:
-        canny_custom = sss_analysis.canny_custom(canny_med_size,
-                                                 canny_gauss_size,
-                                                 canny_sobel_size,
-                                                 canny_l_thresh, canny_h_thresh,
-                                                 show=canny_show)
+    if perform_custom_canny:
+        canny_custom, custom_dx, custom_dx_neg = sss_analysis.canny_custom(canny_med_size,
+                                                                           canny_gauss_size,
+                                                                           canny_sobel_size,
+                                                                           canny_l_thresh, canny_h_thresh,
+                                                                           show=canny_show)
+        # sss_analysis.show_thresholds(custom_dx, 100, 1000, 'Custom Dx Positive')
+        # sss_analysis.show_thresholds(custom_dx_neg, 100, 1000, 'Custom Dx Negative')
+
+        # ==== find the first and second rising edges
+        sss_analysis.find_rising_edges(canny_custom, 150, 2, True)
+
+        # ===== New =====
+        if do_blob:
+            # Create blob detector
+            params = cv.SimpleBlobDetector_Params()
+
+            # Set parameters
+            params.minThreshold = 140
+            params.maxThreshold = 500
+            params.filterByArea = True
+            params.minArea = 15
+            params.filterByCircularity = False
+            params.minCircularity = 0.7
+
+            # Create detector with parameters
+            detector = cv.SimpleBlobDetector_create(params)
+
+            # Detect blobs
+            keypoints = detector.detect(custom_dx)
+
+            # Draw blobs on the image
+            image_with_keypoints = cv.drawKeypoints(custom_dx, keypoints, np.array([]), (0, 0, 255),
+                                                    cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+
+            # Plot the original image and the image with keypoints
+            fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+            axs[0].imshow(custom_dx)
+            axs[0].set_title('Original Image')
+            axs[0].axis('off')
+
+            axs[1].imshow(cv.cvtColor(image_with_keypoints, cv.COLOR_BGR2RGB))
+            axs[1].set_title('Image with Keypoints')
+            axs[1].axis('off')
+
+            plt.tight_layout()
+            plt.show()
+
+        if do_template:
+            matching_image = np.copy(custom_dx).astype(np.float32)
+            template = sss_analysis.construct_template_kernel(template_size, template_sigma, template_feature_width)
+            template = template.astype(np.float32)
+            result = cv2.matchTemplate(matching_image, template, cv2.TM_CCOEFF)
+            sss_analysis.show_thresholds(result, 1000, 2000, 'Gradient Template', reference_data=True)
     else:
         canny_custom = None
+
+    if perform_standard_canny:
+        standard_canny = sss_analysis.canny_standard(m_size=standard_canny_med_size,
+                                                     l_threshold=standard_canny_l_thresh,
+                                                     h_threshold=standard_canny_h_thresh,
+                                                     show=standard_canny_show)
+    else:
+        standard_canny = None
 
     if perform_cpd:
         sss_analysis.set_working_to_original()

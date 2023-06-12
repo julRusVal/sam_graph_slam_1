@@ -5,15 +5,14 @@
     <!-- Node parameters -->
     <param name="robot_name" value="$(arg robot_name)"/>
     <param name="frame" value="map"/>
-
     <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing"/>
 
     <!-- Data parameters -->
     <param name="dr_update_time" value="2.0"/>
     <param name="detect_update_time" value="0.5"/>
 
-    <param name="camera_update_time" value="2.0"/>
-    <param name="sss_update_time" value="2.0"/>
+    <param name="camera_update_time" value="5.0"/>
+    <param name="sss_update_time" value="1.0"/>
     <param name="sss_buffer_len" value="10"/>
 
     <!-- Detection and association parameters -->
@@ -21,6 +20,7 @@
     <param name="record_ground_truth" value="True"/>
     <param name="manual_associations" value="True"/>
     <param name="simulated_detections" value="True"/>
+    <param name="rope_associations" value="True"/>
 
     <!-- Graph parameters -->
     <!-- Currently using default ISAM2 parameters -->
@@ -38,13 +38,13 @@
     <param name="detect_dist_sig" value="0.1"/>
 
     <!-- Output parameters -->
-    <param name="verbose_listener_DRs" value="false"/>
+    <param name="verbose_listener_DRs" value="true"/>
     <param name="verbose_listener_detections" value="true"/>
-    <param name="verbose_listener_sonars" value="false"/>
+    <param name="verbose_listener_sonars" value="true"/>
     <param name="verbose_listener_buoys" value="true"/>
-    <param name="verbose_listener_cameras" value="false"/>
+    <param name="verbose_listener_cameras" value="true"/>
 
-    <param name="verbose_graph_update" value="false"/>
+    <param name="verbose_graph_update" value="true"/>
     <param name="verbose_graph_detections" value="true"/>
 
     <!-- NODES -->

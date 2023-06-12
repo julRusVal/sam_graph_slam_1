@@ -84,10 +84,13 @@ class sam_slam_listener:
         else:
             self.correct_dr = False
         self.record_gt = record_gt
-        self.prioritize_buoy_detections = True
+        self.prioritize_buoy_detections = True  # true to use all buoy detections, otherwise detector time limits apply
 
         # ===== Provided information =====
         self.manual_associations = rospy.get_param("manual_associations", False)
+
+        # ===== Rope detection usage =====
+        self.rope_associations = rospy.get_param('rope_associations', False)
 
         # ===== Topic names =====
         self.robot_name = robot_name
@@ -101,6 +104,7 @@ class sam_slam_listener:
             self.buoy_topic = f'/{self.robot_name}/sim/marked_positions'
         else:
             self.buoy_topic = f'/{self.robot_name}/real/marked_positions'
+            self.rope_topic = f'/{self.robot_name}/real/rope_outer_marker'
             self.gt_topic = f'/{self.robot_name}/dr/gps_odom'
 
         self.roll_topic = f'/{self.robot_name}/dr/roll'
@@ -177,8 +181,9 @@ class sam_slam_listener:
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        # Buoy positions
+        # Map elements - buoys and ropes
         self.buoys = []
+        self.ropes = []
 
         # Online SLAM w/ iSAM2
         self.online_graph = online_graph
@@ -238,6 +243,7 @@ class sam_slam_listener:
         self.pitch_updated = False
         self.depth_updated = False
         self.buoy_updated = False
+        self.rope_updated = False
         self.data_written = False
         self.image_received = False
 
@@ -259,7 +265,7 @@ class sam_slam_listener:
         self.camera_last_seq = -1
 
         # Time for limiting the rate that pose with camera data are added to graph
-        self.sss_update_time = rospy.get_param("sss_update_time", 1.0)
+        self.sss_update_time = rospy.get_param("sss_update_time", 5.0)
         self.sss_last_time = rospy.Time.now() - rospy.Time.from_sec(self.sss_update_time)
 
         # ===== Subscribers =====
@@ -291,6 +297,11 @@ class sam_slam_listener:
         self.buoy_subscriber = rospy.Subscriber(self.buoy_topic,
                                                 MarkerArray,
                                                 self.buoy_callback)
+
+        # Ropes
+        self.rope_subscriber = rospy.Subscriber(self.rope_topic,
+                                                MarkerArray,
+                                                self.rope_callback)
 
         # Detections
         self.det_subscriber = rospy.Subscriber(self.det_topic,
@@ -347,8 +358,6 @@ class sam_slam_listener:
         self.verbose_cameras = rospy.get_param('verbose_listener_cameras', False)
 
         print('Listener Initialized')
-        print(f'Check local value with parameter server value - self.verbose_detections: '
-              f'{self.verbose_detections}')
 
     # Subscriber callbacks
     def gt_callback(self, msg):
@@ -461,10 +470,10 @@ class sam_slam_listener:
             elif not self.online_graph.busy:
                 if self.verbose_DRs:
                     print(f"DR - Odometry update - x{self.online_graph.current_x_ind + 1}")
-                self.online_graph.online_update(dr_pose, gt_pose)
+                self.online_graph.online_update_queued(dr_pose, gt_pose)
 
             else:
-                print('DR - Busy condition found')
+                print('Busy condition found - DR')
 
     def roll_callback(self, msg):
         """
@@ -577,13 +586,14 @@ class sam_slam_listener:
                         return
                     if not self.online_graph.busy:
                         if self.verbose_detections:
-                            print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
-                        self.online_graph.online_update(dr_pose, gt_pose,
-                                                        np.array((det_pose_base.pose.position.x,
-                                                                  det_pose_base.pose.position.y), dtype=np.float64),
-                                                        da_id=det_da)
+                            print(f"Detection update - Buoy - x{self.online_graph.current_x_ind + 1}")
+                        self.online_graph.online_update_queued(dr_pose, gt_pose,
+                                                               np.array((det_pose_base.pose.position.x,
+                                                                         det_pose_base.pose.position.y),
+                                                                        dtype=np.float64),
+                                                               da_id=det_da)
                     else:
-                        print('Detection - Busy condition found')
+                        print('Busy condition found - Detection - Buoy')
 
                 # ===== Handle rope detections =====
                 if detection_type == ObjectID.ROPE.value:
@@ -604,14 +614,14 @@ class sam_slam_listener:
                         return
                     if not self.online_graph.busy:
                         if self.verbose_detections:
-                            print(f"Detection update - x{self.online_graph.current_x_ind + 1}")
-                        self.online_graph.online_update(dr_pose, gt_pose,
-                                                        np.array((det_pose_base.pose.position.x,
-                                                                  det_pose_base.pose.position.y),
-                                                                 dtype=np.float64),
-                                                        da_id=det_da)
+                            print(f"Detection update - Rope - x{self.online_graph.current_x_ind + 1}")
+                        self.online_graph.online_update_queued(dr_pose, gt_pose,
+                                                               np.array((det_pose_base.pose.position.x,
+                                                                         det_pose_base.pose.position.y),
+                                                                        dtype=np.float64),
+                                                               da_id=det_da)
                     else:
-                        print('Detection - Busy condition found')
+                        print('Busy condition found - Detection - Rope')
 
     def sss_callback(self, msg):
         """
@@ -635,7 +645,7 @@ class sam_slam_listener:
         sss_current = np.copy(self.sss_buffer)
 
         # check elapsed time
-        if (sss_time_now - self.sss_last_time).to_sec() < self.detect_update_time:
+        if (sss_time_now - self.sss_last_time).to_sec() < self.sss_update_time:
             return
 
         sss_id = msg.header.seq
@@ -658,28 +668,30 @@ class sam_slam_listener:
         # else:
         #     gt_pose = self.dr_poses[-1]  # NOTE: dr is used in place of gt for real data
 
-        if self.online_graph is not None \
-                and not self.online_graph.busy:
+        if self.online_graph is not None:
+            if not self.online_graph.busy:
+                if self.online_graph.initial_pose_set is False:
+                    print("SSS - First update w/ sss data")
+                else:
+                    if self.verbose_sonars:
+                        print(f"SSS - Odometry and sss update - x{self.online_graph.current_x_ind + 1}")
 
-            if self.online_graph.initial_pose_set is False:
-                print("SSS - First update w/ sss data")
+                self.online_graph.online_update_queued(dr_pose, gt_pose,
+                                                       relative_detection=None,
+                                                       id_string=f'sss_{sss_id}')
+
+                # Reset timer after successful completion
+                self.sss_last_time = rospy.Time.now()
+
+                # Write to 'disk'
+                if self.file_path is None or not os.path.isdir(self.file_path):
+                    print("Provide valid file path sss output")
+                else:
+                    save_path = self.file_path + f'/sss/{sss_id}.jpg'
+                    cv2.imwrite(save_path, sss_current)
+
             else:
-                if self.verbose_sonars:
-                    print(f"SSS - Odometry and sss update - {self.online_graph.current_x_ind + 1}")
-
-            self.online_graph.online_update(dr_pose, gt_pose,
-                                            relative_detection=None,
-                                            id_string=f'sss_{sss_id}')
-
-            # Reset timer after successful completion
-            self.sss_last_time = rospy.Time.now()
-
-            # Write to 'disk'
-            if self.file_path is None or not os.path.isdir(self.file_path):
-                print("Provide valid file path sss output")
-            else:
-                save_path = self.file_path + f'/sss/{sss_id}.jpg'
-                cv2.imwrite(save_path, sss_current)
+                print('Busy condition found - sss')
 
     def info_callback(self, msg, camera_id):
         if camera_id == 'down':
@@ -756,15 +768,17 @@ class sam_slam_listener:
             if self.verbose_cameras:
                 print(f"Adding img-{current_id} to graph")
 
-            if self.online_graph is not None and not self.online_graph.busy:
-                if self.verbose_cameras and self.online_graph.initial_pose_set:
-                    print(f"CAM - Odometry and camera update - {self.online_graph.current_x_ind + 1}")
+            if self.online_graph is not None:
+                if not self.online_graph.busy:
+                    if self.verbose_cameras and self.online_graph.initial_pose_set:
+                        print(f"CAM - Odometry and camera update - {self.online_graph.current_x_ind + 1}")
+                    else:
+                        print("CAM - First update w/ camera data")
+                    self.online_graph.online_update_queued(dr_pose, gt_pose,
+                                                           relative_detection=None,
+                                                           id_string=f'cam_{current_id}')
                 else:
-                    print("CAM - First update w/ camera data")
-                self.online_graph.online_update(dr_pose, gt_pose,
-                                                relative_detection=None,
-                                                id_string=f'cam_{current_id}')
-
+                    print('Busy condition found - camera')
         # === Debugging ===
         """
         This is only need to verify that the data is being recorded properly
@@ -812,6 +826,52 @@ class sam_slam_listener:
             cv2.imwrite(save_path, cv2_img)
 
         return
+
+    def rope_callback(self, msg):
+        """
+        This was supposed to be a way of getting the rope info into graph but I don't like the direction its taking
+        :param msg:
+        :return:
+        """
+        if not self.rope_updated:
+            print('Capturing Rope map positions')
+            marker_count = len(msg.markers)
+            if marker_count % 2 != 0:
+                print(f'Rope_callback: {marker_count} markers received')
+                print('Rope_callback: Received rope info was malformed, expected even number of points')
+                return
+
+            self.ropes = [None for i in range(marker_count // 2)]
+            current_rope = 0
+            for rope_ind, marker_ind in enumerate(range(0, marker_count, 2)):
+                marker_start = msg.markers[marker_ind]
+                marker_end = msg.markers[marker_ind + 1]
+                marker_frame_id = marker_start.header.frame_id
+                marker_id = rope_ind
+
+                if self.frame in marker_frame_id:
+                    self.ropes[marker_id] = [[marker_start.pose.position.x, marker_start.pose.position.y],
+                                             [marker_end.pose.position.x, marker_end.pose.position.x]]
+
+                else:
+                    # Convert to frame of interest, most work done in map
+                    transformed_start = self.transform_pose(marker_start.pose,
+                                                            from_frame=marker_frame_id,
+                                                            to_frame=self.frame)
+
+                    transformed_end = self.transform_pose(marker_end.pose,
+                                                          from_frame=marker_frame_id,
+                                                          to_frame=self.frame)
+
+                    self.ropes[marker_id] = [[transformed_start.pose.position.x, transformed_start.pose.position.y],
+                                             [transformed_end.pose.position.x, transformed_end.pose.position.y]]
+
+            if self.online_graph is not None and self.rope_associations:
+                # TODO buoy info to online graph
+                print("Online: rope update")
+                self.online_graph.rope_setup(self.ropes)
+
+            self.rope_updated = True
 
     def buoy_callback(self, msg):
         if not self.buoy_updated:
