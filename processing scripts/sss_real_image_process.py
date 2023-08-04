@@ -29,7 +29,14 @@ from sss_object_detection.cpd_detector import CPDetector
 class process_sss:
     def __init__(self, data_file_name, seq_file_name, start_ind=None, end_ind=None, max_range_ind=None,
                  cpd_max_depth=None, cpd_ratio=None, flipping_regions=None, flip_original=False):
-        # Parameters
+
+        """
+        Currently processing is divided into pre- and post-processing. This division is kind of arbitrary.
+        Roughly the pre-processing is concerned with traditional image processing to filter the image.
+        Post-processing follows and attempts to employ some knowledge of the geometry to categorize detections.
+        """
+
+        # ===== Pre-processing Parameters =====
         self.canny_l_threshold = 100
         self.canny_h_threshold = 175
         self.canny_kernel_size = 5
@@ -47,6 +54,19 @@ class process_sss:
         self.detections = None
         self.detections_mask = None
 
+        # ===== post-processing Parameters =====
+        self.post_rope_original = None  # These are set during post initialization
+        self.post_buoy_original = None
+
+        self.post_rope = None  # These are modified by the post methods
+        self.post_buoy = None
+
+        self.post_use_port = None  # These will only modify post_rope and post_buoy not the originals
+        self.post_use_star = None
+
+        self.post_height, self.post_width = None, None
+
+        # ===== Start
         # Load data
         self.img_original = cv.imread(f'data/{self.data_file_name}', cv.IMREAD_GRAYSCALE)
 
@@ -96,6 +116,7 @@ class process_sss:
             self.detector = CPDetector()
         else:
             self.detector = CPDetector(min_mean_diff_ratio=self.cpd_ratio)
+
         self.nadir_color = np.array([255, 0, 0], dtype=np.uint8)
         self.rope_color = np.array([0, 255, 0], dtype=np.uint8)
         self.buoy_color = np.array([0, 0, 255], dtype=np.uint8)
@@ -108,7 +129,7 @@ class process_sss:
         # List of operations
         self.operations_list = []
 
-        # Manul
+        # Manual
 
     def set_working_to_original(self):
         # Extract area of interest
@@ -687,7 +708,7 @@ class process_sss:
         kernel = np.outer(np.ones(size), gaussian_kernel)
 
         # apply feature width
-        center = size//2
+        center = size // 2
         # Find half width
         if feature_width <= 0:
             return kernel
@@ -697,12 +718,166 @@ class process_sss:
             half_width = feature_width // 2
 
         if center - half_width > 0:
-            kernel[0:center-half_width, :] = -1 * kernel[0:center-half_width, :]
+            kernel[0:center - half_width, :] = -1 * kernel[0:center - half_width, :]
             kernel[center + half_width + 1:, :] = -1 * kernel[center + half_width + 1:, :]
 
         return kernel
 
+    def post_initialize(self, rope_detections, buoy_detections, use_port=True, use_starboard=True):
+        # Save originals
+        self.post_rope_original = rope_detections
+        self.post_buoy_original = buoy_detections
 
+        self.post_height, self.post_width = self.post_rope_original.shape[:2]
+
+        # Set which channels are used
+        self.post_use_port = use_port
+        self.post_use_star = use_starboard
+
+        # Make copies to be process further
+        self.post_rope = np.copy(self.post_rope_original)
+        self.post_buoy = np.copy(self.post_buoy_original)
+
+        # Remove channels if specified
+        # Currently rope and buoy channels are ignored/used together
+        if not self.post_use_port:
+            self.post_rope[:, 0:self.post_width // 2] = 0
+            self.post_buoy[:, 0:self.post_width // 2] = 0
+
+        if not self.post_use_star:
+            self.post_rope[:, self.post_width // 2:] = 0
+            self.post_buoy[:, self.post_width // 2:] = 0
+
+    def post_reset(self):
+        if self.post_rope_original is None:
+            print("Post processing was not initialized!")
+            return
+
+        # Make copies to be process further
+        self.post_rope = np.copy(self.post_rope_original)
+        self.post_buoy = np.copy(self.post_buoy_original)
+
+        # Remove channels if specified
+        # Currently rope and buoy channels are ignored/used together
+        if not self.post_use_port:
+            self.post_rope[:, 0:self.post_width // 2] = 0
+            self.post_buoy[:, 0:self.post_width // 2] = 0
+
+        if not self.post_use_star:
+            self.post_rope[:, self.post_width // 2:] = 0
+            self.post_buoy[:, self.post_width // 2:] = 0
+
+    def post_remove_ringing_rope(self, max_count=2, show_results=False):
+        if self.post_rope_original is None:
+            print("Post processing was not initialized!")
+            return
+
+        # Threshold the data
+        # 1 indicates a detection
+        data_threshold = np.zeros_like(self.post_rope)
+        data_threshold[self.post_rope > 0] = 1
+
+        data_port = np.fliplr(data_threshold[:, 0: self.post_width // 2])
+        data_star = data_threshold[:, self.post_width // 2:]
+
+        filtered_port = np.copy(data_port)
+        filtered_star = np.copy(data_star)
+
+        # Previously detections are indicated by a value of 1
+        # The sum of a row indicates the number of detections. This value is used to forma mask to apply to the data.
+        # The mask is 1 if the detection count is <= max_count and 0 everywhere else.
+        detection_count_port = np.sum(data_port, axis=1)
+        detection_count_star = np.sum(data_port, axis=1)
+
+        # This mask will need to be reshaped before it can be applied to the data
+        mask_port = np.zeros_like(detection_count_port)
+        mask_star = np.zeros_like(detection_count_star)
+
+        mask_port[detection_count_port <= max_count] = 1
+        mask_star[detection_count_star <= max_count] = 1
+
+        mask_port = mask_port.reshape((-1, 1))
+        mask_star = mask_star.reshape((-1, 1))
+
+        filtered_port = np.multiply(filtered_port, mask_port)
+        filtered_star = np.multiply(filtered_star, mask_star)
+
+        # Form output array
+        filtered_data = np.hstack((np.fliplr(filtered_port), filtered_star))
+
+        if show_results:
+            grad_detect_fig, (ax1, ax2) = plt.subplots(1, 2)
+            grad_detect_fig.suptitle(f'Ringing Removal\n'
+                                     f'Max detections: {max_count}')
+
+            ax1.title.set_text('Input Image')
+            ax1.imshow(self.post_rope)
+
+            ax2.title.set_text(f'Output Image')
+            ax2.imshow(filtered_data)
+
+            plt.show()
+
+        # Overwrite input array with output array
+        self.post_rope = np.copy(filtered_data)
+
+    def post_limit_range(self, max_index, show_results):
+        if self.post_rope_original is None:
+            print("Post processing was not initialized!")
+            return
+
+        if max_index + 1 >= self.post_width // 2:
+            range_mask = np.ones((1, self.post_width))
+
+        else:
+            half_range_mask = np.ones((1, self.post_width // 2))
+            half_range_mask[0, max_index:] = 0
+            range_mask = np.hstack((np.fliplr(half_range_mask), half_range_mask))
+
+        filtered_data = np.multiply(self.post_rope, range_mask)
+
+        if show_results:
+            grad_detect_fig, (ax1, ax2) = plt.subplots(1, 2)
+            grad_detect_fig.suptitle(f'Post: Range Limiting\n'
+                                     f'Max index: {max_index}')
+
+            ax1.title.set_text('Input Image')
+            ax1.imshow(self.post_rope)
+
+            ax2.title.set_text(f'Output Image')
+            ax2.imshow(filtered_data)
+
+            plt.show()
+
+        # Overwrite input array with output array
+        self.post_rope = np.copy(filtered_data)
+
+    def post_overlay_detections(self):
+        if self.post_rope_original is None:
+            print("Post processing was not initialized!")
+            return
+
+        # Raw image converted to RGB
+        img_color = np.dstack((self.img, self.img, self.img))
+
+        # Rope
+        img_rope = np.copy(img_color)
+        img_rope[self.post_rope > 0] = self.rope_color
+
+        # Buoy
+        img_buoy = np.copy(img_color)
+        img_buoy[self.post_buoy > 0] = self.buoy_color
+
+        grad_detect_fig, (ax2, ax3) = plt.subplots(1, 2)
+        grad_detect_fig.suptitle(f'Post: Detection overlay')
+
+        ax2.title.set_text('Rope detections')
+        ax2.imshow(img_rope)
+
+        ax3.title.set_text('Buoy detections')
+        ax3.imshow(img_buoy)
+
+        plt.show()
 
 
 if __name__ == '__main__':
@@ -713,38 +888,56 @@ if __name__ == '__main__':
     show_manual_detection = False
     perform_flipping = True
     # ===== Gradient method =====
-    perform_grad_method = False
+    perform_grad_method = True
+    grad_show_intermediate = False
+    grad_show = False
     grad_med_size = 7
     grad_gauss_size = 5
     grad_grad_size = 5
-    grad_show = True
+
     # ===== Canny edge detector =====
     perform_custom_canny = True
+    custom_canny_show = False
     canny_med_size = 7
     canny_gauss_size = 5
     canny_sobel_size = 5
     canny_l_thresh = 175
     canny_h_thresh = 225
-    canny_show = False
     do_blob = False
     do_template = True
+    show_template = False
     template_size = 21
     template_sigma = 2
     template_feature_width = 10
+    template_l_threshold = 1000
+    template_h_threshold = 2000
+
     # ===== Standard canny detector =====
-    perform_standard_canny = False
+    perform_standard_canny = True
+    standard_canny_show = False
     standard_canny_med_size = 7
     standard_canny_l_thresh = 175
     standard_canny_h_thresh = 225
-    standard_canny_show = True
+
     # ===== CPD method =====
     perform_cpd = False
+    cpd_show = True
     cpd_max_depth = 100
     cpd_ratio = 1.1  # 1.55 was default
     cpd_med_size = 0
-    cpd_show = True
+
     # ===== Combined detector output =====
     perform_combined_detector = False
+
+    # ===== Post ====
+    perform_post = True
+    ringing_max_count = 2
+    ringing_show = True
+    limiting_max = 100
+    limiting_show = True
+
+    show_final_post = True
+
     # ===== Boat sonar data =====
     process_boat_sss = False
 
@@ -754,7 +947,7 @@ if __name__ == '__main__':
 
     start_ind = 0  # 2000  # 3400  # 3400  # 6300
     end_ind = 0  # 6000  # 5700  # 4600  # 7200
-    max_range_ing = 225
+    max_range_ing = 175
 
     # detections = [[7106, 1092], [6456, 1064],
     #               [5570, 956], [4894, 943],
@@ -784,9 +977,9 @@ if __name__ == '__main__':
         sss_analysis.mark_manual_detections(detections)
 
     if perform_grad_method:
-        sss_analysis.filter_median(grad_med_size, show=grad_show)
-        sss_analysis.filter_gaussian(grad_gauss_size, show=grad_show)
-        grad_output = sss_analysis.gradient_cross_track(grad_grad_size, show=grad_show)
+        sss_analysis.filter_median(grad_med_size, show=grad_show_intermediate)
+        sss_analysis.filter_gaussian(grad_gauss_size, show=grad_show_intermediate)
+        grad_output = sss_analysis.gradient_cross_track(grad_grad_size, show=grad_show_intermediate)
         grad_method_results = sss_analysis.filter_threshold(threshold=200, show=grad_show)
 
     else:
@@ -797,12 +990,12 @@ if __name__ == '__main__':
                                                                            canny_gauss_size,
                                                                            canny_sobel_size,
                                                                            canny_l_thresh, canny_h_thresh,
-                                                                           show=canny_show)
+                                                                           show=custom_canny_show)
         # sss_analysis.show_thresholds(custom_dx, 100, 1000, 'Custom Dx Positive')
         # sss_analysis.show_thresholds(custom_dx_neg, 100, 1000, 'Custom Dx Negative')
 
         # ==== find the first and second rising edges
-        sss_analysis.find_rising_edges(canny_custom, 150, 2, True)
+        # sss_analysis.find_rising_edges(canny_custom, 150, 2, True)
 
         # ===== New =====
         if do_blob:
@@ -842,12 +1035,30 @@ if __name__ == '__main__':
 
         if do_template:
             matching_image = np.copy(custom_dx).astype(np.float32)
+            if template_size % 2 == 0:
+                template_size += 1
             template = sss_analysis.construct_template_kernel(template_size, template_sigma, template_feature_width)
             template = template.astype(np.float32)
-            result = cv2.matchTemplate(matching_image, template, cv2.TM_CCOEFF)
-            sss_analysis.show_thresholds(result, 1000, 2000, 'Gradient Template', reference_data=True)
+            template_result = cv2.matchTemplate(matching_image, template, cv2.TM_CCOEFF)
+
+            # matchTemplate results will need padding
+            # W' = W - w + 1, where W': final width, W: initial width, w: template width
+            # Above holds for the height as well
+            pad_size = template_size // 2
+            template_result = np.pad(template_result, pad_size)
+
+            if show_template:
+                sss_analysis.show_thresholds(template_result,
+                                             template_l_threshold,
+                                             template_h_threshold,
+                                             'Gradient Template',
+                                             reference_data=True)
+        else:
+            template_result = None
+
     else:
         canny_custom = None
+        template_result = None
 
     if perform_standard_canny:
         standard_canny = sss_analysis.canny_standard(m_size=standard_canny_med_size,
@@ -868,6 +1079,42 @@ if __name__ == '__main__':
     if perform_combined_detector:
         sss_analysis.show_detections(grad_results=grad_method_results,
                                      canny_results=canny_custom)
+
+    while perform_post:
+        # check if the needed pre-processing has been saved and
+        if canny_custom is None:
+            print("Post failed: canny_custom not found!")
+            break
+
+        if template_result is None:
+            print("Post failed: tem not found!")
+            break
+
+        # Thresholding of 'raw' detections
+        # ROPE: Thresholding is applied during canny
+        # Buoy: template_results requires thresholding
+        template_result_threshold = np.zeros_like(template_result, np.uint8)
+
+        template_result_threshold[template_result >= template_h_threshold] = 255
+
+        sss_analysis.post_initialize(rope_detections=canny_custom,
+                                     buoy_detections=template_result_threshold,
+                                     use_port=True,
+                                     use_starboard=False)
+
+        # Remove ringing
+        # Useful to perform before the limiting the range
+        sss_analysis.post_remove_ringing_rope(max_count=ringing_max_count,
+                                              show_results=ringing_show)
+
+        # Enforce max detection range
+        sss_analysis.post_limit_range(max_index=limiting_max,
+                                      show_results=limiting_show)
+
+        if show_final_post:
+            sss_analysis.post_overlay_detections()
+
+        break
 
     # %%
     # lines = cv.HoughLines(canny_custom, rho=1, theta=np.pi / 180, threshold=25)

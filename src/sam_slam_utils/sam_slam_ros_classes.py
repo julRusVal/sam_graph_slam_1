@@ -79,12 +79,17 @@ class sam_slam_listener:
         # ===== Real or simulated =====
         self.simulated_data = simulated_data
         self.simulated_detections = rospy.get_param("simulated_detections", False)  # not used yet
+
+        # This setting controls how buoy detections are handled
+        # True to use all buoy detections, otherwise detector time limits apply
+        self.prioritize_buoy_detections = rospy.get_param("prioritize_buoy_detections", False)
+
         if self.simulated_data:
             self.correct_dr = True
         else:
             self.correct_dr = False
+
         self.record_gt = record_gt
-        self.prioritize_buoy_detections = True  # true to use all buoy detections, otherwise detector time limits apply
 
         # ===== Provided information =====
         self.manual_associations = rospy.get_param("manual_associations", False)
@@ -100,8 +105,9 @@ class sam_slam_listener:
         self.dr_topic = f'/{self.robot_name}/dr/odom'
         self.det_topic = f'/{self.robot_name}/payload/sidescan/detection_hypothesis'
         if self.simulated_data:
-            self.gt_topic = f'/{self.robot_name}/sim/odom'
             self.buoy_topic = f'/{self.robot_name}/sim/marked_positions'
+            self.rope_topic = f'/{self.robot_name}/sim/rope_outer_marker'
+            self.gt_topic = f'/{self.robot_name}/sim/odom'
         else:
             self.buoy_topic = f'/{self.robot_name}/real/marked_positions'
             self.rope_topic = f'/{self.robot_name}/real/rope_outer_marker'
@@ -515,7 +521,7 @@ class sam_slam_listener:
             if detection_is_buoy:
                 break
 
-        # Buoy detections can be fairly rare so it might be desirable to use all buoy detections while
+        # Buoy detections can be fairly rare, so it might be desirable to use all buoy detections while
         # limiting the rate that rope detections are added to the graph
         if not self.prioritize_buoy_detections and detection_is_current:
             return
@@ -597,6 +603,7 @@ class sam_slam_listener:
 
                 # ===== Handle rope detections =====
                 if detection_type == ObjectID.ROPE.value:
+                    # TODO this statement prevents rope detections from being added to graph
                     # Log detection position
                     # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
                     self.rope_detections_graph.append([det_pos_map.pose.position.x,
@@ -874,13 +881,24 @@ class sam_slam_listener:
             self.rope_updated = True
 
     def buoy_callback(self, msg):
+        # NOTE: The buoy publisher did not give each buoy a unique id.
+        # Currently, these IDs are faked for simulated data. It might be necessary to change the publisher
+        # to provide real IDs if the structure of the map, with ropes, is important.
         if not self.buoy_updated:
-            print('Capturing buoy map positions')
             marker_count = len(msg.markers)
+            print(f'Capturing buoy map positions: {marker_count}')
             self.buoys = [None for i in range(marker_count)]
 
+            marker_id_current = 0
+
             for marker in msg.markers:
-                marker_id = int(marker.id)
+                # See note above about buoy IDs
+                if self.simulated_data:
+                    marker_id = int(marker_id_current)
+                    marker_id_current += 1
+                else:
+                    marker_id = int(marker.id)
+
                 if self.frame in marker.header.frame_id:
                     self.buoys[marker_id] = [marker.pose.position.x, marker.pose.position.y, marker.pose.position.z]
 

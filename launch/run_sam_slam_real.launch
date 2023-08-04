@@ -21,6 +21,7 @@
     <param name="manual_associations" value="True"/>
     <param name="simulated_detections" value="True"/>
     <param name="rope_associations" value="True"/>
+    <param name="prioritize_buoy_detections" value="True"/>
 
     <!-- Graph parameters -->
     <!-- Currently using default ISAM2 parameters -->

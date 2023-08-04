@@ -349,7 +349,7 @@ class image_mapping:
 
         :return: gtsam:pose3 of left camera pose relative to base_link
         """
-        l_t_x = 1.313
+        l_t_x = 1.313/2
         l_t_y = 0.048
         l_t_z = -0.007
 
@@ -1093,7 +1093,10 @@ class image_mapping:
     # ===== Visualizations =====
     def plot_fancy(self, other_name=None):
         """
-        This might need some work
+        This might need some work!!
+
+        This method is used to plot the poses as well as to visualize the FOV of the camera.
+        It is mostly a debugging tool.
         :param other_name:
         :return:
         """
@@ -1101,8 +1104,8 @@ class image_mapping:
         fig_num = 0
         base_scale = .5
         other_scale = 1
-        plot_base = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
-        plot_other = [13, 14, 15]  # [8, 10, 11, 12, 13, 14]
+        plot_base = [9, 10, 11, 12, 13]  # [8, 10, 11, 12, 13, 14]
+        plot_other = [9, 10, 11, 12, 13]  # [8, 10, 11, 12, 13, 14]
 
         fig = plt.figure(fig_num)
         axes = fig.add_subplot(projection='3d')
@@ -1159,7 +1162,12 @@ class image_mapping:
                             axes.scatter(intrcpt_w_coords[0], intrcpt_w_coords[1], intrcpt_w_coords[2], c='r')
 
         # plt.axis('equal')
-        plt.title("Testing the transform")
+        if other_name is None:
+            camera_name = "None"
+        else:
+            camera_name = other_name
+        plt.title(f"Testing the transform, Camera: {camera_name}\n"
+                  f"Base: {plot_base}  Camera: {plot_other}")
         plt.show()
 
     def mark_centers(self, camera_names=None):
