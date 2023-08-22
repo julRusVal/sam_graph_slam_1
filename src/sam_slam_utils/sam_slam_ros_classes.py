@@ -27,6 +27,7 @@ import cv2
 
 from sam_slam_utils.sam_slam_helpers import show_simple_graph_2d
 from sam_slam_utils.sam_slam_helpers import write_array_to_csv, overwrite_directory
+from sam_slam_utils.sam_slam_helpers import get_enum_name_or_value
 from sam_slam_utils.sam_slam_proc_classes import analyze_slam
 
 
@@ -363,6 +364,10 @@ class sam_slam_listener:
         self.verbose_buoys = rospy.get_param('verbose_listener_buoys', False)
         self.verbose_cameras = rospy.get_param('verbose_listener_cameras', False)
 
+        # Analysis
+        # The analysis class is separate from the online slam class within sam_slam_proc_classes.py
+        self.analysis = None
+
         print('Listener Initialized')
 
     # Subscriber callbacks
@@ -565,7 +570,8 @@ class sam_slam_listener:
 
                 # ===== Output =====
                 if self.verbose_detections:
-                    print(f'Detection callback - Index:{index}  Type:{detection_type}')
+                    detection_type_name = get_enum_name_or_value(ObjectID, detection_type)
+                    print(f'Detection callback - Index:{index}  Type:{detection_type_name}')
 
                 # ===== Handle buoy detections
                 if detection_type == ObjectID.BUOY.value:
@@ -874,7 +880,6 @@ class sam_slam_listener:
                                              [transformed_end.pose.position.x, transformed_end.pose.position.y]]
 
             if self.online_graph is not None and self.rope_associations:
-                # TODO buoy info to online graph
                 print("Online: rope update")
                 self.online_graph.rope_setup(self.ropes)
 
@@ -911,7 +916,6 @@ class sam_slam_listener:
                                              marker_pos_map.pose.position.z]
 
             if self.online_graph is not None:
-                # TODO buoy info to online graph
                 print("Online: buoy update")
                 self.online_graph.buoy_setup(self.buoys)
 
@@ -929,16 +933,19 @@ class sam_slam_listener:
 
             if self.online_graph is not None:
                 # TODO Save final results
-                print("Print online graph")
+                print("Initializing analysis")
 
-                analysis = analyze_slam(self.online_graph)
-                analysis.save_for_sensor_processing(self.file_path)
-                analysis.save_2d_poses(self.file_path)
-                analysis.show_graph_2d(label="Final Estimate",
-                                       show_final=True)
+                self.analysis = analyze_slam(self.online_graph)
+                self.analysis.save_for_sensor_processing(self.file_path)
+                self.analysis.save_2d_poses(self.file_path)
+                self.analysis.calculate_corresponding_points(debug=True)
 
-                analysis.visualize_posterior()
+                # All other analysis methods should most likely be called by sam_listener_online_slam_node.py
 
+                # analysis.print_residuals()
+                # analysis.show_graph_2d(label="Final Estimate",
+                #                        show_final=True)
+                # analysis.visualize_posterior()
                 # show_simple_graph_2d(graph=self.online_graph.graph,
                 #                      x_keys=self.online_graph.x,
                 #                      b_keys=self.online_graph.b,

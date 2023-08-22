@@ -16,6 +16,8 @@ from matplotlib import pyplot as plt
 from scipy import signal
 import sllib
 from PIL import Image
+from scipy.signal import medfilt
+from skimage import measure
 
 import math
 
@@ -58,13 +60,25 @@ class process_sss:
         self.post_rope_original = None  # These are set during post initialization
         self.post_buoy_original = None
 
-        self.post_rope = None  # These are modified by the post methods
+        # These are modified by the post methods
+        self.post_rope = None
+        self.post_rope_inds_port = None
+        self.post_rope_inds_star = None
+
         self.post_buoy = None
+        self.post_buoy_centers = None
 
         self.post_use_port = None  # These will only modify post_rope and post_buoy not the originals
         self.post_use_star = None
 
         self.post_height, self.post_width = None, None
+
+        # Final results
+        # these are stored [ orig index | seq ID | orig cross index ]
+        self.final_bouys = None
+        self.final_ropes = None
+        self.final_ropes_port = None
+        self.final_ropes_star = None
 
         # ===== Start
         # Load data
@@ -644,7 +658,7 @@ class process_sss:
 
         plt.show()
 
-    def find_rising_edges(self, data, threshold, max_count=2, debug=False):
+    def find_rising_edges(self, data, threshold, max_count=2, show=False, save_output=False):
 
         height, width = data.shape[:2]
 
@@ -662,6 +676,7 @@ class process_sss:
 
         # this is mostly here to save the data and look at it in matlab
         port_detection_inds = np.zeros((height, 2), dtype=np.int16)
+        star_detection_inds = np.zeros((height, 2), dtype=np.int16)
 
         for row in range(height):
             # === Port ===
@@ -678,28 +693,35 @@ class process_sss:
             where_star = np.where((data_star[row, :-1] == 0) & (data_star[row, 1:] == 1))
             if len(where_star[0] > 0):
                 max_where_ind = min(len(where_star[0]), max_count)
-                for index in where_star[0][:max_where_ind]:
+                for detect_num, index in enumerate(where_star[0][:max_where_ind]):
                     detections_star[row, index] = 255  # detect_num + 1
 
-        if debug:
+                    if detect_num < star_detection_inds.shape[1]:
+                        star_detection_inds[row, detect_num] = index
+
+        if save_output:
             np.savetxt("data/port_detection_inds.csv", port_detection_inds, delimiter=",")
+            np.savetxt("data/star_detection_inds.csv", star_detection_inds, delimiter=",")
 
         data_detections = np.hstack((np.fliplr(detections_port), detections_star))
 
-        grad_detect_fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
-        grad_detect_fig.suptitle(f'Threshold Detections\n'
-                                 f'Threshold: {threshold}  max: {max_count}')
+        if show:
+            grad_detect_fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            grad_detect_fig.suptitle(f'Threshold Detections\n'
+                                     f'Threshold: {threshold}  max: {max_count}')
 
-        ax1.title.set_text('Input image')
-        ax1.imshow(data_local)
+            ax1.title.set_text('Input image')
+            ax1.imshow(data_local)
 
-        ax2.title.set_text(f'Image thresholded')
-        ax2.imshow(data_threshold)
+            ax2.title.set_text(f'Image thresholded')
+            ax2.imshow(data_threshold)
 
-        ax3.title.set_text(f'Detections')
-        ax3.imshow(data_detections)
+            ax3.title.set_text(f'Detections')
+            ax3.imshow(data_detections)
 
-        plt.show()
+            plt.show()
+
+        return port_detection_inds, star_detection_inds
 
     def construct_template_kernel(self, size, sigma, feature_width):
 
@@ -821,41 +843,75 @@ class process_sss:
         # Overwrite input array with output array
         self.post_rope = np.copy(filtered_data)
 
-    def post_limit_range(self, max_index, show_results):
+    def post_limit_range(self, min_index, max_index, show_results):
         if self.post_rope_original is None:
             print("Post processing was not initialized!")
             return
 
+        # From mask for single channel
+        # Handle max range
         if max_index + 1 >= self.post_width // 2:
-            range_mask = np.ones((1, self.post_width))
-
+            half_range_mask = np.ones((1, self.post_width))
+            max_index = (self.post_width // 2) - 1
         else:
             half_range_mask = np.ones((1, self.post_width // 2))
             half_range_mask[0, max_index:] = 0
-            range_mask = np.hstack((np.fliplr(half_range_mask), half_range_mask))
+
+        # handle min range
+        min_skip_conditions = [min_index <= 0,
+                               min_index >= max_index,
+                               min_index > self.post_width // 2]
+        if True in min_skip_conditions:
+            min_index = 0
+        else:
+            half_range_mask[0, 0:min_index] = 0
+
+        range_mask = np.hstack((np.fliplr(half_range_mask), half_range_mask))
 
         filtered_data = np.multiply(self.post_rope, range_mask)
 
         if show_results:
+            # Boundary mask is just for visualization
+            half_boundary_mask = np.zeros((1, self.post_width // 2))
+            half_boundary_mask[0, min_index] = 255
+            half_boundary_mask[0, max_index] = 255
+            boundary_mask = np.hstack((np.fliplr(half_boundary_mask), half_boundary_mask))
+            boundary_mask = np.repeat(boundary_mask, self.post_height, axis=0)
+
+            # Raw image converted to RGB
+            img_color = np.dstack((self.img, self.img, self.img))
+
+            # Input
+            img_rope_input = np.copy(img_color)
+            img_rope_input[self.post_rope > 0] = self.rope_color
+
+            # Output
+            img_rope_output = np.copy(img_color)
+            img_rope_output[boundary_mask > 0] = np.array([255, 255, 0], dtype=np.uint8)
+            img_rope_output[filtered_data > 0] = self.rope_color
+
+            # Form plot
             grad_detect_fig, (ax1, ax2) = plt.subplots(1, 2)
             grad_detect_fig.suptitle(f'Post: Range Limiting\n'
-                                     f'Max index: {max_index}')
+                                     f'Min index: {min_index}  Max index: {max_index}  (Yellow)')
 
             ax1.title.set_text('Input Image')
-            ax1.imshow(self.post_rope)
+            ax1.imshow(img_rope_input)
 
             ax2.title.set_text(f'Output Image')
-            ax2.imshow(filtered_data)
+            ax2.imshow(img_rope_output)
 
             plt.show()
 
         # Overwrite input array with output array
         self.post_rope = np.copy(filtered_data)
 
-    def post_overlay_detections(self):
+    def post_overlay_detections(self, ):
         if self.post_rope_original is None:
             print("Post processing was not initialized!")
             return
+
+        detection_value = 255  # 255
 
         # Raw image converted to RGB
         img_color = np.dstack((self.img, self.img, self.img))
@@ -868,16 +924,388 @@ class process_sss:
         img_buoy = np.copy(img_color)
         img_buoy[self.post_buoy > 0] = self.buoy_color
 
-        grad_detect_fig, (ax2, ax3) = plt.subplots(1, 2)
+        # Combined
+        img_combined = np.copy(img_color)
+        img_combined[self.post_rope > 0] = self.rope_color
+        img_combined[self.post_buoy > 0] = self.buoy_color
+
+        detection_value = 255  # 255
+        detections_combined = np.add(self.post_rope, self.post_buoy)
+        combined_color = np.add(self.rope_color, self.buoy_color)
+
+        img_combined[detections_combined > detection_value] = combined_color
+
+        grad_detect_fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
         grad_detect_fig.suptitle(f'Post: Detection overlay')
 
-        ax2.title.set_text('Rope detections')
-        ax2.imshow(img_rope)
+        ax1.title.set_text('Rope detections')
+        ax1.imshow(img_rope)
 
-        ax3.title.set_text('Buoy detections')
-        ax3.imshow(img_buoy)
+        ax2.title.set_text('Buoy detections')
+        ax2.imshow(img_buoy)
+
+        ax3.title.set_text('Combined detections')
+        ax3.imshow(img_combined)
+        if self.post_buoy_centers is not None:
+            ax3.plot(self.post_buoy_centers[:, 1], self.post_buoy_centers[:, 0],
+                     'ro')  # Note: Y coordinates come before X coordinates
 
         plt.show()
+
+    def post_interleave_detection_inds(self, channel_data, channel_id, med_filter_kernel=0):
+        """
+        column 0 is the first detection and column 1 is the 2nd detection.
+        The columns will be interleaved together for further filtering.
+
+        Also can perform median filtering
+
+        :param channel_data: Nx2 array of detection inds
+        :return:
+        """
+        if self.post_rope_original is None:
+            print("Post processing was not initialized!")
+            return
+
+        data_local = np.copy(channel_data)
+
+        # When only a single detection is returned, it's value is copied to the 2nd detection.
+        # Otherwise, a bunch of false negatives will be introduced
+        indices_to_update = (data_local[:, 0] > 0) & (data_local[:, 1] == 0)
+        data_local[indices_to_update, 1] = data_local[indices_to_update, 0]
+
+        # Reshape the array to interleave
+        data_interleaved = data_local.reshape(-1, 1)
+        interleaved_height, interleaved_width = data_interleaved.shape[0:2]
+
+        x_values = np.arange(0, interleaved_height)
+
+        # Perform median filtering
+        if med_filter_kernel > 3 and not med_filter_kernel % 2 == 0:
+            data_interleaved_med = medfilt(data_interleaved.squeeze(), med_filter_kernel)
+        else:
+            data_interleaved_med = data_interleaved
+
+        # Store
+        if channel_id.casefold() == 'port':
+            self.post_rope_inds_port = data_interleaved_med[::2]
+        elif 'star' in channel_id.casefold():
+            self.post_rope_inds_star = data_interleaved_med[::2]
+        else:
+            channel_id = 'INVALID'
+            print("Improper channel ID given!")
+
+        # Generate raw sonar image of correct size
+        img_color = np.dstack((self.img, self.img, self.img))
+        img_color = np.repeat(img_color, 2, axis=0)
+
+        # Form plot
+        interleaved_fig, (ax1, ax2) = plt.subplots(1, 2)
+        interleaved_fig.suptitle(f'Post: Interleaved results - {channel_id.upper()}\n'
+                                 f'Median Filter size: {med_filter_kernel}')
+
+        ax1.title.set_text('Raw Sensor Data')
+
+        ax1.imshow(img_color, aspect=.05)
+
+        ax2.title.set_text(f'Interleaved Indices')
+        ax2.plot(data_interleaved, x_values, label="original")
+        ax2.plot(data_interleaved_med, x_values, label="Median Filtered")
+
+        plt.legend()
+        ax2.invert_yaxis()
+        ax2.invert_xaxis()
+
+        plt.show()
+
+        return data_interleaved, data_interleaved_med
+
+    def post_plot_inds(self, channel_id='port'):
+        #
+        filtered_height = self.post_rope.shape[0]
+        if channel_id.casefold() == 'port':
+            filtered = self.post_rope_inds_port
+        elif 'star' in a.casefold():
+            filtered = self.post_rope_inds_star
+        else:
+            print("Improper channel ID given!")
+            return
+
+        # Test 1
+        # Find the array distance from the previous non zero
+        non_zero_results = np.zeros((filtered_height, 1))
+        last_non_zero = -1
+
+        for h_i in range(filtered_height):
+            current_value = filtered[h_i]
+            #
+            if last_non_zero == -1:  # no previous value is non zero
+                non_zero_results[h_i] = 0
+
+            else:
+                non_zero_results[h_i] = h_i - last_non_zero
+
+            #
+            current_value = filtered[h_i]
+            if current_value != 0:
+                last_non_zero = h_i
+
+        # Test 2
+        # consecutive zeros
+        zero_results = np.ones((filtered_height, 1)) * -1  # Initialized to -1
+
+        for h_i in range(filtered_height):
+            if zero_results[h_i] != -1:
+                continue
+
+            if filtered[h_i] != 0:
+                zero_results[h_i] = 0
+
+            else:
+                if h_i == filtered_height - 1:  # check if we're at the end
+                    zero_results[h_i] = 1
+                else:
+                    # Look for next non zero
+                    count = 0
+                    start_i = h_i
+                    end_i = -1
+                    for i in range(start_i, filtered_height):
+                        if filtered[i] == 0:
+                            count += 1
+                        else:
+                            end_i = i
+                            break
+
+                    # check if loop reached the end of the data set
+                    if end_i == -1:
+                        end_i = filtered_height
+
+                    zero_results[start_i:end_i] = count
+
+        # X values for plotting
+        x_values = np.arange(0, filtered_height)
+
+        # Generate raw sonar image of correct size
+        img_color = np.dstack((self.img, self.img, self.img))
+        # img_color = np.repeat(img_color, 2, axis=0)
+
+        # Form plot
+        interleaved_fig, (ax1, ax2) = plt.subplots(1, 2)
+        interleaved_fig.suptitle(f'Post: De-interleaved results - {channel_id.upper()}')
+
+        ax1.title.set_text('Raw Sensor Data')
+
+        ax1.imshow(img_color, aspect=.05)
+
+        ax2.title.set_text(f'Interleaved Indices')
+        ax2.plot(filtered, x_values, label="Median Filtered")
+        ax2.plot(zero_results, x_values, label="zero lengths")
+
+        plt.legend()
+        ax2.invert_yaxis()
+        ax2.invert_xaxis()
+
+        plt.show()
+
+    def post_interleaved_to_2d(self, interleaved_port=None, interleaved_star=None):
+        new_port = np.zeros((self.post_height, self.post_width // 2))
+        new_star = np.zeros((self.post_height, self.post_width // 2))
+
+        # Port
+        if interleaved_port is not None:
+            port_interleaved = interleaved_port[::2]
+
+            # Check dimensions
+            if port_interleaved.shape[0] != self.post_height:
+                print("post_interleaved_to_2d(): dimension mismatch")
+                return
+
+            for i in range(self.post_height):
+                detection_ind = port_interleaved[i]
+
+                if detection_ind != 0 and detection_ind < self.post_width // 2:
+                    new_port[i, detection_ind] = 255
+
+        # Starboard
+        if interleaved_star is not None:
+            star_interleaved = interleaved_star[::2]
+
+            # Check dimensions
+            if star_interleaved.shape[0] != self.post_height:
+                print("post_interleaved_to_2d(): dimension mismatch")
+                return
+
+            for i in range(self.post_height):
+                detection_ind = star_interleaved[i]
+
+                if detection_ind != 0 and detection_ind < self.post_width // 2:
+                    new_star[i, detection_ind] = 255
+
+        # New
+        new = np.hstack((np.fliplr(new_port), new_star))
+        self.post_rope = np.copy(new)
+
+    def post_find_buoy_centers(self, min_region_size, exclusion_zone=None):
+        labeled_array, num_labels = measure.label(self.post_buoy, connectivity=2, return_num=True)
+        region_properties = measure.regionprops(labeled_array)
+
+        valid_regions = [region for region in region_properties if region.area >= min_region_size]
+
+        region_centers = np.array([region.centroid for region in valid_regions])
+
+        self.post_buoy_centers = region_centers
+
+        return region_centers
+
+    def post_find_buoy_offsets(self, window_size=55, plot=False):
+        """
+
+        :param window_size:
+        :return:
+        """
+
+        if self.post_buoy_centers is None:
+            print("Find buoys centers first!")
+            return
+
+        # Port stuff
+        port_detections_indices = np.where(self.post_buoy_centers[:, 1] < self.post_width // 2)[0]
+        port_detections = self.post_buoy_centers[port_detections_indices, :]
+        port_detections_count = port_detections.shape[0]
+        port_leading_windows = np.zeros((port_detections_count, 1))
+        port_trailing_windows = np.zeros((port_detections_count, 1))
+
+        # Convert rope detections to absolute coords
+        # here absolute means a 2d array with width self.post_width
+        port_rope_inds_abs = (self.post_width // 2 - 1) - self.post_rope_inds_port[:]
+
+        # This is the raw seq IDs, being used as the independent variable
+        x_values = self.post_buoy_centers[port_detections_indices, 1]
+
+        for i in range(port_detections_count):
+            # Find indices for current window
+            center = int(port_detections[i, 0])
+            leading_stop = int(center + 1)
+            leading_start = int(max(0, leading_stop - window_size))
+
+            trailing_start = center
+            trailing_stop = int(min(self.post_height, trailing_start + window_size))
+
+            current_leading_window = port_rope_inds_abs[leading_start: leading_stop]
+            current_trailing_window = port_rope_inds_abs[trailing_start: trailing_stop]
+
+            leading_median = np.median(current_leading_window)
+            trailing_median = np.median(current_trailing_window)
+
+            port_leading_windows[i] = leading_median
+            port_trailing_windows[i] = trailing_median
+
+        # TODO More work to use the rope detections to determine the buoy offset
+
+        if plot:
+            # Form plot
+            interleaved_fig, (ax1) = plt.subplots(1, 1)
+            interleaved_fig.suptitle(f'Post: Buoy Offsets - PORT\n'
+                                     'WORK IN PROGRESS')
+
+            # ax1.title.set_text('Original detections')
+            #
+            # ax1.plot(port_detections[:, 0],
+            #          port_detections[:, 1],
+            #          label="Detection")
+            #
+            # ax1.plot(port_detections[:, 0],
+            #          port_leading_windows[:],
+            #          label="leading")
+
+            labels = [str(int(num)) for num in port_detections[:, 0]]
+            x = np.arange(len(labels))  # Generate x-axis ticks
+
+            ax1.bar(x - 0.2, port_leading_windows[:, 0], width=0.2, label='Leading')
+            ax1.bar(x, port_detections[:, 1], width=0.2, label='Detection')
+            plt.bar(x + 0.2, port_trailing_windows[:, 0], width=0.2, label='Trailing 3')
+
+            plt.xlabel('Detection')
+            plt.ylabel('Values')
+            #plt.title('Bar Graph of Three Arrays')
+            plt.xticks(x, labels)
+            plt.legend()
+            plt.show()
+
+
+    def post_final_buoys(self, plot=False):
+        # The input is stored as [ orig index | truncated cross index ]
+        # The output is stored as [ orig index | seq ID | orig cross index ]
+
+        buoy_count = self.post_buoy_centers.shape[0]
+        self.final_bouys = np.zeros((buoy_count, 3), int)
+
+        # convert to int
+        buoy_centers_int = self.post_buoy_centers.astype(int)
+        self.final_bouys[:, 0] = buoy_centers_int[:, 0]
+        self.final_bouys[:, 2] = buoy_centers_int[:, 1]
+
+        # offset to account for post being truncated
+        if self.post_width != self.original_width:
+            size_dif = self.original_width - self.post_width
+            offset = size_dif // 2
+            # Apply
+            self.final_bouys[:, 2] = self.final_bouys[:, 2] + offset
+
+        # find seq IDs
+        relevant_seq_ids = self.seq_ids[self.final_bouys[:, 0]]
+
+        self.final_bouys[:, 1] = relevant_seq_ids.astype(int)
+
+        np.savetxt("data/image_process_buoys.csv", self.final_bouys, delimiter=",")
+
+        if plot:
+            img_color = np.dstack((self.img_original, self.img_original, self.img_original))
+
+            final_buoy_fig, (ax1, ax2) = plt.subplots(1, 2)
+            final_buoy_fig.suptitle(f'Post: Final buoy detections')
+
+            ax1.title.set_text('Original Sonar')
+            ax1.imshow(img_color)
+
+            ax2.title.set_text('Buoy detections')
+            ax2.imshow(img_color)
+            ax2.plot(self.final_bouys[:, 2], self.post_buoy_centers[:, 0],
+                     'ro')  # Note: Y coordinates come before X coordinates
+
+            plt.show()
+
+    def post_final_ropes(self, plot=False):
+        # The output is stored as [ orig index | seq ID | range index ]
+
+        # Port
+        port_valid_inds = np.nonzero(self.post_rope_inds_port[:])[0]
+        if len(port_valid_inds) > 0:
+            port_seq_ids = self.seq_ids[port_valid_inds]
+            port_valid = self.post_rope_inds_port[port_valid_inds]
+
+            port_length = port_valid_inds.shape[0]
+            self.final_ropes_port = np.zeros((port_length, 3))
+
+            self.final_ropes_port[:, 0] = port_valid_inds[:]
+            self.final_ropes_port[:, 1] = port_seq_ids[:]
+            self.final_ropes_port[:, 2] = port_valid[:]
+
+            np.savetxt("data/image_process_ropes_port.csv", self.final_ropes_port, delimiter=",")
+
+        # Star
+        star_valid_inds = np.nonzero(self.post_rope_inds_star[:])[0]
+        if len(star_valid_inds) > 0:
+            star_seq_ids = self.seq_ids[star_valid_inds]
+            star_valid = self.post_rope_inds_star[star_valid_inds]
+
+            star_length = star_valid_inds.shape[0]
+            self.final_ropes_star = np.zeros((star_length, 3))
+
+            self.final_ropes_star[:, 0] = star_valid_inds[:]
+            self.final_ropes_star[:, 1] = star_seq_ids[:]
+            self.final_ropes_star[:, 2] = star_valid[:]
+
+            np.savetxt("data/image_process_ropes_star.csv", self.final_ropes_star, delimiter=",")
 
 
 if __name__ == '__main__':
@@ -906,11 +1334,12 @@ if __name__ == '__main__':
     do_blob = False
     do_template = True
     show_template = False
+    show_template_raw = False
     template_size = 21
     template_sigma = 2
     template_feature_width = 10
     template_l_threshold = 1000
-    template_h_threshold = 2000
+    template_h_threshold = 3000
 
     # ===== Standard canny detector =====
     perform_standard_canny = True
@@ -933,9 +1362,10 @@ if __name__ == '__main__':
     perform_post = True
     ringing_max_count = 2
     ringing_show = True
+    limiting_min = 30
     limiting_max = 100
     limiting_show = True
-
+    inds_med_size = 55  # 45 worked well
     show_final_post = True
 
     # ===== Boat sonar data =====
@@ -1052,7 +1482,9 @@ if __name__ == '__main__':
                                              template_l_threshold,
                                              template_h_threshold,
                                              'Gradient Template',
-                                             reference_data=True)
+                                             reference_data=not show_template_raw)
+
+                plt.imshow(template)
         else:
             template_result = None
 
@@ -1108,11 +1540,43 @@ if __name__ == '__main__':
                                               show_results=ringing_show)
 
         # Enforce max detection range
-        sss_analysis.post_limit_range(max_index=limiting_max,
+        sss_analysis.post_limit_range(min_index=limiting_min,
+                                      max_index=limiting_max,
                                       show_results=limiting_show)
+
+        post_port_detection_inds, post_star_detection_inds = sss_analysis.find_rising_edges(data=sss_analysis.post_rope,
+                                                                                            threshold=0,
+                                                                                            max_count=2,
+                                                                                            show=True,
+                                                                                            save_output=False)
+
+        port_inter_raw, port_inter_med = sss_analysis.post_interleave_detection_inds(
+            channel_data=post_port_detection_inds,
+            channel_id='port',
+            med_filter_kernel=inds_med_size)
+
+        star_inter_raw, star_inter_med = sss_analysis.post_interleave_detection_inds(
+            channel_data=post_star_detection_inds,
+            channel_id='star',
+            med_filter_kernel=inds_med_size)
+        # sss_analysis.post_de_interleave(interleaved_med)
+
+        sss_analysis.post_interleaved_to_2d(interleaved_port=port_inter_med,
+                                            interleaved_star=None)
+
+        sss_analysis.post_plot_inds(channel_id='port')
+
+        sss_analysis.post_find_buoy_centers(5)
+
+        sss_analysis.post_find_buoy_offsets(window_size=55, plot=True)
+
+        sss_analysis.post_final_buoys(plot=True)
+        sss_analysis.post_final_ropes()
 
         if show_final_post:
             sss_analysis.post_overlay_detections()
+
+        # Generate
 
         break
 

@@ -16,6 +16,11 @@ def main():
     simulated_data = rospy.get_param('simulated_data', False)
     record_gt = rospy.get_param('record_ground_truth', False)
 
+    # This needs to match the structure defined in algae_map_markers.py
+    ropes_by_buoy_ind = [[0, 5],
+                         [1, 4],
+                         [2, 3]]
+
     # Output parameters
     path_name = rospy.get_param('path_name',
                                 '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/online_testing')
@@ -28,7 +33,7 @@ def main():
           f'Simulated data: {simulated_data}')
 
     print('Initializing online graph')
-    online_graph = online_slam_2d()
+    online_graph = online_slam_2d(ropes_by_buoy_ind=ropes_by_buoy_ind)
 
     print('initializing listener')
     listener = sam_slam_listener(robot_name=robot_name,
@@ -41,8 +46,12 @@ def main():
     while not rospy.is_shutdown():
         # Add the end of the run the listener will save its data, at this point we perform the offline slam
         if listener.data_written and not data_processed:
-            print("TODO: Processing data")
+            print("Processing data")
+            # listener.analysis.calculate_corresponding_points(debug=True)
+            listener.analysis.visualize_posterior(plot_gt=False,
+                                                  plot_dr=False)
             data_processed = True
+            # rospy.signal_shutdown("Shutting down gracefully")
         rate.sleep()
 
 

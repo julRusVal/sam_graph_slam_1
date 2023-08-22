@@ -607,7 +607,37 @@ class offline_slam_2d:
 
 
 class online_slam_2d:
-    def __init__(self, path_name=None):
+    """
+    The fruit of my labor.
+
+    This class is responsible for maintaining the pose estimates of sam and the algae farm buoys.
+    Raw detections are sent to an instance of online_slam_2d by an instance of sam_slam_listener.
+    The listener class is responsible for interfacing with the buoy and rope detectors.
+    Data association is handled within this class.
+
+    This class is also able to publish visualization for RViz.
+
+    === Initialization ===
+
+    === Updates ===
+    - add_first_pose():
+    - online_update(): This method is called by the sam_slam_listener. This method does not use a buffer and should not
+                       be used currently. See below for perfered update method, online_update_queued()
+    - online_update_queued(): This method is called by the sam_slam_listener. This method can use either the built-in
+                              methods for data association or use manually provided associations. This is controlled by
+                              what arguments are passed to the update from the sam_slam_listener. This method uses a
+                              buffer so updates are not lost during the graph update.
+
+                              NOTE: The graph is updated needlessly during purely DR updates
+
+    === Data association ===
+
+    === Visualizations ===
+
+    === Helpers ===
+
+    """
+    def __init__(self, path_name=None, ropes_by_buoy_ind=None):
         self.manual_associations = rospy.get_param("manual_associations", False)
 
         print(f"Manual associations: {self.manual_associations}")
@@ -654,6 +684,10 @@ class online_slam_2d:
         self.bearings_ranges = []  # Not used for online
         self.sensor_string_at_key = {}  # camera and sss data is associated with graph nodes here
 
+        # === DA parameters ===
+        # TODO improve data association threshold
+        self.da_distance_threshold = rospy.get_param('da_distance_threshold', -1.0)
+
         # ===== Sigmas =====
         # Agent prior sigmas
         self.prior_ang_sig = rospy.get_param('prior_ang_sig_deg', 1.0) * np.pi / 180
@@ -695,7 +729,6 @@ class online_slam_2d:
         # ===== buoy prior map =====
         self.n_buoys = None
         self.buoy_priors = None
-        self.rope_priors = None
         self.buoy_average = None
 
         # ===== rope prior map =====
@@ -703,6 +736,9 @@ class online_slam_2d:
         self.rope_priors = None
         self.rope_centers = None
         self.rope_noise_models = None
+        # TODO: find better way of getting rope layout into online slam
+        # currently ropes an buoys are sent as rviz markers
+        self.rope_buoy_ind = ropes_by_buoy_ind
 
         # ===== Optimizer and values =====
         # self.optimizer = None
@@ -736,10 +772,17 @@ class online_slam_2d:
         self.est_rope_pub = rospy.Publisher('/sam_slam/est_rope', MarkerArray, queue_size=10)
         self.rope_marker_scale = 0.5
         self.rope_marker_color = ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.75)
+        # Buoy detections
+        self.est_buoy_pub = rospy.Publisher('/sam_slam/est_buoys', MarkerArray, queue_size=10)
+        self.buoy_marker_scale = 1.25
+        self.buoy_marker_color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+        self.buoy_valid_color = ColorRGBA(r=1.0, g=0.0, b=1.0, a=1.0)  # color used for valid buoy detections
+        self.buoy_invalid_color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)  # color used for invalid buoy detections
 
         # ===== Verboseness parameters =====
         self.verbose_graph_update = rospy.get_param('verbose_graph_update', False)
-        self.verbose_graph_detections = rospy.get_param('verbose_graph_detections', False)
+        self.verbose_graph_rope_detections = rospy.get_param('verbose_graph_rope_detections', False)
+        self.verbose_graph_buoy_detections = rospy.get_param('verbose_graph_buoy_detections', False)
 
         print('Graph Class Initialized')
 
@@ -873,6 +916,8 @@ class online_slam_2d:
 
     def online_update(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None):
         """
+        OLD, DO NOT USE!!!
+
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
         if not self.initial_pose_set:
@@ -953,7 +998,7 @@ class online_slam_2d:
                                                          buoy_association_id, true_association_id,
                                                          buoy_association_dist, true_association_dist]
 
-            if self.verbose_graph_detections and relative_detection is not None:
+            if self.verbose_graph_buoy_detections and relative_detection is not None:
                 print(
                     f'Detection - range: {detect_range}  bearing: {detect_bearing.theta()}  DA: {buoy_association_id}')
 
@@ -971,7 +1016,7 @@ class online_slam_2d:
             detect_bearing = computed_est.bearing(self.est_detect_loc)
             detect_range = computed_est.range(self.est_detect_loc)
 
-            if self.verbose_graph_detections:
+            if self.verbose_graph_rope_detections:
                 print(f'Rope detection - range: {detect_range}  bearing: {detect_bearing.theta()}')
 
             # ===== Add detection to graph =====
@@ -1037,7 +1082,7 @@ class online_slam_2d:
             self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
             return
 
-        # NEW queue
+        # Queue
         self.buffer.put((dr_pose, gt_pose, relative_detection, id_string, da_id))
 
         if not self.busy_queue:
@@ -1094,9 +1139,16 @@ class online_slam_2d:
                 self.initial_estimate.insert(self.x[self.current_x_ind], computed_est)
 
                 # ===== Process detection =====
+                # flags for updating the factor graph
+                valid_buoy_da = False
+                valid_rope = False
+
                 # === Buoy ===
                 # TODO this might need to be more robust, not assume detections will lead to graph update
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+                    # data association flag
+                    valid_buoy_da = True
+
                     # Calculate the map location of the detection given relative measurements and current estimate
                     self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
                     detect_bearing = computed_est.bearing(self.est_detect_loc)
@@ -1106,6 +1158,14 @@ class online_slam_2d:
                         buoy_association_id = da_id
                     else:
                         buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
+
+                        # Debug
+                        print(f'Buoy DA Distance: {buoy_association_dist} ({self.da_distance_threshold})')
+
+                        if self.da_distance_threshold > 0 and buoy_association_dist > self.da_distance_threshold:
+                            if self.verbose_graph_buoy_detections:
+                                print(f'DA distance threshold exceeded, buoy detection ignored.')
+                            valid_buoy_da = False
 
                         # ===== DA debugging =====
                         # Apply relative detection to gt to find the true DA
@@ -1122,25 +1182,28 @@ class online_slam_2d:
                                                                  buoy_association_id, true_association_id,
                                                                  buoy_association_dist, true_association_dist]
 
-                    if self.verbose_graph_detections and relative_detection is not None:
+                    if self.verbose_graph_buoy_detections and relative_detection is not None:
                         print(
                             f'Detection - range: {detect_range}  bearing: {detect_bearing.theta()}  DA: {buoy_association_id}')
 
                     # ===== Add detection to graph =====
-                    self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
-                                                              self.b[buoy_association_id],
-                                                              detect_bearing,
-                                                              detect_range,
-                                                              self.detection_model))
+                    if valid_buoy_da:
+                        self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                                  self.b[buoy_association_id],
+                                                                  detect_bearing,
+                                                                  detect_range,
+                                                                  self.detection_model))
 
                 # === Rope ===
                 if relative_detection is not None and da_id == -ObjectID.ROPE.value:
+                    valid_rope = True
+
                     # Calculate the map location of the detection given relative measurements and current estimate
                     self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
                     detect_bearing = computed_est.bearing(self.est_detect_loc)
                     detect_range = computed_est.range(self.est_detect_loc)
 
-                    if self.verbose_graph_detections:
+                    if self.verbose_graph_rope_detections:
                         print(f'Rope detection - range: {detect_range}  bearing: {detect_bearing.theta()}')
 
                     # ===== Add detection to graph =====
@@ -1192,9 +1255,14 @@ class online_slam_2d:
                 self.publish_estimated_pos_marker_and_transform(computed_est)
                 self.publish_est_path()
                 self.publish_rope_detections()
+                self.publish_est_buoys()
+
                 # Buoy detection
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value:
-                    self.publish_detection_markers(buoy_association_id)
+                    if valid_buoy_da:
+                        self.publish_detection_markers(buoy_association_id)
+                    else:
+                        self.publish_detection_markers(-1)
 
             self.busy_queue = False
             return
@@ -1244,12 +1312,14 @@ class online_slam_2d:
 
         return min_ind
 
+    # RViz visualization publishers
     def publish_detection_markers(self, da_id):
         """
         Publishes some markers for debugging estimated detection location and the DA location
         """
 
-        # Estimated detection location
+        ### Estimated detection location
+        # Form detection marker message
         detection_marker = Marker()
         detection_marker.header.frame_id = 'map'
         detection_marker.type = Marker.SPHERE
@@ -1266,35 +1336,42 @@ class online_slam_2d:
         detection_marker.scale.x = self.marker_scale
         detection_marker.scale.y = self.marker_scale
         detection_marker.scale.z = self.marker_scale
-        detection_marker.color.r = 1.0
-        detection_marker.color.g = 0.0
-        detection_marker.color.b = 1.0
-        detection_marker.color.a = 1.0
+        # Color to indicate valid or invalid
+        if da_id < 0:
+            detection_marker.color = self.buoy_invalid_color
+        else:
+            detection_marker.color = self.buoy_valid_color
 
-        # Data association marker
-        da_marker = Marker()
-        da_marker.header.frame_id = 'map'
-        da_marker.type = Marker.CYLINDER
-        da_marker.action = Marker.ADD
-        da_marker.id = 0
-        da_marker.lifetime = rospy.Duration(10)
-        da_marker.pose.position.x = self.buoy_priors[da_id][0]
-        da_marker.pose.position.y = self.buoy_priors[da_id][1]
-        da_marker.pose.position.z = 0.0
-        da_marker.pose.orientation.x = 0
-        da_marker.pose.orientation.y = 0
-        da_marker.pose.orientation.z = 0
-        da_marker.pose.orientation.w = 1
-        da_marker.scale.x = self.marker_scale / 2
-        da_marker.scale.y = self.marker_scale / 2
-        da_marker.scale.z = self.marker_scale * 2
-        da_marker.color.r = 1.0
-        da_marker.color.g = 0.0
-        da_marker.color.b = 1.0
-        da_marker.color.a = 1.0
-
+        # Publish detection marker message
         self.est_detect_loc_pub.publish(detection_marker)
-        self.da_pub.publish(da_marker)
+
+        ### Data association marker
+        # Only publish marker for valid DA
+        if da_id > 0:
+            # Form DA marker message
+            da_marker = Marker()
+            da_marker.header.frame_id = 'map'
+            da_marker.type = Marker.CYLINDER
+            da_marker.action = Marker.ADD
+            da_marker.id = 0
+            da_marker.lifetime = rospy.Duration(10)
+            da_marker.pose.position.x = self.buoy_priors[da_id][0]
+            da_marker.pose.position.y = self.buoy_priors[da_id][1]
+            da_marker.pose.position.z = 0.0
+            da_marker.pose.orientation.x = 0
+            da_marker.pose.orientation.y = 0
+            da_marker.pose.orientation.z = 0
+            da_marker.pose.orientation.w = 1
+            da_marker.scale.x = self.marker_scale / 2
+            da_marker.scale.y = self.marker_scale / 2
+            da_marker.scale.z = self.marker_scale * 2
+            da_marker.color.r = 1.0
+            da_marker.color.g = 0.0
+            da_marker.color.b = 1.0
+            da_marker.color.a = 1.0
+
+            # Publish DA marker message
+            self.da_pub.publish(da_marker)
 
     def publish_estimated_pos_marker_and_transform(self, est_pos):
         """
@@ -1347,6 +1424,9 @@ class online_slam_2d:
         key_dict_copy = self.x.copy()
 
         for key in key_dict_copy.values():
+            if not self.current_estimate.exists(key):
+                print('publish_est_path: Key not found!')
+                continue
             pose = self.current_estimate.atPose2(key)
             pose_stamped = PoseStamped()
             pose_stamped.pose.position.x = pose.x()
@@ -1412,6 +1492,57 @@ class online_slam_2d:
         if valid_detection_count > 0:
             self.est_rope_pub.publish(rope_detections)
 
+    def publish_est_buoys(self):
+        """
+        This is responsible for publishing the current estimated buoy locations
+
+        :return:
+        """
+        # Check that self.r has been initialized
+        if self.b is None:
+            return
+
+        # Copy as elements can be added to the graph will looping over the elements
+        key_dict_copy = self.b.copy()
+
+        # Check for the existence of rope detections
+        if len(key_dict_copy) <= 0:
+            return
+
+        est_buoys = MarkerArray()
+        valid_detection_count = 0  # Was having a problem with keys being present in self.b but not in the values
+
+        for buoy_ind, key in enumerate(key_dict_copy.values()):
+            if not self.current_estimate.exists(key):
+                print('publish_est_buoys: Key not found!')
+                continue
+            valid_detection_count += 1
+            detection_point = self.current_estimate.atPoint2(key)
+            marker = Marker()
+            marker.header.frame_id = 'map'
+            marker.header.stamp = rospy.Time.now()
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.id = buoy_ind
+            marker.lifetime = rospy.Duration(0)
+            marker.pose.position.x = detection_point[0]
+            marker.pose.position.y = detection_point[1]
+            marker.pose.position.z = 0.0
+            marker.pose.orientation.x = 0
+            marker.pose.orientation.y = 0
+            marker.pose.orientation.z = 0
+            marker.pose.orientation.w = 1
+            marker.scale.x = self.buoy_marker_scale
+            marker.scale.y = self.buoy_marker_scale
+            marker.scale.z = self.buoy_marker_scale
+            marker.color = self.buoy_marker_color
+
+            est_buoys.markers.append(marker)
+
+        if valid_detection_count > 0:
+            self.est_buoy_pub.publish(est_buoys)
+
+    # Utility static methods
     @staticmethod
     def calculate_angle(x1, y1, x2, y2):
         dx = x2 - x1
@@ -1473,8 +1604,24 @@ class analyze_slam:
     slam_object.graph: gtsam.NonlinearFactorGraph
     slam_object.dr_pose2s: list[gtsam.Pose2]
     slam_object.gt_pose2s: list[gtsam.Pose2]
+
+    === Saving for post processing ===
+    - save_for_sensor_processing():
+    - save_2d_poses():
+
+    === Plotting ===
+    - visualize_raw():
+        Basic plotting of gt, dr, and estimated poses
+    - visualize_posterior():
+        This is the primary graphing method that uses matplotlib
+    - show_graph_2d():
+        This uses networkx for visualizing the graph. Slower and harder to work with than matplotlib.
+    === Error analysis ===
+
+
     """
 
+    # Saving methods
     def __init__(self, slam_object: offline_slam_2d | online_slam_2d):
         # unpack slam object
         self.slam = slam_object
@@ -1496,7 +1643,17 @@ class analyze_slam:
         else:
             self.n_buoys = len(self.buoy_priors)
 
+        # ===== Ropes =====
+        if self.r is None:
+            self.n_rope_detects = 0
+        else:
+            self.n_rope_detects = len(self.r)
+
+        self.corresponding_detections = None  # This is calculating the error metric
+        self.corresponding_distances = None
+
         # ===== Build arrays for the poses and points of the posterior =====
+        # These arrays might make it easier to plot stuff
         self.posterior_poses = np.zeros((len(self.x), 3))
         for i in range(len(self.x)):
             self.posterior_poses[i, 0] = self.current_estimate.atPose2(self.x[i]).x()
@@ -1504,10 +1661,16 @@ class analyze_slam:
             self.posterior_poses[i, 2] = self.current_estimate.atPose2(self.x[i]).theta()
 
         if self.n_buoys > 0:
-            self.posterior_points = np.zeros((self.n_buoys, 2))
+            self.posterior_buoys = np.zeros((self.n_buoys, 2))
             for i in range(self.n_buoys):
-                self.posterior_points[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
-                self.posterior_points[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+                self.posterior_buoys[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
+                self.posterior_buoys[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+
+        if self.n_rope_detects > 0:
+            self.posterior_ropes = np.zeros((self.n_rope_detects, 2))
+            for i in range(self.n_rope_detects):
+                self.posterior_ropes[i, 0] = self.current_estimate.atPoint2(self.r[i])[0]
+                self.posterior_ropes[i, 1] = self.current_estimate.atPoint2(self.r[i])[1]
 
         # ===== Unpack more relevant data from the slam object =====
         """
@@ -1546,6 +1709,13 @@ class analyze_slam:
         else:
             self.n_clusters = None
 
+        if hasattr(slam_object, 'rope_buoy_ind'):
+            self.rope_buoy_ind = slam_object.rope_buoy_ind
+            self.n_ropes = len(slam_object.rope_buoy_ind)
+        else:
+            self.rope_buoy_ind = None
+            self.n_ropes = 0
+
         # ===== Visualization parameters =====
         self.dr_color = 'r'
         self.gt_color = 'b'
@@ -1557,6 +1727,123 @@ class analyze_slam:
         self.plot_limits = None
         self.find_plot_limits()
 
+    def save_for_sensor_processing(self, file_path=''):
+        """
+        Saves three files related to the camera: camera_gt.csv, camera_dr.csv, camera_est.csv
+        Saves three files related to the sss: sss_gt.csv, sss_dr.csv, sss_est.csv
+        saves a file of the estimated buoy positions
+        format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
+
+        :return:
+        """
+
+        # ===== Save base link (wrt map) poses =====
+        camera_gt = []
+        camera_dr = []
+        camera_est = []
+
+        sss_gt = []
+        sss_dr = []
+        sss_est = []
+
+        # form the required list of lists
+        # exclude poses that do not correspond to captured images
+        for key, value in self.slam.sensor_string_at_key.items():
+            # Extract node type from sensor_string_at_key
+            if value == 'odometry' or value == 'detection':
+                continue
+            if "_" in value:
+                sensor_type, sensor_id = value.split("_")
+                sensor_id = int(sensor_id)
+            else:
+                print("Malformed sensor information")
+                continue
+
+            # DR and GT for the sensor reading
+            sensor_gt_pose = self.slam.gt_pose_raw[key][0:7]
+            sensor_gt_pose.append(sensor_id)
+
+            sensor_dr_pose = self.slam.dr_pose_raw[key][0:7]
+            sensor_dr_pose.append(sensor_id)
+
+            # Estimated pose for the sensor reading
+            """
+            Initially I saved the roll and pitch reported by dr odom and combined those with the estimated
+            yaw to for the new estimated 3d pose but that was giving strange results...
+
+            New plan is to extract the roll and pith in the NOW corrected dr pose info. Then combine with the estimated
+            yaw to form the new 3d pose quaternion
+            """
+
+            # Roll, pitch, and depth are provided from the odometry
+            roll_old = self.slam.dr_pose_rpd[key][0]
+            pitch_old = self.slam.dr_pose_rpd[key][1]
+            # This quaternion is stored [w, x, y, z]
+            dr_q = self.slam.dr_pose_raw[key][3:7]
+            # This function expects a quaternions of the form [x, y, z, w]
+            dr_rpy = euler_from_quaternion([dr_q[1], dr_q[2], dr_q[3], dr_q[0]])
+            roll = dr_rpy[0]
+            pitch = dr_rpy[1]
+            depth = self.slam.dr_pose_rpd[key][2]
+
+            # X, Y, and yaw are estimated using the factor graph
+            est_x = self.posterior_poses[key, 0]
+            est_y = self.posterior_poses[key, 1]
+            est_yaw = self.posterior_poses[key, 2]
+
+            quats = quaternion_from_euler(roll, pitch, est_yaw)
+
+            # This quaternion is stored [w, x, y, z]
+            sensor_est_pose = [est_x, est_y, -depth,
+                               quats[3], quats[0], quats[1], quats[2],
+                               sensor_id]
+
+            if sensor_type == "cam":
+                camera_gt.append(sensor_gt_pose)
+                camera_dr.append(sensor_dr_pose)
+                camera_est.append(sensor_est_pose)
+            elif sensor_type == "sss":
+                sss_gt.append(sensor_gt_pose)
+                sss_dr.append(sensor_dr_pose)
+                sss_est.append(sensor_est_pose)
+            else:
+                print("Unknown sensor type")
+
+        # write to camera and sss files
+        if len(camera_gt) > 0:
+            write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
+            write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
+            write_array_to_csv(file_path + 'camera_est.csv', camera_est)
+
+        if len(sss_gt) > 0:
+            write_array_to_csv(file_path + 'sss_gt.csv', sss_gt)
+            write_array_to_csv(file_path + 'sss_dr.csv', sss_dr)
+            write_array_to_csv(file_path + 'sss_est.csv', sss_est)
+
+        # ===== Save buoy estimated positions =====
+        # only the x an y coords are estimated, buoys are assumed to have z = 0
+        if self.n_buoys > 0:
+            buoys_est = np.zeros((self.n_buoys, 3))
+
+            for i in range(self.n_buoys):
+                buoys_est[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
+                buoys_est[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+
+            # Write to file
+            write_array_to_csv(file_path + 'buoys_est.csv', buoys_est)
+
+    def save_2d_poses(self, file_path=''):
+        """
+        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
+
+        :return:
+        """
+        write_array_to_csv(file_path + 'analysis_gt.csv', self.gt_poses)
+        write_array_to_csv(file_path + 'analysis_dr.csv', self.dr_poses)
+        write_array_to_csv(file_path + 'analysis_est.csv', self.posterior_poses)
+
+    # Plotting methods
     def find_plot_limits(self):
 
         gt_max_x, gt_max_y = np.max(self.gt_poses[:, 0:2], axis=0)
@@ -1573,10 +1860,6 @@ class analyze_slam:
         max_y = self.ceiling_division(max(dr_max_y, gt_max_y, post_max_y), self.y_tick) * self.y_tick
 
         self.plot_limits = [min_x, max_x, min_y, max_y]
-
-    @staticmethod
-    def ceiling_division(n, d):
-        return -(n // -d)
 
     def visualize_raw(self):
         fig, ax = plt.subplots()
@@ -1595,7 +1878,8 @@ class analyze_slam:
         plt.show()
         return
 
-    def visualize_posterior(self, plot_gt=True, plot_dr=True, plot_buoy=True):
+    def visualize_posterior(self, plot_gt=True, plot_dr=True, plot_buoy=True,
+                            plot_rope_lines=True, plot_rope_detects=True):
         """
         Visualize The Posterior
         """
@@ -1641,8 +1925,8 @@ class analyze_slam:
                                color=buoy_prior_color)
 
                     # Plot buoy posteriors
-                    ax.scatter(self.posterior_points[ind_buoy, 0],
-                               self.posterior_points[ind_buoy, 1],
+                    ax.scatter(self.posterior_buoys[ind_buoy, 0],
+                               self.posterior_buoys[ind_buoy, 1],
                                color=buoy_post_color,
                                marker='+',
                                s=75)
@@ -1662,45 +1946,38 @@ class analyze_slam:
                                color=current_color)
 
                     # Plot buoy posteriors
-                    ax.scatter(self.posterior_points[ind_buoy, 0],
-                               self.posterior_points[ind_buoy, 1],
+                    ax.scatter(self.posterior_buoys[ind_buoy, 0],
+                               self.posterior_buoys[ind_buoy, 1],
                                color=current_color,
                                marker='+',
                                s=75)
 
-        # Plot the posterior
+        # ===== Plot ropes =====
+        if self.rope_buoy_ind is not None and len(self.rope_buoy_ind) > 0 and plot_rope_lines:
+            for rope in self.rope_buoy_ind:
+                if len(rope) != 2:
+                    continue
+                rope_start_ind = int(rope[0])
+                rope_end_ind = int(rope[1])
+
+                x1, y1 = self.posterior_buoys[rope_start_ind, :]
+                x2, y2 = self.posterior_buoys[rope_end_ind, :]
+
+                ax.plot([x1, x2], [y1, y2], marker='o')
+
+        # Plot the posterior poses
         ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1], color='g', label='Posterior')
 
+        if plot_rope_detects and self.n_rope_detects > 0:
+            ax.scatter(self.posterior_ropes[:, 0], self.posterior_ropes[:, 1], color='gray', label='Rope detections')
+
+        if self.corresponding_detections is not None:
+            for start, end in zip(self.corresponding_detections, self.posterior_ropes):
+                x_vals = [start[0], end[0]]
+                y_vals = [start[1], end[1]]
+                ax.plot(x_vals, y_vals, color='orange')
+
         ax.legend()
-        plt.show()
-
-    def show_error(self):
-        # Find the errors between gt<->dr and gt<->post
-        dr_error = calc_pose_error(self.dr_poses, self.gt_poses)
-        post_error = calc_pose_error(self.posterior_poses, self.gt_poses)
-
-        # Calculate MSE
-        dr_mse_error = np.square(dr_error).mean(0)
-        post_mse_error = np.square(post_error).mean(0)
-
-        # ===== Plot =====
-        fig, (ax_x, ax_y, ax_t) = plt.subplots(1, 3)
-        # X error
-        ax_x.plot(dr_error[:, 0], self.dr_color, label='Dead reckoning')
-        ax_x.plot(post_error[:, 0], self.post_color, label='Posterior')
-        ax_x.title.set_text(f'X Error\nD.R. MSE: {dr_mse_error[0]:.4f}\n Posterior MSE: {post_mse_error[0]:.4f}')
-        ax_x.legend()
-        # Y error
-        ax_y.plot(dr_error[:, 1], self.dr_color, label='Dead reckoning')
-        ax_y.plot(post_error[:, 1], self.post_color, label='Posterior')
-        ax_y.title.set_text(f'Y Error\nD.R. MSE: {dr_mse_error[1]:.4f}\n Posterior MSE: {post_mse_error[1]:.4f}')
-        ax_y.legend()
-        # Theta error
-        ax_t.plot(dr_error[:, 2], self.dr_color, label='Dead reckoning')
-        ax_t.plot(post_error[:, 2], self.post_color, label='Posterior')
-        ax_t.title.set_text(f'Theta Error\nD.R. MSE: {dr_mse_error[2]:.4f}\n Posterior MSE: {post_mse_error[2]:.4f}')
-        ax_t.legend()
-
         plt.show()
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):
@@ -1851,118 +2128,125 @@ class analyze_slam:
         plt.show()
         return
 
-    def save_for_sensor_processing(self, file_path=''):
+    # Error metric methods
+    def show_error(self):
+        # Find the errors between gt<->dr and gt<->post
+        dr_error = calc_pose_error(self.dr_poses, self.gt_poses)
+        post_error = calc_pose_error(self.posterior_poses, self.gt_poses)
+
+        # Calculate MSE
+        dr_mse_error = np.square(dr_error).mean(0)
+        post_mse_error = np.square(post_error).mean(0)
+
+        # ===== Plot =====
+        fig, (ax_x, ax_y, ax_t) = plt.subplots(1, 3)
+        # X error
+        ax_x.plot(dr_error[:, 0], self.dr_color, label='Dead reckoning')
+        ax_x.plot(post_error[:, 0], self.post_color, label='Posterior')
+        ax_x.title.set_text(f'X Error\nD.R. MSE: {dr_mse_error[0]:.4f}\n Posterior MSE: {post_mse_error[0]:.4f}')
+        ax_x.legend()
+        # Y error
+        ax_y.plot(dr_error[:, 1], self.dr_color, label='Dead reckoning')
+        ax_y.plot(post_error[:, 1], self.post_color, label='Posterior')
+        ax_y.title.set_text(f'Y Error\nD.R. MSE: {dr_mse_error[1]:.4f}\n Posterior MSE: {post_mse_error[1]:.4f}')
+        ax_y.legend()
+        # Theta error
+        ax_t.plot(dr_error[:, 2], self.dr_color, label='Dead reckoning')
+        ax_t.plot(post_error[:, 2], self.post_color, label='Posterior')
+        ax_t.title.set_text(f'Theta Error\nD.R. MSE: {dr_mse_error[2]:.4f}\n Posterior MSE: {post_mse_error[2]:.4f}')
+        ax_t.legend()
+
+        plt.show()
+
+    def print_residuals(self):
+        # Print residuals
+        # Print residuals
+        for factor_key in self.r.values():
+            factor_key_to_access = gtsam.Key(factor_key)
+            factor = self.graph.at(factor_key_to_access)
+            factor_residual = factor.error(self.current_estimate)
+            print("Factor Key:", factor_key)
+            print("At: ", factor_key_to_access)
+            print("Factor:", factor)
+            print("Residual:", factor_residual)
+
+    def calculate_corresponding_points(self, debug=False):
         """
-        Saves three files related to the camera: camera_gt.csv, camera_dr.csv, camera_est.csv
-        Saves three files related to the sss: sss_gt.csv, sss_dr.csv, sss_est.csv
-        saves a file of the estimated buoy positions
-        format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
+        This method finds the closest point of each rope detection to linearly fit rope, the estimated buoy positions
+        are used to define the rope line segments.
 
         :return:
         """
 
-        # ===== Save base link (wrt map) poses =====
-        camera_gt = []
-        camera_dr = []
-        camera_est = []
+        if self.n_rope_detects == 0 or self.n_ropes == 0:
+            print("Unable to calc corresponding points")
+            return
 
-        sss_gt = []
-        sss_dr = []
-        sss_est = []
+        self.corresponding_detections = np.zeros((self.n_rope_detects, 2))
+        self.corresponding_distances = np.zeros(self.n_rope_detects)
 
-        # form the required list of lists
-        # exclude poses that do not correspond to captured images
-        for key, value in self.slam.sensor_string_at_key.items():
-            # Extract node type from sensor_string_at_key
-            if value == 'odometry' or value == 'detection':
-                continue
-            if "_" in value:
-                sensor_type, sensor_id = value.split("_")
-                sensor_id = int(sensor_id)
-            else:
-                print("Malformed sensor information")
-                continue
+        for detect_i in range(self.n_rope_detects):
+            detection = [self.posterior_ropes[detect_i, 0], self.posterior_ropes[detect_i, 1]]
+            point = None
+            distance = np.inf
+            for rope in self.rope_buoy_ind:
+                if len(rope) != 2:
+                    continue
+                rope_start_ind = int(rope[0])
+                rope_end_ind = int(rope[1])
 
-            # DR and GT for the sensor reading
-            sensor_gt_pose = self.slam.gt_pose_raw[key][0:7]
-            sensor_gt_pose.append(sensor_id)
+                x1, y1 = self.posterior_buoys[rope_start_ind, :]
+                x2, y2 = self.posterior_buoys[rope_end_ind, :]
 
-            sensor_dr_pose = self.slam.dr_pose_raw[key][0:7]
-            sensor_dr_pose.append(sensor_id)
+                cur_point, cur_dist = self.closest_point_distance_to_line_segment([x1, y1], [x2, y2], detection)
 
-            # Estimated pose for the sensor reading
-            """
-            Initially I saved the roll and pitch reported by dr odom and combined those with the estimated
-            yaw to for the new estimated 3d pose but that was giving strange results...
-            
-            New plan is to extract the roll and pith in the NOW corrected dr pose info. Then combine with the estimated
-            yaw to form the new 3d pose quaternion
-            """
+                if cur_dist < distance:
+                    distance = cur_dist
+                    point = cur_point
 
-            # Roll, pitch, and depth are provided from the odometry
-            roll_old = self.slam.dr_pose_rpd[key][0]
-            pitch_old = self.slam.dr_pose_rpd[key][1]
-            # This quaternion is stored [w, x, y, z]
-            dr_q = self.slam.dr_pose_raw[key][3:7]
-            # This function expects a quaternions of the form [x, y, z, w]
-            dr_rpy = euler_from_quaternion([dr_q[1], dr_q[2], dr_q[3], dr_q[0]])
-            roll = dr_rpy[0]
-            pitch = dr_rpy[1]
-            depth = self.slam.dr_pose_rpd[key][2]
+            if point is not None:
+                self.corresponding_detections[detect_i, :] = point
+                self.corresponding_distances[detect_i] = distance
 
-            # X, Y, and yaw are estimated using the factor graph
-            est_x = self.posterior_poses[key, 0]
-            est_y = self.posterior_poses[key, 1]
-            est_yaw = self.posterior_poses[key, 2]
+        if debug:
+            print("DEBUG: calculate_corresponding_points")
+            print(self.corresponding_detections)
 
-            quats = quaternion_from_euler(roll, pitch, est_yaw)
+    # Utility static methods
+    @staticmethod
+    def ceiling_division(n, d):
+        return -(n // -d)
 
-            # This quaternion is stored [w, x, y, z]
-            sensor_est_pose = [est_x, est_y, -depth,
-                               quats[3], quats[0], quats[1], quats[2],
-                               sensor_id]
-
-            if sensor_type == "cam":
-                camera_gt.append(sensor_gt_pose)
-                camera_dr.append(sensor_dr_pose)
-                camera_est.append(sensor_est_pose)
-            elif sensor_type == "sss":
-                sss_gt.append(sensor_gt_pose)
-                sss_dr.append(sensor_dr_pose)
-                sss_est.append(sensor_est_pose)
-            else:
-                print("Unknown sensor type")
-
-        # write to camera and sss files
-        if len(camera_gt) > 0:
-            write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
-            write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
-            write_array_to_csv(file_path + 'camera_est.csv', camera_est)
-
-        if len(sss_gt) > 0:
-            write_array_to_csv(file_path + 'sss_gt.csv', sss_gt)
-            write_array_to_csv(file_path + 'sss_dr.csv', sss_dr)
-            write_array_to_csv(file_path + 'sss_est.csv', sss_est)
-
-        # ===== Save buoy estimated positions =====
-        # only the x an y coords are estimated, buoys are assumed to have z = 0
-        if self.n_buoys > 0:
-            buoys_est = np.zeros((self.n_buoys, 3))
-
-            for i in range(self.n_buoys):
-                buoys_est[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
-                buoys_est[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
-
-            # Write to file
-            write_array_to_csv(file_path + 'buoys_est.csv', buoys_est)
-
-    def save_2d_poses(self, file_path=''):
+    @staticmethod
+    def closest_point_distance_to_line_segment(A, B, P):
         """
-        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
-        format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
 
+        :param A: [x, y] start of line segment
+        :param B: [x, y] end of line segment
+        :param P: [x, y] point of interest
         :return:
         """
-        write_array_to_csv(file_path + 'analysis_gt.csv', self.gt_poses)
-        write_array_to_csv(file_path + 'analysis_dr.csv', self.dr_poses)
-        write_array_to_csv(file_path + 'analysis_est.csv', self.posterior_poses)
+        ABx = B[0] - A[0]
+        ABy = B[1] - A[1]
+        APx = P[0] - A[0]
+        APy = P[1] - A[1]
+
+        dot_product = ABx * APx + ABy * APy
+        length_squared_AB = ABx * ABx + ABy * ABy
+
+        t = dot_product / length_squared_AB
+
+        if t < 0:
+            Qx, Qy = A[0], A[1]
+        elif t > 1:
+            Qx, Qy = B[0], B[1]
+        else:
+            Qx = A[0] + t * ABx
+            Qy = A[1] + t * ABy
+
+        QPx = P[0] - Qx
+        QPy = P[1] - Qy
+
+        distance = math.sqrt(QPx * QPx + QPy * QPy)
+
+        return [Qx, Qy], distance

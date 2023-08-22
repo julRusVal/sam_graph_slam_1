@@ -8,6 +8,7 @@ import gtsam
 import networkx as nx
 import matplotlib.pyplot as plt
 import csv
+from enum import Enum
 
 
 # ===== General stuff =====
@@ -17,6 +18,7 @@ def overwrite_directory(directory_path):
         os.makedirs(directory_path)
     else:
         os.makedirs(directory_path)
+
 
 def read_csv_to_array(file_path):
     """
@@ -56,6 +58,14 @@ def write_array_to_csv(file_path, data_array):
         writer = csv.writer(f)
         for row in data_array:
             writer.writerow(row)
+
+
+def get_enum_name_or_value(enum_class, value):
+    try:
+        enum_element = enum_class(value)
+        return enum_element.name
+    except ValueError:
+        return value
 
 
 def angle_between_rads(target_angle, source_angle):
@@ -102,6 +112,7 @@ def create_Pose2(input_pose):
     # GTSAM Pose2: x, y, theta
     return gtsam.Pose2(input_pose[0], input_pose[1], rot3_yaw)
 
+
 def pose2_list_to_nparray(pose_list):
     out_array = np.zeros((len(pose_list), 3))
 
@@ -109,6 +120,7 @@ def pose2_list_to_nparray(pose_list):
         out_array[i, :] = pose2.x(), pose2.y(), pose2.theta()
 
     return out_array
+
 
 # === Pose3 ====
 def create_Pose3(input_pose):
@@ -164,9 +176,6 @@ def merge_into_Pose3(input_pose2, input_rpd):
     trans = np.array((input_pose2[0], input_pose2[1], input_rpd[2]), dtype=np.float64)
 
     return gtsam.Pose3(r=rot3, t=trans)
-
-
-
 
 
 def show_simple_graph_2d(graph, x_keys, b_keys, values, label):

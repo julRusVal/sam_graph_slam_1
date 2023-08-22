@@ -18,11 +18,16 @@
     <!-- Detection and association parameters -->
     <param name="simulated_data" value="False"/>
     <param name="record_ground_truth" value="True"/>
-    <param name="manual_associations" value="True"/>
+    <param name="manual_associations" value="False"/>
     <param name="simulated_detections" value="True"/>
     <param name="rope_associations" value="True"/>
     <param name="prioritize_buoy_detections" value="True"/>
-    <param name="da_distance_threshold" value="-1.0"/>
+    <param name="da_distance_threshold" value="5.0"/>
+
+    <!-- Detector data -->
+    <param name= "buoy_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_buoys.csv"/>
+    <param name= "rope_port_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_ropes_port.csv"/>
+    <param name= "rope_star_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_ropes_star.csv"/>
 
     <!-- Graph parameters -->
     <!-- Currently using default ISAM2 parameters -->
@@ -39,15 +44,19 @@
     <param name="detect_ang_sig_deg" value="0.25"/>
     <param name="detect_dist_sig" value="0.1"/>
 
-    <!-- Output parameters -->
-    <param name="verbose_listener_DRs" value="true"/>
-    <param name="verbose_listener_detections" value="true"/>
-    <param name="verbose_listener_sonars" value="true"/>
-    <param name="verbose_listener_buoys" value="true"/>
-    <param name="verbose_listener_cameras" value="true"/>
+    <!-- Detection sigmas -->
+    <param name="rope_along_sig" value="15.0"/>
+    <param name="rope_cross_sig" value="1.0"/>
 
-    <param name="verbose_graph_update" value="true"/>
-    <param name="verbose_graph_rope_detections" value="true"/>
+    <!-- Output parameters -->
+    <param name="verbose_listener_DRs" value="false"/>
+    <param name="verbose_listener_detections" value="false"/>
+    <param name="verbose_listener_sonars" value="false"/>
+    <param name="verbose_listener_buoys" value="true"/>
+    <param name="verbose_listener_cameras" value="false"/>
+
+    <param name="verbose_graph_update" value="false"/>
+    <param name="verbose_graph_rope_detections" value="True"/>
     <param name="verbose_graph_buoy_detections" value="true"/>
 
     <!-- NODES -->
@@ -58,13 +67,13 @@
     <node name="sam_slam_listener" pkg="sam_slam" type="sam_listener_online_slam_node.py" output="screen"/>
 
     <!-- Play the ROS bag -->
-    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 2 --clock /home/julian/sam_real_algae_2.bag"/>
+    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 5 --clock /home/julian/sam_real_algae_2.bag"/>
 
     <!-- gps and buoy node -->
     <node name="gps_buoy_node" pkg="sam_dead_reckoning" type="algae_map_markers.py" output="screen" />
 
     <!-- Manual detector -->
-    <node name="manual_detection_node" pkg="sss_object_detection" type="sss_detection_manual_publisher.py" output="screen" />
+    <node name="img_proc_detection_node" pkg="sss_object_detection" type="sss_detection_img_proc_publisher.py" output="screen" />
 
     <!-- dr and gt markers -->
     <node name="dr_gt_markers" pkg="sam_slam" type="odom_marker_republisher.py" output="screen" />
