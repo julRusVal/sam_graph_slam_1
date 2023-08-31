@@ -16,10 +16,18 @@ def main():
     simulated_data = rospy.get_param('simulated_data', False)
     record_gt = rospy.get_param('record_ground_truth', False)
 
-    # This needs to match the structure defined in algae_map_markers.py
-    ropes_by_buoy_ind = [[0, 5],
-                         [1, 4],
-                         [2, 3]]
+    # Define rope structure for analyis visualizatiions
+    if simulated_data:
+        # This needs to match the structure defined in simulation environment
+        ropes_by_buoy_ind = [[0, 4], [4, 2],
+                             [1, 5], [5, 3]]
+
+    # Real data
+    else:
+        # This needs to match the structure defined in algae_map_markers.py
+        ropes_by_buoy_ind = [[0, 5],
+                             [1, 4],
+                             [2, 3]]
 
     # Output parameters
     path_name = rospy.get_param('path_name',
@@ -48,8 +56,12 @@ def main():
         if listener.data_written and not data_processed:
             print("Processing data")
             # listener.analysis.calculate_corresponding_points(debug=True)
-            listener.analysis.visualize_posterior(plot_gt=False,
-                                                  plot_dr=False)
+            listener.analysis.visualize_final(plot_gt=False,
+                                              plot_dr=False)
+
+            listener.analysis.visualize_online(plot_final=True, plot_correspondence=True)
+            listener.analysis.plot_error_positions()
+
             data_processed = True
             # rospy.signal_shutdown("Shutting down gracefully")
         rate.sleep()

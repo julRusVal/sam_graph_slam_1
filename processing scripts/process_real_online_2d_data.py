@@ -99,9 +99,13 @@ path_name = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_te
 removal_rate = 0  # keep every nth element, set to zero to not reduce
 last_index = np.inf  # Only the first n dr updates will be used
 
-manual_associations = True
+manual_associations = False
+
+# Map parameters
+# TODO the map/rope info needs to be add
 
 # ROS parameters
+# TODO update parameters, changes have added new params that are not being set
 rospy.set_param("prior_ang_sig_deg", 10.0)
 rospy.set_param("prior_dist_sig", 5.0)
 rospy.set_param("buoy_dist_sig", 0.5)
@@ -112,6 +116,7 @@ rospy.set_param("detect_dist_sig", 0.25)
 rospy.set_param("manual_associations", manual_associations)
 
 # %% Load data
+# TODO load rope detection data
 dr_poses_graph = read_csv_to_array(path_name + '/dr_poses_graph.csv')
 gt_poses_graph = read_csv_to_array(path_name + '/gt_poses_graph.csv')
 detections_graph = read_csv_to_array(path_name + '/detections_graph.csv')
@@ -164,7 +169,13 @@ for i in range(1, min(last_index + 1, len(dr_poses_graph))):
 
         da_id = int(associations_graph[detection_id][0])
 
-        if manual_associations and da_id in range(len(buoys)):
+        if da_id == -2:  # -2 corresponds to the ID of a buoy detection
+            online_graph.online_update(dr_poses_graph[i, :],
+                                       gt_poses_graph[i, :],
+                                       detection,
+                                       da_id=da_id)
+
+        elif manual_associations and da_id in range(len(buoys)):
             online_graph.online_update(dr_poses_graph[i, :],
                                        gt_poses_graph[i, :],
                                        detection,
@@ -179,7 +190,7 @@ for i in range(1, min(last_index + 1, len(dr_poses_graph))):
         online_graph.online_update(dr_poses_graph[i, :],
                                    gt_poses_graph[i, :])
 
-    # TODO: Removed true detect location but can used manual associations
+    # TODO: Removed true detect location but can use manual associations
     report_on_progress(graph=online_graph.graph,
                        current_estimate=online_graph.current_estimate,
                        x_keys=online_graph.x,

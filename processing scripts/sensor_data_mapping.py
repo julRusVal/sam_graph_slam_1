@@ -25,8 +25,8 @@ if len(path_name) == 0:
 # Camera options
 perform_camera_analysis = True
 perform_image_transforms = True
-plot_poses = True
-plot_3d_map = False
+plot_poses = False
+plot_3d_map = True
 quantify_quality = False
 
 # SSS options
@@ -34,7 +34,8 @@ perform_sss_analysis = False
 
 # === Camera data ===
 gt_base = read_csv_to_array(path_name + 'camera_gt.csv')
-base = read_csv_to_array(path_name + 'camera_est.csv')  # change to camera_gt.csv, camera_dr.csv, or camera_est.csv
+base = read_csv_to_array(path_name + 'camera_gt.csv')  # change to camera_gt.csv, camera_dr.csv, or camera_est.csv
+estimated_2d_pose = read_csv_to_array(path_name + 'camera_gt.csv')
 
 left_info = read_csv_to_list(path_name + 'left_info.csv')
 right_info = read_csv_to_list(path_name + 'right_info.csv')
@@ -68,6 +69,7 @@ rows = [[0, 2], [3, 1], [4, 6], [7, 5]]
 if perform_camera_analysis:
     img_map = image_mapping(gt_base_link_poses=gt_base,
                             base_link_poses=base,
+                            estimated_positions=estimated_2d_pose,
                             l_r_camera_info=[left_info, right_info, down_info],
                             buoy_info=buoy_info,
                             ropes=ropes,
@@ -84,7 +86,7 @@ if perform_camera_analysis:
 
     # Perform processing on images
     if perform_image_transforms:
-        img_map.process_images(ignore_first=8, verbose=True)  #
+        img_map.process_images(ignore_first=12, verbose=True)  #
         # img_map.process_ground_plane_images(path_name, ignore_first=8, verbose=True)  # ground plane processing incomplete
         img_map.simple_stitch_planes_images(max_dist=12)
         img_map.combine_row_images()
@@ -92,8 +94,10 @@ if perform_camera_analysis:
 
     # Produce 3d map
     if plot_3d_map:
-        # img_map.plot_3d_map(show_base=True)  # OLD and SLOW
-        img_map.plot_3d_map_mayavi()
+        img_map.plot_3d_map(show_orientations=True,
+                            show_path=True,
+                            render_planes=[0, 2])  # OLD and SLOW
+        # img_map.plot_3d_map_mayavi()
 
     # Quantify quality of registration
     if quantify_quality:
@@ -101,6 +105,8 @@ if perform_camera_analysis:
                                       min_overlap_threshold=0.05,
                                       verbose_output=True)
         img_map.report_registration_quality()
+
+    print('Camera processing complete')
 
 # ===== Process sss data =====
 if perform_sss_analysis:

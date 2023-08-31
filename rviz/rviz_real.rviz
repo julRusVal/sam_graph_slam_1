@@ -14,7 +14,7 @@ Panels:
         - /DR - Marker1
         - /GT - Marker1
       Splitter Ratio: 0.5
-    Tree Height: 100
+    Tree Height: 371
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -48,7 +48,7 @@ Panels:
         - /est_path1
         - /Rope_detections1
       Splitter Ratio: 0.5
-    Tree Height: 168
+    Tree Height: 371
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -214,7 +214,7 @@ Visualization Manager:
           Scale: 1
           Value: true
         Value: true
-      Enabled: true
+      Enabled: false
       Keep: 10000
       Name: Odometry - GPS
       Position Tolerance: 0.10000000149011612
@@ -231,7 +231,7 @@ Visualization Manager:
         Value: Arrow
       Topic: /sam/dr/gps_odom
       Unreliable: false
-      Value: true
+      Value: false
     - Angle Tolerance: 0.10000000149011612
       Class: rviz/Odometry
       Covariance:
@@ -304,7 +304,7 @@ Visualization Manager:
       Marker Topic: /sam_slam/da_positions
       Name: DA marker
       Namespaces:
-        "": true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -373,13 +373,13 @@ Visualization Manager:
       Queue Size: 100
       Value: true
     - Class: rviz/Marker
-      Enabled: true
+      Enabled: false
       Marker Topic: /sam_slam/gt_marker
       Name: GT - Marker
       Namespaces:
-        "": true
+        {}
       Queue Size: 100
-      Value: true
+      Value: false
     - Class: rviz/Image
       Enabled: true
       Image Topic: /sam/payload/sidescan/detection_hypothesis_image
@@ -459,7 +459,7 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: 0
+      Angle: 0.9800001382827759
       Class: rviz/TopDownOrtho
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
@@ -469,10 +469,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 10.73991870880127
+      Scale: 9.31968879699707
       Target Frame: map
-      X: 35.988861083984375
-      Y: 11.92220401763916
+      X: 42.15991973876953
+      Y: 6.327162742614746
     Saved: ~
 Window Geometry:
   Displays:

@@ -637,6 +637,7 @@ class online_slam_2d:
     === Helpers ===
 
     """
+
     def __init__(self, path_name=None, ropes_by_buoy_ind=None):
         self.manual_associations = rospy.get_param("manual_associations", False)
 
@@ -679,6 +680,7 @@ class online_slam_2d:
         # === Estimated ===
         self.post_Pose2s = None
         self.post_Point2s = None
+        self.online_Pose2s = None  # Save the current estimate, for comparison to final estimate
 
         # === Sensors and detections
         self.bearings_ranges = []  # Not used for online
@@ -908,6 +910,10 @@ class online_slam_2d:
         self.initial_estimate.insert(self.x[0], self.dr_Pose2s[0])
         self.current_estimate = self.initial_estimate
 
+        # === Save initial pose2 ===
+        # Online estimate is saved for later analysis
+        self.online_Pose2s = [self.current_estimate.atPose2(self.x[self.current_x_ind])]
+
         self.initial_pose_set = True
         print("Done with first pose - x0")
         if self.x is None:
@@ -1048,6 +1054,10 @@ class online_slam_2d:
 
         # self.graph.resize(0)
         self.initial_estimate.clear()
+
+        # === Save online estimated pose2 ===
+        # Online estimate is saved for later analysis
+        self.online_Pose2s.append(self.current_estimate.atPose2(self.x[self.current_x_ind]))
 
         end_time = rospy.Time.now()
         update_time = (end_time - start_time).to_sec()
@@ -1242,6 +1252,10 @@ class online_slam_2d:
 
                 # self.graph.resize(0)
                 self.initial_estimate.clear()
+
+                # === Save online estimated pose2 ===
+                # Online estimate is saved for later analysis
+                self.online_Pose2s.append(self.current_estimate.atPose2(self.x[self.current_x_ind]))
 
                 end_time = rospy.Time.now()
                 update_time = (end_time - start_time).to_sec()
@@ -1612,8 +1626,10 @@ class analyze_slam:
     === Plotting ===
     - visualize_raw():
         Basic plotting of gt, dr, and estimated poses
-    - visualize_posterior():
+    - visualize_final():
         This is the primary graphing method that uses matplotlib
+        > can plot rope detections as well as
+    - visualize_online():
     - show_graph_2d():
         This uses networkx for visualizing the graph. Slower and harder to work with than matplotlib.
     === Error analysis ===
@@ -1635,6 +1651,14 @@ class analyze_slam:
         self.dr_poses = pose2_list_to_nparray(slam_object.dr_Pose2s)
         self.gt_poses = pose2_list_to_nparray(slam_object.gt_Pose2s)
         self.between_Pose2s = pose2_list_to_nparray(slam_object.between_Pose2s)
+
+        # Added for data analysis
+        if hasattr(slam_object, 'online_Pose2s'):
+            self.online_Pose2s = slam_object.online_Pose2s
+            self.online_poses = pose2_list_to_nparray(slam_object.online_Pose2s)
+        else:
+            self.online_Pose2s = None
+            self.online_poses = None
 
         # ===== Buoys =====
         self.buoy_priors = slam_object.buoy_priors
@@ -1720,6 +1744,12 @@ class analyze_slam:
         self.dr_color = 'r'
         self.gt_color = 'b'
         self.post_color = 'g'
+        self.online_color = 'm'
+        self.rope_color = 'b'
+        self.buoy_color = 'k'
+        self.title_size = 16
+        self.legend_size = 14
+        self.label_size = 14
         self.colors = ['orange', 'purple', 'cyan', 'brown', 'pink', 'gray', 'olive']
         # Set plot limits
         self.x_tick = 5
@@ -1843,6 +1873,9 @@ class analyze_slam:
         write_array_to_csv(file_path + 'analysis_dr.csv', self.dr_poses)
         write_array_to_csv(file_path + 'analysis_est.csv', self.posterior_poses)
 
+        if self.online_poses is not None:
+            write_array_to_csv(file_path + 'analysis_online.csv', self.online_poses)
+
     # Plotting methods
     def find_plot_limits(self):
 
@@ -1878,8 +1911,8 @@ class analyze_slam:
         plt.show()
         return
 
-    def visualize_posterior(self, plot_gt=True, plot_dr=True, plot_buoy=True,
-                            plot_rope_lines=True, plot_rope_detects=True):
+    def visualize_final(self, plot_gt=True, plot_dr=True, plot_buoy=True,
+                        plot_rope_lines=True, plot_rope_detects=True):
         """
         Visualize The Posterior
         """
@@ -1891,7 +1924,9 @@ class analyze_slam:
         # ===== Matplotlip options =====
         fig, ax = plt.subplots()
         ax.set_aspect('equal')
-        plt.title(f'Posterior')
+        plt.title(f'Final Estimate', fontsize=self.title_size)
+        plt.xlabel('x [m]', fontsize=self.label_size)
+        plt.ylabel('y [m]', fontsize=self.label_size)
         plt.axis(self.plot_limits)
         plt.grid(True)
 
@@ -1911,29 +1946,159 @@ class analyze_slam:
 
         # ===== Plot buoys w/ cluster colors =====
         if plot_buoy and self.n_buoys > 0:
-            for ind_buoy in range(self.n_buoys):
-                # TODO: Improve visualizations for online slam
-                # Plot prior and posterior buoy positions for online
-                # These buoys are not clustered
-                if self.buoy2cluster is None:
-                    buoy_prior_color = 'k'
-                    buoy_post_color = self.post_color
+            # TODO: Improve visualizations for online slam
+            # Plot prior and posterior buoy positions for online processing
+            if self.buoy2cluster is None:
+                buoy_prior_color = self.buoy_color
+                buoy_post_color = self.buoy_color
+
+                # Calculate MAE of buoy estimate
+                buoy_errors = analyze_slam.calculate_distances(self.buoy_priors[:, :2], self.posterior_buoys[:, :2])
+                buoy_rmse = np.sqrt(np.mean(buoy_errors**2))
+
+                # Plot buoy priors
+                ax.scatter(self.buoy_priors[:, 0],
+                           self.buoy_priors[:, 1],
+                           color=buoy_prior_color,
+                           marker='o',
+                           label='Prior buoys')
+
+                # Plot buoy posteriors
+                ax.scatter(self.posterior_buoys[:, 0],
+                           self.posterior_buoys[:, 1],
+                           color=buoy_post_color,
+                           marker='+',
+                           s=100,
+                           label=f'Estimated buoys, RMSE: {buoy_rmse:.2f}')
+
+            # Plot prior and posterior buoy positions for offline processing
+            else:
+                for ind_buoy in range(self.n_buoys):
+                    # buoys can be plotted to show the clustering results
+                    if self.buoy2cluster[ind_buoy] == -1:
+                        current_color = 'k'
+                    else:
+                        cluster_num = self.buoy2cluster[ind_buoy]
+                        current_color = self.colors[cluster_num % len(self.colors)]
 
                     # Plot buoy priors
                     ax.scatter(self.buoy_priors[ind_buoy, 0],
                                self.buoy_priors[ind_buoy, 1],
-                               color=buoy_prior_color)
+                               color=current_color)
 
                     # Plot buoy posteriors
                     ax.scatter(self.posterior_buoys[ind_buoy, 0],
                                self.posterior_buoys[ind_buoy, 1],
-                               color=buoy_post_color,
+                               color=current_color,
                                marker='+',
-                               s=75)
+                               s=100)
 
-                # Plot prior and posterior buoy positions for offline processing
-                # buoys can be plotted to show the clustering results
+        # ===== Plot ropes =====
+        if self.rope_buoy_ind is not None and len(self.rope_buoy_ind) > 0 and plot_rope_lines:
+            for rope in self.rope_buoy_ind:
+                if len(rope) != 2:
+                    continue
+                rope_start_ind = int(rope[0])
+                rope_end_ind = int(rope[1])
+
+                x1, y1 = self.buoy_priors[rope_start_ind, :2]
+                x2, y2 = self.buoy_priors[rope_end_ind, :2]
+
+                ax.plot([x1, x2], [y1, y2], color=self.rope_color)
+
+        # Plot the posterior poses
+        ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1], color='g', label='Final estimated poses')
+
+        if plot_rope_detects and self.n_rope_detects > 0:
+            ax.scatter(self.posterior_ropes[:, 0], self.posterior_ropes[:, 1], color='gray', label='Rope detections')
+
+        if self.corresponding_detections is not None:
+            rope_errors = analyze_slam.calculate_distances(self.corresponding_detections[:, :2],
+                                                           self.posterior_ropes[:, :2])
+
+            rope_rmse = np.sqrt(np.mean(rope_errors**2))
+
+            label_flag = True  # Only want to add a single label for all correspondence lines
+            for start, end in zip(self.corresponding_detections, self.posterior_ropes):
+                x_vals = [start[0], end[0]]
+                y_vals = [start[1], end[1]]
+                if label_flag:  # only label the first line segment
+                    ax.plot(x_vals, y_vals, color='orange', label=f'Rope detection error, RMSE: {rope_rmse:.2f}')
+                    label_flag = False
                 else:
+                    ax.plot(x_vals, y_vals, color='orange')
+
+        ax.legend(fontsize=self.legend_size)
+        plt.show()
+
+    def visualize_online(self, plot_dr=False, plot_final=False, plot_buoy=True, plot_correspondence=False):
+        """
+        Visualize the online estimate compared to the final estimate
+        """
+        # Check if Optimization has occurred
+        if self.current_estimate is None:
+            print('Need to perform optimization before it can be printed!')
+            return
+
+        # ===== Matplotlip options =====
+        fig, ax = plt.subplots()
+        ax.set_aspect('equal')
+        plt.title(f'Online Estimate', fontsize=self.title_size)
+        plt.xlabel('x [m]', fontsize=self.label_size)
+        plt.ylabel('y [m]', fontsize=self.label_size)
+        plt.axis(self.plot_limits)
+        plt.grid(True)
+
+        # ===== Plot dead reckoning =====
+        if plot_dr:
+            ax.scatter(self.dr_poses[:, 0],
+                       self.dr_poses[:, 1],
+                       color=self.dr_color,
+                       label='Dead reckoning')
+
+        # ===== Plot correspondence =====
+        # This will plot a line between the online and final estimates
+        if plot_correspondence:
+            for start, end in zip(self.online_poses[:, :2], self.posterior_poses[:, :2]):
+                x_vals = [start[0], end[0]]
+                y_vals = [start[1], end[1]]
+                ax.plot(x_vals, y_vals, color='orange')
+
+        # ===== Plot the final estimated poses =====
+        if plot_final:
+            ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1],
+                       color=self.post_color, label='Final estimate')
+
+        # ===== Plot the final estimated poses =====
+        ax.scatter(self.online_poses[:, 0], self.online_poses[:, 1],
+                   color=self.online_color, label='Online estimate')
+
+        # ===== Plot buoys w/ cluster colors =====
+        if plot_buoy and self.n_buoys > 0:
+            # TODO: Improve visualizations for online slam
+            # Plot prior and posterior buoy positions for online processing
+            if self.buoy2cluster is None:
+                buoy_prior_color = 'k'
+                buoy_post_color = self.post_color
+
+                # Plot buoy priors
+                ax.scatter(self.buoy_priors[:, 0],
+                           self.buoy_priors[:, 1],
+                           color=buoy_prior_color,
+                           label='Prior buoys')
+
+                # Plot buoy posteriors
+                ax.scatter(self.posterior_buoys[:, 0],
+                           self.posterior_buoys[:, 1],
+                           color=buoy_post_color,
+                           marker='+',
+                           s=75,
+                           label='Estimated buoys')
+
+            # Plot prior and posterior buoy positions for offline processing
+            else:
+                for ind_buoy in range(self.n_buoys):
+                    # buoys can be plotted to show the clustering results
                     if self.buoy2cluster[ind_buoy] == -1:
                         current_color = 'k'
                     else:
@@ -1953,31 +2118,43 @@ class analyze_slam:
                                s=75)
 
         # ===== Plot ropes =====
-        if self.rope_buoy_ind is not None and len(self.rope_buoy_ind) > 0 and plot_rope_lines:
-            for rope in self.rope_buoy_ind:
-                if len(rope) != 2:
-                    continue
-                rope_start_ind = int(rope[0])
-                rope_end_ind = int(rope[1])
+        # see visualizing_posterior() for example
 
-                x1, y1 = self.posterior_buoys[rope_start_ind, :]
-                x2, y2 = self.posterior_buoys[rope_end_ind, :]
+        # ===== Plot rope detections =====
+        # see visualizing_posterior() for example
 
-                ax.plot([x1, x2], [y1, y2], marker='o')
+        ax.legend(fontsize=self.legend_size)
+        plt.show()
 
-        # Plot the posterior poses
-        ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1], color='g', label='Posterior')
+    def plot_error_positions(self):
+        """
+        Plots the error between:
+        - dr and final
+        - online and final
+        :return:
+        """
 
-        if plot_rope_detects and self.n_rope_detects > 0:
-            ax.scatter(self.posterior_ropes[:, 0], self.posterior_ropes[:, 1], color='gray', label='Rope detections')
+        dr_error = analyze_slam.calculate_distances(self.dr_poses[:, :2], self.posterior_poses[:, :2])
+        online_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.posterior_poses[:, :2])
 
-        if self.corresponding_detections is not None:
-            for start, end in zip(self.corresponding_detections, self.posterior_ropes):
-                x_vals = [start[0], end[0]]
-                y_vals = [start[1], end[1]]
-                ax.plot(x_vals, y_vals, color='orange')
+        dr_rmse = np.sqrt(np.mean(dr_error**2))
+        online_rmse = np.sqrt(np.mean(online_error**2))
 
-        ax.legend()
+        # Create a plot
+        plt.figure()
+
+        # Plot squared error
+        plt.plot(dr_error, label=f'DR error, RMSE: {dr_rmse:.2f}', color=self.dr_color)
+        plt.plot(online_error, label=f'Online error, RMSE: {online_rmse:.2f}', color=self.online_color)
+
+        # Add labels and title
+        plt.xlabel('Poses', fontsize=self.label_size)
+        plt.ylabel('Absolute Error [m]', fontsize=self.label_size)
+        plt.title('Absolute Error Comparison', fontsize=self.title_size)
+        plt.legend(fontsize=self.legend_size)
+
+        # Show the plot
+        plt.grid(True)
         plt.show()
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):
@@ -2161,6 +2338,7 @@ class analyze_slam:
     def print_residuals(self):
         # Print residuals
         # Print residuals
+        return
         for factor_key in self.r.values():
             factor_key_to_access = gtsam.Key(factor_key)
             factor = self.graph.at(factor_key_to_access)
@@ -2195,8 +2373,8 @@ class analyze_slam:
                 rope_start_ind = int(rope[0])
                 rope_end_ind = int(rope[1])
 
-                x1, y1 = self.posterior_buoys[rope_start_ind, :]
-                x2, y2 = self.posterior_buoys[rope_end_ind, :]
+                x1, y1 = self.buoy_priors[rope_start_ind, :2]
+                x2, y2 = self.buoy_priors[rope_end_ind, :2]
 
                 cur_point, cur_dist = self.closest_point_distance_to_line_segment([x1, y1], [x2, y2], detection)
 
@@ -2250,3 +2428,15 @@ class analyze_slam:
         distance = math.sqrt(QPx * QPx + QPy * QPy)
 
         return [Qx, Qy], distance
+
+    @staticmethod
+    def calculate_distances(array1, array2):
+        # Check if arrays have the same number of points
+        if array1.shape != array2.shape:
+            print("Size mismatch between the arrays.")
+            return None
+
+        # Calculate Euclidean distances
+        distances = np.sqrt(np.sum((array1 - array2) ** 2, axis=1))
+
+        return distances

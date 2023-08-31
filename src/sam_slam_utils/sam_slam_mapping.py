@@ -20,6 +20,7 @@ from sam_slam_utils.sam_slam_helpers import projectPixelTo3dRay
 
 # 3D Plotting
 from mayavi import mlab
+from mpl_toolkits.mplot3d import Axes3D
 
 
 # %% Functions
@@ -274,7 +275,20 @@ class ground_plane:
 
 
 class image_mapping:
-    def __init__(self, gt_base_link_poses, base_link_poses, l_r_camera_info, buoy_info, ropes, rows, path_name):
+    def __init__(self, gt_base_link_poses, base_link_poses, estimated_positions,
+                 l_r_camera_info, buoy_info, ropes, rows, path_name):
+        """
+
+        :param gt_base_link_poses:
+        :param base_link_poses:
+        :param estimated_positions: x,y,theta poses - Used just for visualizations
+        :param l_r_camera_info:
+        :param buoy_info:
+        :param ropes:
+        :param rows:
+        :param path_name:
+        """
+
         if os.path.isdir(path_name):
             self.path_name = path_name
         else:
@@ -287,8 +301,11 @@ class image_mapping:
         # ===== Base pose =====
         self.base_poses = base_link_poses
         self.base_pose3s = convert_poses_to_Pose3(self.base_poses)
-
         self.pose_ids = self.base_poses[:, -1]
+
+        # ===== estimated positions =====
+        # These estimated position (x,y,theta)
+        self.est_positions = estimated_positions
 
         # ===== Cameras =====
         self.valid_camera_names = ["left", "right", "down"]  # This is a list of which cameras will be processed
@@ -342,6 +359,14 @@ class image_mapping:
                                          depth=15,
                                          spatial_2_pixel=self.spatial_2_pixel)
 
+        # ===== Visualization parameters =====
+        self.estimate_color = 'g'
+        self.rope_color = 'g'
+        self.buoy_color = 'y'
+
+        self.axis_length = .25
+        self.stride = 20
+
     @staticmethod
     def return_left_relative_pose():
         """
@@ -349,7 +374,7 @@ class image_mapping:
 
         :return: gtsam:pose3 of left camera pose relative to base_link
         """
-        l_t_x = 1.313/2
+        l_t_x = 1.313
         l_t_y = 0.048
         l_t_z = -0.007
 
@@ -1203,26 +1228,37 @@ class image_mapping:
 
                 cv2.imwrite(centers_path_name + f"{camera_name}_{img_id}.jpg", img)
 
-    def plot_3d_map(self, show_base=False):
+    def plot_3d_map(self, show_orientations=False, show_path=False, render_planes=None):
         # Parameters
         plane_offset = 0.01
-        stride = 5
-        axis_length = 2.5
 
         fig = plt.figure()
         ax = fig.add_subplot(projection='3d')
 
-        # Add axes labels
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
+        # fig = plt.figure(1)
+        # ax = Axes3D(fig, computed_zorder=False)
 
-        for plane in self.planes:
+        # Add axes labels
+        ax.set_xlabel('X, m')
+        ax.set_ylabel('Y, m')
+        ax.set_zlabel('Z, m')
+
+        # render the planes
+        # if no planes are specified, render all of them
+        if render_planes is None:
+            render_planes = [i for i in range(len(self.planes))]
+
+        for plane_ind, plane in enumerate(self.planes):
+            if plane_ind not in render_planes:
+                continue
+
+            # generate blank color map if none is provided
             if plane.final_image is None:
                 img = np.zeros((plane.pixel_height, plane.pixel_width, 3))
             else:
                 # internally images are BGR (openCV) matplotlib expects RGB within range of 0-1.0
                 img = np.flip(plane.final_image / 255, axis=2)
+
             # Will use the normal to apply small offset
             normal = plane.normal
             # Normalize, just in case
@@ -1246,18 +1282,27 @@ class image_mapping:
             X, Z = np.meshgrid(x_linspace, h_linspace)
             Y, _ = np.meshgrid(y_linspace, h_linspace)
 
-            ax.plot_surface(X, Y, Z, rstride=stride, cstride=stride,
-                            facecolors=img)
+            ax.plot_surface(X, Y, Z, rstride=self.stride, cstride=self.stride,
+                            facecolors=img, zorder=1)
 
         # plot base_link gt pose3s
-        if show_base:
+        if show_orientations:
             for i_base, pose3 in enumerate(self.base_pose3s):
                 # gtsam_plot.plot_pose3_on_axes(axes, pose3, axis_length=base_scale)
-                gtsam_plot.plot_pose3_on_axes(ax, pose3, axis_length=axis_length)
+                gtsam_plot.plot_pose3_on_axes(ax, pose3, axis_length=self.axis_length)
+
+        # Plot line segments between the points
+        if show_path:
+            for i in range(len(self.base_poses) - 1):
+                ax.plot([self.base_poses[i, 0], self.base_poses[i + 1, 0]],
+                        [self.base_poses[i, 1], self.base_poses[i + 1, 1]],
+                        [self.base_poses[i, 2], self.base_poses[i + 1, 2]],
+                        color=self.estimate_color,
+                        zorder=2)
 
         # Plot buoys
         for buoy in self.buoys:
-            ax.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5)
+            ax.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5, zorder=2)
 
         plt.title("Image Map")
         plt.show()

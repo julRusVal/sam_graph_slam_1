@@ -67,7 +67,7 @@
     <node name="sam_slam_listener" pkg="sam_slam" type="sam_listener_online_slam_node.py" output="screen"/>
 
     <!-- Play the ROS bag -->
-    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 5 --clock /home/julian/sam_real_algae_2.bag"/>
+    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 4 --clock /home/julian/sam_real_algae_2.bag"/>
 
     <!-- gps and buoy node -->
     <node name="gps_buoy_node" pkg="sam_dead_reckoning" type="algae_map_markers.py" output="screen" />

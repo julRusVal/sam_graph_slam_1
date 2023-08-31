@@ -61,7 +61,7 @@ class process_sss:
         self.post_buoy_original = None
 
         # These are modified by the post methods
-        self.post_rope = None
+        self.post_rope = None  # 2d representation of the rope detection, values > 0 indicate rope
         self.post_rope_inds_port = None
         self.post_rope_inds_star = None
 
@@ -675,8 +675,8 @@ class process_sss:
         detections_star = np.zeros_like(data_star)
 
         # this is mostly here to save the data and look at it in matlab
-        port_detection_inds = np.zeros((height, 2), dtype=np.int16)
-        star_detection_inds = np.zeros((height, 2), dtype=np.int16)
+        port_detection_inds = np.zeros((height, max_count), dtype=np.int16)
+        star_detection_inds = np.zeros((height, max_count), dtype=np.int16)
 
         for row in range(height):
             # === Port ===
@@ -906,6 +906,57 @@ class process_sss:
         # Overwrite input array with output array
         self.post_rope = np.copy(filtered_data)
 
+    def post_exclude_rope_in_buoy_area(self, radius=0, show_results=False):
+        if self.post_rope_original is None:
+            print("Post processing was not initialized!")
+            return
+
+        if radius == 0:
+            print("Select non-zero radius!")
+            return
+
+        if self.post_buoy_centers is None:
+            print("Find buoy centers first!")
+            return
+
+        buoy_mask = np.ones_like(self.post_rope)
+
+        for center in self.post_buoy_centers:
+            cv.circle(buoy_mask, (center[1], center[0]), radius, 0, -1)
+
+        filtered_data = np.multiply(self.post_rope, buoy_mask)
+
+        if show_results:
+            # Raw image converted to RGB
+            img_color = np.dstack((self.img, self.img, self.img))
+
+            # Input
+            img_rope_input = np.copy(img_color)
+            img_rope_input[self.post_rope > 0] = self.rope_color
+
+            # Output
+            img_rope_output = np.copy(img_color)
+            img_rope_output[filtered_data > 0] = self.rope_color
+
+            # Form plot
+            grad_detect_fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            grad_detect_fig.suptitle(f'Post: Buoy masking\n'
+                                     f'Radius: {radius}')
+
+            ax1.title.set_text('Input Image')
+            ax1.imshow(img_rope_input)
+
+            ax2.title.set_text(f'Output Image')
+            ax2.imshow(img_rope_output)
+
+            ax3.title.set_text(f'Maks')
+            ax3.imshow(buoy_mask * 255)
+
+            plt.show()
+
+        # Overwrite input array with output array
+        self.post_rope = np.copy(filtered_data)
+
     def post_overlay_detections(self, ):
         if self.post_rope_original is None:
             print("Post processing was not initialized!")
@@ -952,6 +1003,55 @@ class process_sss:
 
         plt.show()
 
+    def post_overlay_detections_pretty(self, ):
+        """
+        This method is for generating images for icra paper
+
+        :return:
+        """
+        circ_rad = 10
+        circ_thick = 2
+
+        start_ind = 4800
+        end_ind = 5650
+
+        if self.post_rope_original is None:
+            print("Post processing was not initialized!")
+            return
+
+        # Raw image converted to RGB
+        img_color = np.dstack((self.img, self.img, self.img))
+
+        # Combined
+        img_combined = np.copy(img_color)
+        img_combined[self.post_rope > 0] = self.rope_color
+
+        for center in self.post_buoy_centers:
+            # Color is reversed because cv assumes bgr??
+            color = self.buoy_color[::-1]  # (color[0], color[1], color[2])
+            color_tup = (255, 0, 0)
+            cv.circle(img_combined, (center[1], center[0]),
+                      radius=circ_rad, color=color_tup, thickness=circ_thick)
+
+        grad_detect_fig, (ax1, ax2) = plt.subplots(1, 2)
+        grad_detect_fig.suptitle(f'Post: Final Detection overlay')
+
+        ax1.title.set_text('Original')
+        ax1.imshow(img_color)
+
+        ax2.title.set_text('Combined detections')
+        ax2.imshow(img_combined)
+
+        plt.show()
+
+        # Save
+        print("Saving detection for ICRA paper")
+        image_path = f"data/detector_output_original_{start_ind}_{end_ind}.png"
+        cv2.imwrite(image_path, img_color[start_ind:end_ind, :, ::-1])
+
+        image_path = f"data/detector_output_marked_{start_ind}_{end_ind}.png"
+        cv2.imwrite(image_path, img_combined[start_ind:end_ind, :, ::-1])
+
     def post_interleave_detection_inds(self, channel_data, channel_id, med_filter_kernel=0):
         """
         column 0 is the first detection and column 1 is the 2nd detection.
@@ -959,7 +1059,10 @@ class process_sss:
 
         Also can perform median filtering
 
-        :param channel_data: Nx2 array of detection inds
+        N is height of sonar data
+        M is the number of rising edges that are used, most likely 2
+
+        :param channel_data: NxM array of detection inds
         :return:
         """
         if self.post_rope_original is None:
@@ -967,6 +1070,7 @@ class process_sss:
             return
 
         data_local = np.copy(channel_data)
+        m = data_local.shape[1]
 
         # When only a single detection is returned, it's value is copied to the 2nd detection.
         # Otherwise, a bunch of false negatives will be introduced
@@ -986,10 +1090,11 @@ class process_sss:
             data_interleaved_med = data_interleaved
 
         # Store
+        # inds are stored de-interleaved so the length should match the original height
         if channel_id.casefold() == 'port':
-            self.post_rope_inds_port = data_interleaved_med[::2]
+            self.post_rope_inds_port = data_interleaved_med[::m]
         elif 'star' in channel_id.casefold():
-            self.post_rope_inds_star = data_interleaved_med[::2]
+            self.post_rope_inds_star = data_interleaved_med[::m]
         else:
             channel_id = 'INVALID'
             print("Improper channel ID given!")
@@ -1024,7 +1129,7 @@ class process_sss:
         filtered_height = self.post_rope.shape[0]
         if channel_id.casefold() == 'port':
             filtered = self.post_rope_inds_port
-        elif 'star' in a.casefold():
+        elif 'star' in channel_id.casefold():
             filtered = self.post_rope_inds_star
         else:
             print("Improper channel ID given!")
@@ -1150,11 +1255,61 @@ class process_sss:
 
         valid_regions = [region for region in region_properties if region.area >= min_region_size]
 
-        region_centers = np.array([region.centroid for region in valid_regions])
+        region_centers = np.array([region.centroid for region in valid_regions]).astype(int)
 
         self.post_buoy_centers = region_centers
+        # Filter to remove buoys that are too close, favor closer detections
+        # This introduces some assumptions on the depth of the auv
+        if exclusion_zone is None:
+            self.post_buoy_centers = region_centers
+            return region_centers
+        valid = []
+        skip = []
+        for i in range(region_centers.shape[0]):
+            if i in skip:
+                continue
+            y_coord = region_centers[i, 0]
+            x_coord = region_centers[i, 1]
 
-        return region_centers
+            if x_coord < self.post_width // 2:
+                port = True
+            else:
+                port = False
+
+            if port:
+                test_1 = np.abs(y_coord - region_centers[:, 0]) < exclusion_zone
+                test_2 = region_centers[:, 1] < self.post_width // 2
+                inds = np.where(test_1 & test_2)[0]
+
+                if len(inds) == 1:
+                    valid.append(i)
+                    continue
+
+                max_inds_ind = np.argmax(region_centers[inds, 1])
+                # select the max for port
+                valid.append(inds[max_inds_ind])
+                # there is no need to consider centers twice
+                for ind in inds:
+                    skip.append(ind)
+
+            else:
+                inds = np.where(abs(y_coord - region_centers[:, 0]) < exclusion_zone &
+                                region_centers[:, 1] >= self.post_width // 2)[0]
+
+                if len(inds) == 1:
+                    valid.append(i)
+                    continue
+
+                min_inds_ind = np.argmin(region_centers[inds, 1])
+                # select the min for starboard
+                valid.append(inds[min_inds_ind])
+                # there is no need to consider centers twice
+                for ind in inds:
+                    skip.append(ind)
+
+        new_region_centers = region_centers[valid, :]
+        self.post_buoy_centers = new_region_centers
+        return new_region_centers
 
     def post_find_buoy_offsets(self, window_size=55, plot=False):
         """
@@ -1226,11 +1381,10 @@ class process_sss:
 
             plt.xlabel('Detection')
             plt.ylabel('Values')
-            #plt.title('Bar Graph of Three Arrays')
+            # plt.title('Bar Graph of Three Arrays')
             plt.xticks(x, labels)
             plt.legend()
             plt.show()
-
 
     def post_final_buoys(self, plot=False):
         # The input is stored as [ orig index | truncated cross index ]
@@ -1257,6 +1411,7 @@ class process_sss:
         self.final_bouys[:, 1] = relevant_seq_ids.astype(int)
 
         np.savetxt("data/image_process_buoys.csv", self.final_bouys, delimiter=",")
+        print("Buoy detections saved")
 
         if plot:
             img_color = np.dstack((self.img_original, self.img_original, self.img_original))
@@ -1307,6 +1462,8 @@ class process_sss:
 
             np.savetxt("data/image_process_ropes_star.csv", self.final_ropes_star, delimiter=",")
 
+        print("Rope detections saved")
+
 
 if __name__ == '__main__':
     # Parameters
@@ -1326,20 +1483,20 @@ if __name__ == '__main__':
     # ===== Canny edge detector =====
     perform_custom_canny = True
     custom_canny_show = False
-    canny_med_size = 7
-    canny_gauss_size = 5
-    canny_sobel_size = 5
-    canny_l_thresh = 175
-    canny_h_thresh = 225
-    do_blob = False
-    do_template = True
-    show_template = False
-    show_template_raw = False
-    template_size = 21
-    template_sigma = 2
-    template_feature_width = 10
-    template_l_threshold = 1000
-    template_h_threshold = 3000
+    canny_med_size = 7  # both
+    canny_gauss_size = 5  # both
+    canny_sobel_size = 5  # both
+    canny_l_thresh = 175  # rope
+    canny_h_thresh = 225  # rope
+    do_blob = False  # buoy
+    do_template = True  # buoy
+    show_template = False  # buoy
+    show_template_raw = False  # buoy
+    template_size = 21  # buoy
+    template_sigma = 2  # buoy
+    template_feature_width = 10  # buoy
+    template_l_threshold = 1000  # buoy
+    template_h_threshold = 3000  # buoy
 
     # ===== Standard canny detector =====
     perform_standard_canny = True
@@ -1400,6 +1557,7 @@ if __name__ == '__main__':
                                cpd_max_depth=cpd_max_depth, cpd_ratio=cpd_ratio,
                                flipping_regions=flipped_regions,
                                flip_original=perform_flipping)
+
     # if show_flipping:
     #     sss_analysis.flip_data(flipped_sections=flipped_regions)
 
@@ -1526,7 +1684,6 @@ if __name__ == '__main__':
         # ROPE: Thresholding is applied during canny
         # Buoy: template_results requires thresholding
         template_result_threshold = np.zeros_like(template_result, np.uint8)
-
         template_result_threshold[template_result >= template_h_threshold] = 255
 
         sss_analysis.post_initialize(rope_detections=canny_custom,
@@ -1534,6 +1691,20 @@ if __name__ == '__main__':
                                      use_port=True,
                                      use_starboard=False)
 
+        # Process buoy detections
+        sss_analysis.post_find_buoy_centers(min_region_size=5,
+                                            exclusion_zone=25)
+
+        # Work in progress,
+        # sss_analysis.post_find_buoy_offsets(window_size=55, plot=True)
+
+        # Process rope detections
+        """
+        Rope detection is carried out in multiple steps
+        - Ringing removal
+        - Range limiting
+        
+        """
         # Remove ringing
         # Useful to perform before the limiting the range
         sss_analysis.post_remove_ringing_rope(max_count=ringing_max_count,
@@ -1543,6 +1714,8 @@ if __name__ == '__main__':
         sss_analysis.post_limit_range(min_index=limiting_min,
                                       max_index=limiting_max,
                                       show_results=limiting_show)
+
+        sss_analysis.post_exclude_rope_in_buoy_area(radius=25, show_results=True)
 
         post_port_detection_inds, post_star_detection_inds = sss_analysis.find_rising_edges(data=sss_analysis.post_rope,
                                                                                             threshold=0,
@@ -1566,15 +1739,14 @@ if __name__ == '__main__':
 
         sss_analysis.post_plot_inds(channel_id='port')
 
-        sss_analysis.post_find_buoy_centers(5)
+        # sss_analysis.post_find_buoy_offsets(window_size=55, plot=True)
 
-        sss_analysis.post_find_buoy_offsets(window_size=55, plot=True)
-
-        sss_analysis.post_final_buoys(plot=True)
-        sss_analysis.post_final_ropes()
+        sss_analysis.post_final_buoys(plot=False)
+        sss_analysis.post_final_ropes(plot=False)
 
         if show_final_post:
             sss_analysis.post_overlay_detections()
+            sss_analysis.post_overlay_detections_pretty()
 
         # Generate
 
