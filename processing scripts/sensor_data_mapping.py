@@ -86,8 +86,10 @@ if perform_camera_analysis:
 
     # Perform processing on images
     if perform_image_transforms:
-        img_map.process_images(ignore_first=12, verbose=True)  #
-        # img_map.process_ground_plane_images(path_name, ignore_first=8, verbose=True)  # ground plane processing incomplete
+        img_map.process_images(ignore_first=6, do_sea_thru=True, verbose=True)  #
+        # img_map.process_images_sea_thru(filter=None, verbose=True)
+        # img_map.process_ground_plane_images(path_name,
+        # ignore_first=8, verbose=True)  # ground plane processing incomplete
         img_map.simple_stitch_planes_images(max_dist=12)
         img_map.combine_row_images()
         img_map.mark_centers(["left"])
@@ -96,7 +98,9 @@ if perform_camera_analysis:
     if plot_3d_map:
         img_map.plot_3d_map(show_orientations=True,
                             show_path=True,
-                            render_planes=[0, 2])  # OLD and SLOW
+                            show_title=False,
+                            render_planes=[0, 2],
+                            set_view=[22.5, -145])  # OLD and SLOW
         # img_map.plot_3d_map_mayavi()
 
     # Quantify quality of registration

@@ -2,6 +2,7 @@
 """
 This is part of the work towards projecting images onto a planes to make algae farm maps.
 """
+
 import os
 import math
 import statistics
@@ -22,15 +23,315 @@ from sam_slam_utils.sam_slam_helpers import projectPixelTo3dRay
 from mayavi import mlab
 from mpl_toolkits.mplot3d import Axes3D
 
+import sea_thru
+from skimage import morphology, filters
+import time
+from PIL import Image
 
-# %% Functions
+# Functions
 
 # ===== Image registration metric =====
 def ssim_custom(img_0, img_1):
+    # The actual magic is in testing_image_reg_metric.py
     print("here is where the magic is!!!")
 
 
-# %% Classes
+def perform_sea_thru(image, mask, depths):
+    # sea thru implementation from https://github.com/hainh/sea-thru
+    # This is a modified version of the procedure found in testing_sea_thru.py
+
+    debug = True
+
+    # === Parameters ===
+    # Pre process parameters
+    # these depths refer to the depth map depths
+    depth_min = 1.0
+    depth_max = 20.0
+
+    # Backscatter estimation parameters
+    bs_bins = 10
+    bs_fraction = 0.01
+
+    # Neighborhood parameters: method 1
+    nh_1_refine = True
+    nh_1_epsilon = 0.01
+    nh_1_min_size = 25
+    nh_1_closing_rad = 1
+
+    # Neighborhood method 2 removed for the time
+
+    # Illumination parameters
+    ill_p = 0.01
+    ill_f = 2  # recommended by paper
+    ill_l = 0.5
+    ill_spread_data_fract = 0.01
+
+    # Plotting parameters
+    plot_depth = False
+    plot_bs_points = False
+    plot_bs_results = False
+    plot_nh_1 = False
+    plot_nh_2 = False
+    plot_ill = False
+    plot_final = False
+
+    # This will exclude range info by the vertical depth
+    # todo this should be an argument and given in meter units
+    start_depth_i = 200  # This will exclude the region proceeding the index, geometrically the image above the rope
+    end_depth_i = 625  # This will exclude the region following the index, geometrically the image below the algae
+
+    # Pre process RGB images and depth maps
+    image = image / 255.0
+    image_proc = image  # this is just for plotting later
+    mask = mask / 255.0
+
+    # TESTING
+    # Plot the original image and high gradient regions
+    #
+    # fig, ax = plt.subplots(1, 3, figsize=(12, 6))
+    #
+    # # find gradiant of original image
+    # img_gray = color.rgb2gray(image)
+    #
+    # grad_rgb = filters.sobel(image)
+    # grad_gray = filters.sobel(img_gray)
+    #
+    # # Apply median filter to gradient
+    # med_size = 11
+    # grad_med_gray = filters.median(grad_gray, morphology.square(med_size))
+    #
+    # magnitude = np.linalg.norm(grad_rgb, axis=2)
+    #
+    # ax[0].imshow(image, cmap='gray')
+    # ax[0].set_title('Original Image')
+    # ax[0].axis('off')
+    #
+    # # Display the high gradient regions as a mask
+    # ax[1].imshow(grad_gray)
+    # ax[1].set_title('Gradient Gray')
+    # ax[1].axis('off')
+    #
+    # ax[2].imshow(grad_med_gray)
+    # ax[2].set_title(f'Gradient median: {med_size}')
+    # ax[2].axis('off')
+    #
+    # plt.tight_layout()
+    # plt.show()
+
+    # Contruct a mask for the depths map
+    depths_valid = np.ones((mask.shape[0], mask.shape[1], 1))
+    depths_valid[mask[:, :, 0] < 0.5] = 0.0
+
+    # filter depth mask base mask
+    # this is needed because the edges of the mask are not well defined
+    # applying erosion will cause these regions to be be excluded
+    footprint = morphology.disk(3)[:, :, np.newaxis]
+    depths_valid = morphology.erosion(depths_valid, footprint)
+
+    # Limit valid depths based on water depth, row index is used to specify
+    if 0 <= start_depth_i < depths_valid.shape[0]:
+        depths_valid[:start_depth_i, :, 0] = 0.0
+
+    if 0 <= end_depth_i < depths_valid.shape[0]:
+        depths_valid[end_depth_i:, :, 0] = 0.0
+
+    # apply the depths mask to the depth array
+    depths[depths_valid[:, :, 0] == 0.0] = 0.0
+
+    # fig_sim_mask, (ax1, ax2) = plt.subplots(1, 2)
+    # fig_sim_mask.suptitle('depth and mask')
+    #
+    # ax1.title.set_text('depth')
+    # ax1.imshow(depths)
+    #
+    # ax2.title.set_text('mask')
+    # ax2.imshow(mask)
+    #
+    # fig_sim_mask.show()
+
+    # Backscatter estimation points
+    ptsR, ptsG, ptsB, bs_points = sea_thru.find_backscatter_estimation_points(image, depths,
+                                                                              num_bins=bs_bins,
+                                                                              fraction=bs_fraction,
+                                                                              z_min=depth_min,
+                                                                              z_max=depth_max)
+
+    bs_points = bs_points.astype(int)
+
+    # Backscatter
+    Br, coefsR = sea_thru.find_backscatter_values(ptsR, depths, restarts=25)
+    Bg, coefsG = sea_thru.find_backscatter_values(ptsG, depths, restarts=25)
+    Bb, coefsB = sea_thru.find_backscatter_values(ptsB, depths, restarts=25)
+
+    B_rgb = np.dstack((Br, Bg, Bb))
+
+    image_backscatter_comp = np.add(image, np.multiply(-B_rgb, depths_valid))
+
+    # neighborhood method 1
+    nh_start_time = time.time()
+    nmap_initial, n_initial = sea_thru.construct_neighborhood_map(depths, nh_1_epsilon)
+    nh_initial_time = time.time()
+    if nh_1_refine:
+        nmap, n = sea_thru.refine_neighborhood_map(nmap_initial, nh_1_min_size, nh_1_closing_rad)
+        nh_refine_time = time.time()
+        print('Neighborhood method 1| ' +
+              f'Initial: {nh_initial_time - nh_start_time} Refine:{nh_refine_time - nh_initial_time}')
+    else:
+        nmap = nmap_initial
+        n = n_initial
+        print(f'Neighborhood method 1| Initial: {nh_initial_time - nh_start_time}')
+
+    # Illumination
+    illR = sea_thru.estimate_illumination(image[:, :, 0], Br, nmap, n, p=ill_p, f=ill_f, max_iters=100, tol=1E-5)
+    illG = sea_thru.estimate_illumination(image[:, :, 1], Bg, nmap, n, p=ill_p, f=ill_f, max_iters=100, tol=1E-5)
+    illB = sea_thru.estimate_illumination(image[:, :, 2], Bb, nmap, n, p=ill_p, f=ill_f, max_iters=100, tol=1E-5)
+    ill = np.stack([illR, illG, illB], axis=2)
+    if debug:
+        print("Illumination complete")
+
+    # Attenuation
+    beta_D_r, _ = sea_thru.estimate_wideband_attenuation(depths, illR)
+    refined_beta_D_r, coefsR = sea_thru.refine_wideband_attentuation(depths, illR, beta_D_r,
+                                                                     radius_fraction=ill_spread_data_fract, l=ill_l)
+    beta_D_g, _ = sea_thru.estimate_wideband_attenuation(depths, illG)
+    refined_beta_D_g, coefsG = sea_thru.refine_wideband_attentuation(depths, illG, beta_D_g,
+                                                                     radius_fraction=ill_spread_data_fract, l=ill_l)
+    beta_D_b, _ = sea_thru.estimate_wideband_attenuation(depths, illB)
+    refined_beta_D_b, coefsB = sea_thru.refine_wideband_attentuation(depths, illB, beta_D_b,
+                                                                     radius_fraction=ill_spread_data_fract, l=ill_l)
+    if debug:
+        print("Attenuation complete")
+
+    # Reconstruction
+    B = np.stack([Br, Bg, Bb], axis=2)
+    beta_D = np.stack([refined_beta_D_r, refined_beta_D_g, refined_beta_D_b], axis=2)
+    recovered = sea_thru.recover_image_clipped(image, depths, B, beta_D, nmap)
+    if debug:
+        print("Reconstruction complete")
+
+    # Plot Depth map
+    if plot_depth:
+        plt.imshow(depths)
+        plt.title(f'Depth map\n'
+                  f'Min/max settings: {depth_min} / {depth_max}\n'
+                  f'Max value: {np.max(depths)}')
+        plt.show()
+
+    # Plot depth map with back scatter points
+    if plot_bs_points:
+        fig_bs_points, (ax1, ax2) = plt.subplots(1, 2)
+        fig_bs_points.suptitle('Backscatter Points')
+
+        ax1.title.set_text('RGB')
+        ax1.imshow(image)
+        ax1.scatter(bs_points[:, 1], bs_points[:, 0], s=5, c='r')
+
+        ax2.title.set_text('Depth')
+        ax2.imshow(depths)
+        ax2.scatter(bs_points[:, 1], bs_points[:, 0], s=5, c='r')
+
+        fig_bs_points.show()
+
+    # Plot backscatter
+    if plot_bs_results:
+        fig_bs, [[ax1, ax2, ax3], [ax4, ax5, ax6]] = plt.subplots(2, 3)
+        fig_bs.suptitle("Backscatter")
+
+        # Plot the individual channels
+        ax1.title.set_text('Red')
+        img1 = ax1.imshow(np.multiply(Br[:, :, np.newaxis], depths_valid))
+        ax2.title.set_text('Green')
+        img2 = ax2.imshow(np.multiply(Bg[:, :, np.newaxis], depths_valid))
+        ax3.title.set_text('Blue')
+        img3 = ax3.imshow(np.multiply(Bb[:, :, np.newaxis], depths_valid))
+
+        fig_bs.colorbar(img1, ax=ax1)
+        fig_bs.colorbar(img2, ax=ax2)
+        fig_bs.colorbar(img3, ax=ax3)
+
+        # Plot the original and the backscatter compensation image
+        ax4.title.set_text('Original Image')
+        ax4.imshow(image)
+
+        ax5.axis('off')
+
+        ax6.title.set_text('Backscatter Compensated')
+        ax6.imshow(image_backscatter_comp)
+
+        fig_bs.show()
+
+    # Plot neighborhood method 1
+    if plot_nh_1:
+        fig_nh_1, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        fig_nh_1.suptitle(f'neighborhood Map, Method 1\n'
+                          f'Local Space Average Color\n'
+                          f'epsilon: {nh_1_epsilon}  min size: {nh_1_min_size}  radius: {nh_1_closing_rad}')
+
+        ax1.title.set_text('Depths')
+        ax1.imshow(depths)
+
+        ax2.title.set_text('Initial Neighborhoods\n'
+                           f'Count: {n_initial}')
+        ax2.imshow(nmap_initial)
+
+        ax3.title.set_text('Refined Neighborhoods\n'
+                           f'Count: {n}')
+        ax3.imshow(nmap)
+
+        plt.show()
+
+    # Plot Illumination
+    if plot_ill:
+        fig_ill, [[ax1, ax2, ax3], [ax4, ax5, ax6]] = plt.subplots(2, 3)
+        fig_ill.suptitle("Illumination")
+
+        # Top row: R, G, B
+        ax1.title.set_text('Red')
+        img1 = ax1.imshow(illR)
+        ax2.title.set_text('Green')
+        img2 = ax2.imshow(illG)
+        ax3.title.set_text('Blue')
+        img3 = ax3.imshow(illB)
+
+        fig_ill.colorbar(img1, ax=ax1)
+        fig_ill.colorbar(img2, ax=ax2)
+        fig_ill.colorbar(img3, ax=ax3)
+
+        # Bottom row: neighborhood, empty, combined
+        ax4.title.set_text('Neighborhood map')
+        img4 = ax4.imshow(nmap)
+        # fig_ill.colorbar(img4, ax=ax4)
+
+        ax5.axis('off')
+
+        ax6.title.set_text('RGB illumination')
+        img6 = ax6.imshow(ill)
+        fig_ill.colorbar(img6, ax=ax6)
+
+        plt.show()
+
+    # Plot Final results
+    if plot_final:
+        fig, [[ax1, ax2], [ax3, ax4]] = plt.subplots(2, 2)
+        fig.suptitle(f'Final results')
+
+        ax1.title.set_text('Original')
+        ax1.imshow(image)
+
+        ax2.title.set_text('Locally processed')
+        ax2.imshow(recovered)
+
+        ax3.title.set_text('FLSea processed')
+        ax3.imshow(image_proc)
+        plt.show()
+
+        ax4.title.set_text('Valid depths')
+        ax4.imshow(depths_valid)
+
+    return recovered
+
+
+# Classes
 class camera_model:
     """
     This mirrors the pinhole camera model of ROS perception.
@@ -115,9 +416,11 @@ class rope_section:
 
         # ===== Storage for images and masks =====
         self.images = []
+        self.images_sea_thru = []
         self.masks = []
         self.ranges = []
         self.final_image = None
+        self.final_image_sea_thru = None
 
         # ===== Quality =====
         self.distances = []  # One for each image
@@ -365,7 +668,7 @@ class image_mapping:
         self.buoy_color = 'y'
 
         self.axis_length = .25
-        self.stride = 20
+        self.stride = 2
 
     @staticmethod
     def return_left_relative_pose():
@@ -706,7 +1009,7 @@ class image_mapping:
         return start, offset_directions
 
     # ===== Processing =====
-    def process_images(self, ignore_first=0, verbose=False):
+    def process_images(self, ignore_first=0, do_sea_thru=False, verbose=False):
 
         """
         process_images is used to map the gathered images and warp them on to the planes formed by the buoys.
@@ -715,7 +1018,6 @@ class image_mapping:
         Verbose output marks images with registration points that correspond to the corners of the planes.
         Addition points are drawn to show the horizontal rope. This is controlled by the vertical_offset parameter
 
-        :param path_name:
         :param ignore_first:
         :param verbose:
         :return:
@@ -725,11 +1027,13 @@ class image_mapping:
         warped_path_name = self.path_name + 'images_warped/'
         masked_path_name = self.path_name + 'images_masked/'
         range_path_name = self.path_name + 'ranges/'
+        sea_thru_path_name = self.path_name + 'images_sea_thru/'
 
         overwrite_directory(registered_path_name)
         overwrite_directory(warped_path_name)
         overwrite_directory(masked_path_name)
         overwrite_directory(range_path_name)
+        overwrite_directory(sea_thru_path_name)
 
         # Verbose parameters
         vertical_offset = 2.0  # controls where additional registration points are drawn
@@ -859,6 +1163,7 @@ class image_mapping:
 
                             homography = cv2.getPerspectiveTransform(corners.astype(np.float32),
                                                                      destination_corners.astype(np.float32))
+
                             # Apply homography to image
                             img_warped = cv2.warpPerspective(img, homography,
                                                              (plane.pixel_width, plane.pixel_height))
@@ -870,10 +1175,24 @@ class image_mapping:
                             # === Range map ===
                             range_map = plane.calculate_range_map(c_center)
 
+                            # === Sea-thru ===
+                            if do_sea_thru:
+                                if mask_warped is None or range_map is None:
+                                    print(f"Mask or range error: {camera_name}_{current_pose_id}_{mod_id}_{plane_id}")
+                                    image_sea_thru = img_warped
+                                else:
+                                    image_sea_thru = perform_sea_thru(image=img_warped,
+                                                                      mask=mask_warped,
+                                                                      depths=range_map)
+                                    image_sea_thru = image_sea_thru[:, :, :] * 255.0
+
+                                self.planes[plane_id].images_sea_thru.append(image_sea_thru)
+
                             # Add warped image and mask to the plane
                             self.planes[plane_id].images.append(img_warped)
                             self.planes[plane_id].masks.append(mask_warped)
                             self.planes[plane_id].ranges.append(range_map)
+
 
                             # Add the distance between the camera and the interesction w/ the plane
                             delta = c_center - w_coords
@@ -889,6 +1208,11 @@ class image_mapping:
                             cv2.imwrite(masked_path_name +
                                         f"{camera_name}_{current_pose_id}_{mod_id}_{plane_id}.jpg",
                                         mask_warped)
+
+                            if do_sea_thru:
+                                cv2.imwrite(sea_thru_path_name +
+                                            f"{camera_name}_{current_pose_id}_{mod_id}_{plane_id}.jpg",
+                                            image_sea_thru)
 
                             write_array_to_csv(range_path_name +
                                                f"{camera_name}_{current_pose_id}_{mod_id}_{plane_id}.csv",
@@ -1052,16 +1376,17 @@ class image_mapping:
         :return:
         """
         # Clear old data and or make folder for the new data
-        planes_path_name = self.path_name + 'rows/'
+        planes_path_name = self.path_name + 'planes/'
         overwrite_directory(planes_path_name)
 
         for plane_id, plane in enumerate(self.planes):
             if len(plane.images) == 0:
                 continue
 
-            sorted_data = sorted(zip(plane.distances, plane.images, plane.masks), reverse=True)
-
+            # construct final image
             final_img = np.zeros_like(plane.images[0])
+
+            sorted_data = sorted(zip(plane.distances, plane.images, plane.masks), reverse=True)
 
             for distance, image, mask in sorted_data:
                 # Exclude if the distance exceeds the provided threshold
@@ -1075,8 +1400,32 @@ class image_mapping:
 
             #
             plane.final_image = final_img
+
+            # construct final image with sea-thru method
+            if len(plane.images_sea_thru) > 0:
+                final_img_sea_thru = np.zeros_like(plane.images[0])
+                sorted_data_sea_thru = sorted(zip(plane.distances, plane.images_sea_thru, plane.masks), reverse=True)
+
+                for distance, image, mask in sorted_data_sea_thru:
+                    # Exclude if the distance exceeds the provided threshold
+                    if distance > max_dist:
+                        continue
+
+                    # Build the final plane image starting with the most distant images.
+                    # Nearer images will overwrite more distant images.
+                    # This method is very suboptimal
+                    final_img_sea_thru[mask >= 255 / 2] = image[mask >= 255 / 2]
+
+                #
+                plane.final_image_sea_thru = final_img_sea_thru
+
+            # Write final results
             cv2.imwrite(planes_path_name + f"final_{plane_id}.jpg",
                         final_img)
+
+            if plane.final_image_sea_thru is not None:
+                cv2.imwrite(planes_path_name + f"final_{plane_id}_sea_thru.jpg",
+                            final_img_sea_thru)
 
     def combine_row_images(self, fill_missing=False):
 
@@ -1114,6 +1463,67 @@ class image_mapping:
             # Save
             cv2.imwrite(rows_path_name + f'row_{row_id}.jpg',
                         row_img)
+
+    def process_images_sea_thru(self, filter=None, verbose=False):
+
+        """
+        This will make thing look wonderful
+
+        :return:
+        """
+
+        # Input folder names
+        warped_path_name = self.path_name + 'images_warped'
+        masked_path_name = self.path_name + 'images_masked'
+        range_path_name = self.path_name + 'ranges'
+
+        # Output folder names
+        sea_thru_path_name = self.path_name + 'images_sea_thru/'
+        overwrite_directory(sea_thru_path_name)
+
+        # Open
+        files_warped = os.listdir(warped_path_name)
+        # files_masked = os.listdir(masked_path_name)
+        # files_range = os.listdir(range_path_name)
+
+        if filter is not None:
+            filter = [str(item).casefold() for item in filter if isinstance(item, str)]
+
+        for file in files_warped:
+            # Skip processing
+            if filter is not None:
+                if not any(string in file.casefold() for string in filter):
+                    continue
+            warp_path = warped_path_name + "/" + file
+            mask_path = masked_path_name + "/" + file
+            range_path = range_path_name + "/" + file.split(".")[0] + ".csv"
+            # check if corresponding files are present: mask and range
+            # the mask is jpg while the range is a csv
+            if not os.path.isfile(mask_path):
+                continue
+
+            if not os.path.isfile(range_path):
+                continue
+
+            image = np.asarray(Image.open(warp_path))
+            mask = np.asarray(Image.open(mask_path))
+            depths = read_csv_to_array(range_path)
+
+            new_image = perform_sea_thru(image=image, mask=mask, depths=depths)
+
+            output_filename = sea_thru_path_name + file
+
+            # PIL method, was getting errors
+            #output_image = Image.fromarray(new_image)
+
+            # output_image.save(output_filename)
+
+            # cv2 Method
+            # Slicing is to flip rgb to bgr for cv2 to be happy
+            cv2.imwrite(output_filename, new_image[:, :, ::-1] * 255.0)
+            if verbose:
+                print(f'Completed: {file}')
+
 
     # ===== Visualizations =====
     def plot_fancy(self, other_name=None):
@@ -1228,33 +1638,51 @@ class image_mapping:
 
                 cv2.imwrite(centers_path_name + f"{camera_name}_{img_id}.jpg", img)
 
-    def plot_3d_map(self, show_orientations=False, show_path=False, render_planes=None):
+    def plot_3d_map(self, show_orientations=False, show_path=False, show_title=True, render_planes=None, set_view=None):
+        """
+
+        :param show_orientations:
+        :param show_path:
+        :param render_planes:
+        :param set_view: [elevation, azimuth]
+        :return:
+        """
         # Parameters
         plane_offset = 0.01
 
         fig = plt.figure()
         ax = fig.add_subplot(projection='3d')
+        if set_view is not None and len(set_view) == 2:
+            ax.view_init(elev=set_view[0], azim=set_view[1])
 
         # fig = plt.figure(1)
         # ax = Axes3D(fig, computed_zorder=False)
 
         # Add axes labels
-        ax.set_xlabel('X, m')
-        ax.set_ylabel('Y, m')
-        ax.set_zlabel('Z, m')
+        ax.set_xlabel('X, [m]')
+        ax.set_ylabel('Y, [m]')
+        ax.set_zlabel('Z, [m]')
 
         # render the planes
         # if no planes are specified, render all of them
         if render_planes is None:
             render_planes = [i for i in range(len(self.planes))]
+            show_blank = True
+        elif render_planes[0] == -1:
+            render_planes = [i for i in range(len(self.planes))]
+            show_blank = False
+        else:
+            show_blank = True
 
         for plane_ind, plane in enumerate(self.planes):
             if plane_ind not in render_planes:
                 continue
 
             # generate blank color map if none is provided
-            if plane.final_image is None:
+            if plane.final_image is None and show_blank:
                 img = np.zeros((plane.pixel_height, plane.pixel_width, 3))
+            elif plane.final_image is None and not show_blank:
+                continue
             else:
                 # internally images are BGR (openCV) matplotlib expects RGB within range of 0-1.0
                 img = np.flip(plane.final_image / 255, axis=2)
@@ -1304,7 +1732,8 @@ class image_mapping:
         for buoy in self.buoys:
             ax.scatter(buoy[0], buoy[1], buoy[2], c='b', linewidths=5, zorder=2)
 
-        plt.title("Image Map")
+        if show_title:
+            plt.title("Mosaic Map")
         plt.show()
 
     def plot_3d_map_mayavi(self):

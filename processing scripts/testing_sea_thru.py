@@ -1,10 +1,12 @@
-# %%
+#!/usr/bin/env python3
 
 # Script for testing out the sea thru implementation from https://github.com/hainh/sea-thru
 # Data from https://www.kaggle.com/datasets/viseaonlab/flsea-vi
 # Original paper from http://csms.haifa.ac.il/profiles/tTreibitz/webfiles/sea-thru_cvpr2019.pdf
 # Data for original paper (not working) https://www.viseaon.haifa.ac.il/datasets
 #
+# A modified version of this is present in sam_slam_mapping
+
 import numpy as np
 import matplotlib.pyplot as plt
 import time
@@ -70,6 +72,7 @@ def read_csv_to_array(file_path):
 
 # Data parameters
 dataset_select = 2  # 0: Moorings (shallow and nearby), 1: coral farm (deeper and more distant), 2: Simulation data
+dataset_subselect = 2  # 1: original sim data, 2: new sim data from current run
 
 # Data states, determined by which data set is selected
 tif_data = False
@@ -122,9 +125,18 @@ elif dataset_select == 1:
     tif_data = True
 
 elif dataset_select == 2:
-    img_name = 'test_data/img_left_8_88_0.jpg'
-    mask_name = 'test_data/mask_left_8_88_0.jpg'
-    ranges_name = 'test_data/left_8_88_0.csv'
+    if dataset_subselect == 1:
+        img_name = 'sea_thru_data/img_left_8_88_0.jpg'
+        mask_name = 'sea_thru_data/mask_left_8_88_0.jpg'
+        ranges_name = 'sea_thru_data/left_8_88_0.csv'
+        extra_mask = None
+    else:
+        img_name = 'sea_thru_data/img_left_9_96_0.jpg'
+        mask_name = 'sea_thru_data/mask_left_9_96_0.jpg'
+        ranges_name = 'sea_thru_data/left_9_96_0.csv'
+        extra_mask_name = None  # Specify extra mask will replace refining by depth
+        # extra_mask_name = 'sea_thru_data/extra_mask_left_9_96_0.jpg'
+
     sim_data = True
     start_depth_i = 200  # This will exclude the region proceeding the index, geometrically the image above the rope
     end_depth_i = 625  # This will exclude the region following the index, geometrically the image below the algae
@@ -151,10 +163,29 @@ if sim_data:
     image = np.asarray(Image.open(img_name))
     mask = np.asarray(Image.open(mask_name))
     depths = read_csv_to_array(ranges_name)
+    if extra_mask_name is not None:
+        extra_mask = np.asarray(Image.open(extra_mask_name))
+    else:
+        extra_mask = None
 
     image = image / 255.0
     image_proc = image  # this is just for plotting later
     mask = mask / 255.0
+
+    # make sure the mask has a depth of 3
+    if len(mask.shape) == 2:
+        mask = np.dstack((mask, mask, mask))
+    elif len(mask.shape) == 3 and mask.shape[2] != 3:
+        mask = np.dstack((mask[:, :, 0], mask[:, :, 0], mask[:, :, 0]))
+
+    # the extra mask is optional but need some processing and checks
+    if extra_mask is not None:
+        extra_mask = extra_mask / 255.0
+
+        if len(extra_mask.shape) == 2:
+            extra_mask = np.dstack((extra_mask, extra_mask, extra_mask))
+        elif len(extra_mask.shape) == 3 and extra_mask.shape[2] != 3:
+            extra_mask = np.dstack((extra_mask[:, :, 0], extra_mask[:, :, 0], extra_mask[:, :, 0]))
 
     # TESTING
     # Plot the original image and high gradient regions
@@ -199,12 +230,24 @@ if sim_data:
     footprint = morphology.disk(3)[:, :, np.newaxis]
     depths_valid = morphology.erosion(depths_valid, footprint)
 
-    # Limit valid depths based on water depth, row index is used to specify
-    if 0 <= start_depth_i < depths_valid.shape[0]:
-        depths_valid[:start_depth_i, :, 0] = 0.0
+    # The depth mask can be refined in one of two way
+    # 1) manually define mask: this is called extra mask
+    # 2) By the depth of the image: this use knowledge of the farm geometry
+    # Note: these methods could be used together but there would be some conflict so for now they are separate
 
-    if 0 <= end_depth_i < depths_valid.shape[0]:
-        depths_valid[end_depth_i:, :, 0] = 0.0
+    if extra_mask is not None:
+        extra_mask[extra_mask <= 0.5] = 0
+        extra_mask[extra_mask > 0.5] = 1
+
+        depths_valid = np.logical_and(depths_valid, extra_mask)
+
+    else:
+        # Limit valid depths based on water depth, row index is used to specify
+        if 0 <= start_depth_i < depths_valid.shape[0]:
+            depths_valid[:start_depth_i, :, 0] = 0.0
+
+        if 0 <= end_depth_i < depths_valid.shape[0]:
+            depths_valid[end_depth_i:, :, 0] = 0.0
 
     # apply the depths mask to the depth array
     depths[depths_valid[:, :, 0] == 0.0] = 0.0
@@ -278,6 +321,7 @@ refined_beta_D_b, coefsB = sea_thru.refine_wideband_attentuation(depths, illB, b
 B = np.stack([Br, Bg, Bb], axis=2)
 beta_D = np.stack([refined_beta_D_r, refined_beta_D_g, refined_beta_D_b], axis=2)
 recovered = sea_thru.recover_image_clipped(image, depths, B, beta_D, nmap)
+# recovered = sea_thru.recover_image_balanced(image, depths, B, beta_D, nmap)
 
 # %% Plot Depth map
 if plot_depth:
@@ -389,7 +433,7 @@ if plot_ill:
 
 # %% Plot Final results
 if plot_final:
-    fig, [[ax1, ax2], [ax3, ax4]] = plt.subplots(2, 2)
+    fig, (ax1, ax2) = plt.subplots(1, 2)
     fig.suptitle(f'Final results')
 
     ax1.title.set_text('Original')
@@ -398,9 +442,9 @@ if plot_final:
     ax2.title.set_text('Locally processed')
     ax2.imshow(recovered)
 
-    ax3.title.set_text('FLSea processed')
-    ax3.imshow(image_proc)
+    # ax3.title.set_text('FLSea processed')
+    # ax3.imshow(image_proc)
     plt.show()
 
-    ax4.title.set_text('Valid depths')
-    ax4.imshow(depths_valid)
+    # ax4.title.set_text('Valid depths')
+    # ax4.imshow(depths_valid)
