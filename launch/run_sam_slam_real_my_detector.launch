@@ -23,6 +23,8 @@
     <param name="rope_associations" value="True"/>
     <param name="prioritize_buoy_detections" value="True"/>
     <param name="da_distance_threshold" value="5.0"/>
+    <param name="individual_rope_detections" value="True"/>
+    <param name="update_priors" value="False"/>
 
     <!-- Detector data -->
     <param name= "buoy_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_buoys.csv"/>
@@ -38,8 +40,8 @@
     <!-- Buoy -->
     <param name="buoy_dist_sig" value="0.5"/>
     <!-- Odometry -->
-    <param name="odo_ang_sig_deg" value="2.5"/>
-    <param name="odo_dist_sig" value="1"/>
+    <param name="odo_ang_sig_deg" value=".5"/>
+    <param name="odo_dist_sig" value=".1"/>
     <!-- Detection sigmas -->
     <param name="detect_ang_sig_deg" value="0.25"/>
     <param name="detect_dist_sig" value="0.1"/>

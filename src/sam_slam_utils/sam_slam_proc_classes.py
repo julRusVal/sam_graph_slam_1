@@ -23,12 +23,13 @@ import networkx as nx
 
 # Slam
 import gtsam
+import gtsam.utils.plot as gtsam_plot
 
 # ROS
 import rospy
 import tf
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
-from geometry_msgs.msg import Quaternion
+from geometry_msgs.msg import Quaternion, PoseWithCovarianceStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
 from geometry_msgs.msg import PoseStamped
@@ -640,10 +641,6 @@ class online_slam_2d:
     """
 
     def __init__(self, path_name=None, ropes_by_buoy_ind=None):
-        self.manual_associations = rospy.get_param("manual_associations", False)
-
-        print(f"Manual associations: {self.manual_associations}")
-
         # ===== File path for data logging =====
         self.file_path = path_name
         if self.file_path is None or not isinstance(path_name, str):
@@ -663,8 +660,9 @@ class online_slam_2d:
         self.x = None  # Poses
         self.b = None  # Buoys
         self.r = None  # Ropes
-        self.r = None  # Rope associations, used to update inferred priors of rope detections
+        self.r_associations = None  # Rope associations, used to update inferred priors of rope detections
         # While the inferred priors are updated the associations are not
+        self.l = None  # Lines
 
         self.buffer = queue.Queue()
 
@@ -691,7 +689,16 @@ class online_slam_2d:
 
         # === DA parameters ===
         # TODO improve data association threshold
+        self.manual_associations = rospy.get_param("manual_associations", False)
+        print(f"Manual associations: {self.manual_associations}")
         self.da_distance_threshold = rospy.get_param('da_distance_threshold', -1.0)
+
+        # === Rope detection parameters ===
+        self.individual_rope_detections = rospy.get_param("individual_rope_detections", True)
+
+        # === Prior parameters ===
+        # Currently this only applies to the rope priors
+        self.update_priors = rospy.get_param("update_priors", False)
 
         # ===== Sigmas =====
         # Agent prior sigmas
@@ -750,6 +757,7 @@ class online_slam_2d:
         self.initial_estimate = gtsam.Values()
         self.current_estimate = None
         self.slam_result = None
+        self.current_marginals = None
 
         # ===== Graph states =====
         self.buoy_map_present = False
@@ -783,11 +791,23 @@ class online_slam_2d:
         self.buoy_marker_color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
         self.buoy_valid_color = ColorRGBA(r=1.0, g=0.0, b=1.0, a=1.0)  # color used for valid buoy detections
         self.buoy_invalid_color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)  # color used for invalid buoy detections
+        # Line landmarks
+        # Not actually a line, just a point landmark that is being treated as a line
+        self.est_line_pub = rospy.Publisher('/sam_slam/est_line', MarkerArray, queue_size=10)
+        self.est_line_pub_verbose = rospy.Publisher('/sam_slam/est_line_verbose',
+                                                    PoseWithCovarianceStamped,
+                                                    queue_size=1)
+        self.line_marker_scale = 1.0
+        self.line_marker_color = ColorRGBA(r=0.0, g=0.0, b=1.0, a=1.0)
 
         # ===== Verboseness parameters =====
         self.verbose_graph_update = rospy.get_param('verbose_graph_update', False)
         self.verbose_graph_rope_detections = rospy.get_param('verbose_graph_rope_detections', False)
         self.verbose_graph_buoy_detections = rospy.get_param('verbose_graph_buoy_detections', False)
+        self.verbose_graph_rope_associations = rospy.get_param('verbose_graph_rope_associations',
+                                                               False)
+        self.verbose_graph_buoy_associations = rospy.get_param('verbose_graph_buoy_associations',
+                                                               False)
 
         print('Graph Class Initialized')
 
@@ -823,7 +843,7 @@ class online_slam_2d:
 
         # Calculate average buoy position - rough prior for ropes
         self.buoy_average = np.sum(self.buoy_priors, axis=0) / self.n_buoys
-        print("Done with buoy setup")
+        print("Buoy setup: Complete")
         return
 
     def rope_setup(self, ropes):
@@ -837,10 +857,24 @@ class online_slam_2d:
         :param ropes:
         :return:
         """
-        self.rope_priors = ropes
-        self.n_ropes = len(ropes)
-        self.rope_map_present = True
+        # check that buoys have been setup
+        # if self.b is None:
+        #     return
 
+        # These are the spatial coords of the rope ends
+        self.rope_priors = ropes
+
+        # In general, we want to work with the ropes wrt to the b indices that make up the ropes
+        # TODO bring into agreement with the update
+        n_ropes_spatial = len(ropes)
+        n_ropes_inds = len(self.rope_buoy_ind)
+
+        if n_ropes_inds != n_ropes_spatial:
+            raise Exception("Rope layout mismatch: check node node script and rope marker publisher script")
+
+        self.n_ropes = n_ropes_inds
+
+        # Initialize the rope means and covariances
         self.rope_centers = {}
         self.rope_noise_models = {}
         for rope_ind, rope in enumerate(self.rope_priors):
@@ -860,6 +894,28 @@ class online_slam_2d:
             rot_cov_matrix = rotation_matrix @ cov_matrix @ rotation_matrix.transpose()
 
             self.rope_noise_models[rope_ind] = gtsam.noiseModel.Gaussian.Covariance(rot_cov_matrix)
+
+        # labels
+        self.l = {k: gtsam.symbol('l', k) for k in range(self.n_ropes)}
+
+        # ===== Add buoy priors and initial estimates =====
+        # I'm sorry for the naming convention
+        # self.r are rope detections
+        # self.l are the 'line' objects
+        for id_rope in range(self.n_ropes):
+            # Prior
+            prior = np.array((self.rope_centers[id_rope][0], self.rope_centers[id_rope][1]), dtype=np.float64)
+
+            # Add prior factor
+            self.graph.addPriorPoint2(self.l[id_rope], prior, self.rope_noise_models[rope_ind])
+
+            # Initial estimate
+            self.initial_estimate.insert(self.l[id_rope], prior)
+
+        # Indicate that the rope setup is complete
+        self.rope_map_present = True
+        print("Rope setup: Complete")
+        return
 
     def rope_update(self, debug=False):
         """
@@ -943,7 +999,7 @@ class online_slam_2d:
         self.current_x_ind += 1
         self.x = {self.current_x_ind: gtsam.symbol('x', self.current_x_ind)}
         self.r = {}
-        self.r_association = {}
+        self.r_associations = {}
 
         # Add type or sensor identifier
         # This used to associate nodes of the graph with sensor reading, processed offline
@@ -1187,9 +1243,9 @@ class online_slam_2d:
 
                 # === Marginals ===
                 if relative_detection is not None:
-                    marginals = gtsam.Marginals(self.graph, self.current_estimate)
+                    self.current_marginals = gtsam.Marginals(self.graph, self.current_estimate)
                 else:
-                    marginals = None
+                    self.current_marginals = None
 
                 # ===== Add the between factor =====
                 self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
@@ -1218,8 +1274,8 @@ class online_slam_2d:
                         break
 
                 # Find covariance of the current key
-                if marginals is not None and current_key is not None:
-                    current_covariance = marginals.marginalCovariance(current_key)
+                if self.current_marginals is not None and current_key is not None:
+                    current_covariance = self.current_marginals.marginalCovariance(current_key)
                 else:
                     current_covariance = None
 
@@ -1243,7 +1299,7 @@ class online_slam_2d:
                             buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
                         else:
                             buoy_association_id, buoy_association_dist, _ = (
-                                self.associate_detection_likelihood(self.est_detect_loc, current_covariance, marginals))
+                                self.associate_detection_likelihood(self.est_detect_loc, current_covariance))
 
                         # Debug
                         print(f'Buoy DA Distance: {buoy_association_dist} ({self.da_distance_threshold})')
@@ -1304,10 +1360,16 @@ class online_slam_2d:
                     #     self.associate_rope_detection_likelihood(self.est_detect_loc, current_covariance)
 
                     # Add new landmarks prior and noise
+                    # DA can be handled by Euclidean distance or max-likelihood
+                    # Priors are only added if individual_rope_detections is set to True
+
                     # Naive method
                     if self.rope_priors is None:
                         rope_prior = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
-                        self.graph.addPriorPoint2(self.r[self.current_r_ind], rope_prior, self.prior_model_rope)
+                        if self.individual_rope_detections:
+                            self.graph.addPriorPoint2(self.r[self.current_r_ind],
+                                                      rope_prior,
+                                                      self.prior_model_rope)
 
                     # Slightly less naive method
                     else:
@@ -1318,10 +1380,20 @@ class online_slam_2d:
                         else:
                             rope_association_ind, _, _ = self.associate_rope_detection_likelihood(self.est_detect_loc,
                                                                                                   current_covariance)
-                        self.r_association[self.current_r_ind] = rope_association_ind
-                        self.graph.addPriorPoint2(self.r[self.current_r_ind],
-                                                  self.rope_centers[rope_association_ind],
-                                                  self.rope_noise_models[rope_association_ind])
+                        self.r_associations[self.current_r_ind] = rope_association_ind
+
+                        if self.individual_rope_detections:
+                            self.graph.addPriorPoint2(self.r[self.current_r_ind],
+                                                      self.rope_centers[rope_association_ind],
+                                                      self.rope_noise_models[rope_association_ind])
+
+                        # The Nacho method is used when the individual_rope_detections is set to False
+                        else:
+                            self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                                      self.l[rope_association_ind],
+                                                                      detect_bearing,
+                                                                      detect_range,
+                                                                      self.detection_model))
 
                     # Add factor between current x and current r
                     self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
@@ -1348,8 +1420,9 @@ class online_slam_2d:
                 update_time = (end_time - start_time).to_sec()
 
                 # === Update inferred priors ===
-                self.rope_update()
-                self.update_rope_priors()
+                if self.update_priors:
+                    self.rope_update()
+                    self.update_rope_priors()
 
                 # ===== debugging and visualizations =====
                 # Log to terminal
@@ -1361,6 +1434,9 @@ class online_slam_2d:
                 self.publish_est_path()
                 self.publish_rope_detections()
                 self.publish_est_buoys()
+                if not self.individual_rope_detections:
+                    self.publish_est_line()
+                    self.publish_est_line_verbose(2)
 
                 # Buoy detection
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value:
@@ -1391,7 +1467,7 @@ class online_slam_2d:
 
         return best_id, best_range_2 ** (1 / 2)
 
-    def associate_detection_likelihood(self, detection_map_location, detection_covariance, current_marginals):
+    def associate_detection_likelihood(self, detection_map_location, detection_covariance):
         """
         Updated version of the data association
         Basic association of detection with a buoys, currently using the prior locations
@@ -1421,7 +1497,7 @@ class online_slam_2d:
             # check if key is present, if not use priors
             if buoy_key in self.current_estimate.keys():
                 buoy_mean = self.current_estimate.atPoint2(buoy_key)
-                buoy_covar = current_marginals.marginalCovariance(buoy_key)
+                buoy_covar = self.current_marginals.marginalCovariance(buoy_key)
             else:
                 buoy_mean = np.array(self.buoy_priors[buoy_ind][0:2])
                 buoy_covar = np.identity(2) * 0.001  # if no covariance is supplied give very small uncertainty
@@ -1449,7 +1525,7 @@ class online_slam_2d:
         likelihood_max_ind = np.argmax(likelihoods)
         # distance_min_ind = np.argmin(distances_2_norm)
 
-        if self.verbose_graph_buoy_detections:
+        if self.verbose_graph_buoy_associations:
             print("Buoy detection - stats")
             print(f"Likelihood: {likelihoods[likelihood_max_ind]:.2e} ({likelihood_max_ind})")
             print(f"Distance, Mahalanobis: {distances_m[likelihood_max_ind]:.2e} ({likelihood_max_ind})")
@@ -1544,7 +1620,7 @@ class online_slam_2d:
         likelihood_max_ind = np.argmax(likelihoods)
         # distance_min_ind = np.argmin(distances_2_norm)
 
-        if self.verbose_graph_rope_detections:
+        if self.verbose_graph_rope_associations:
             print("Rope detection - stats")
             print(f"Likelihood: {likelihoods[likelihood_max_ind]:.2e} ({likelihood_max_ind})")
             print(f"Distance, Mahalanobis: {distances_m[likelihood_max_ind]:.2e} ({likelihood_max_ind})")
@@ -1559,9 +1635,6 @@ class online_slam_2d:
         :return:
         """
 
-        # self.graph.addPriorPoint2(self.r[self.current_r_ind],
-        #                           self.rope_centers[rope_association_ind],
-        #                           self.rope_noise_models[rope_association_ind])
         for factor_idx in range(self.graph.size()):
             factor = self.graph.at(factor_idx)
 
@@ -1583,8 +1656,8 @@ class online_slam_2d:
                     print(factor)
 
                 new_prior = gtsam.PriorFactorPoint2(factor_key,
-                                                    self.rope_centers[self.r_association[key_idx]],
-                                                    self.rope_noise_models[self.r_association[key_idx]])
+                                                    self.rope_centers[self.r_associations[key_idx]],
+                                                    self.rope_noise_models[self.r_associations[key_idx]])
                 self.graph.replace(factor_idx, new_prior)
 
                 if debug:
@@ -1821,6 +1894,115 @@ class online_slam_2d:
 
         if valid_detection_count > 0:
             self.est_buoy_pub.publish(est_buoys)
+
+    def publish_est_line(self):
+        """
+        This is responsible for publishing the current estimated line centers.
+        These will only be updated if individual_rope_detections is set to False.
+
+        This is part of the Nacho method
+
+        :return:
+        """
+        # Check that self.r has been initialized
+        if self.l is None:
+            return
+
+        # Copy as elements can be added to the graph will looping over the elements
+        key_dict_copy = self.l.copy()
+
+        # Check for the existence of rope detections
+        if len(key_dict_copy) <= 0:
+            return
+
+        est_lines = MarkerArray()
+        valid_detection_count = 0  # Was having a problem with keys being present in self.l but not in the values
+
+        for buoy_ind, key in enumerate(key_dict_copy.values()):
+            if not self.current_estimate.exists(key):
+                print('publish_est_buoys: Key not found!')
+                continue
+            valid_detection_count += 1
+            detection_point = self.current_estimate.atPoint2(key)
+            marker = Marker()
+            marker.header.frame_id = 'map'
+            marker.header.stamp = rospy.Time.now()
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.id = buoy_ind
+            marker.lifetime = rospy.Duration(0)
+            marker.pose.position.x = detection_point[0]
+            marker.pose.position.y = detection_point[1]
+            marker.pose.position.z = 0.0
+            marker.pose.orientation.x = 0
+            marker.pose.orientation.y = 0
+            marker.pose.orientation.z = 0
+            marker.pose.orientation.w = 1
+            marker.scale.x = self.line_marker_scale
+            marker.scale.y = self.line_marker_scale
+            marker.scale.z = self.line_marker_scale
+            marker.color = self.line_marker_color
+
+            est_lines.markers.append(marker)
+
+        if valid_detection_count > 0:
+            self.est_line_pub.publish(est_lines)
+
+    def publish_est_line_verbose(self, rope_id):
+        # Check for current marginals
+        if self.current_marginals is None:
+            return
+
+        if 0 > rope_id >= self.n_ropes:
+            return
+
+        # Check for valid key
+        key = self.l[rope_id]
+        if key not in self.current_estimate.keys():
+            return
+
+        # Find covariance of the current key
+        rope_covariance = self.current_marginals.marginalCovariance(key)
+
+        landmark_point = self.current_estimate.atPoint2(key)
+
+        print(f"ROPE {rope_id}: {rope_covariance}")
+
+        # gtsam_plot.plot_point2(0,
+        #                        self.current_estimate.atPoint2(key),
+        #                        'g',
+        #                        P=self.current_marginals.marginalCovariance(key))
+        #
+        # plt.show()
+
+        msg = PoseWithCovarianceStamped()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = 'map'
+        msg.pose.pose.position.x = landmark_point[0]
+        msg.pose.pose.position.y = landmark_point[1]
+        msg.pose.pose.position.z = 0.0
+
+        # Set the orientation (you can use Euler angles or quaternion)
+        # Example using Euler angles:
+        roll, pitch, yaw = 0.0, 0.0, 0.0
+        quaternion = quaternion_from_euler(roll, pitch, yaw)
+        msg.pose.pose.orientation.x = quaternion[0]
+        msg.pose.pose.orientation.y = quaternion[1]
+        msg.pose.pose.orientation.z = quaternion[2]
+        msg.pose.pose.orientation.w = quaternion[3]
+
+        # Set the covariance matrix (adjust this as needed)
+        xx = rope_covariance[0, 0]
+        xy = rope_covariance[0, 1]
+        yy = rope_covariance[1, 1]
+        msg.pose.covariance = [xx, xy, 0, 0, 0, 0,
+                               xy, yy, 0, 0, 0, 0,
+                               0, 0, 0, 0, 0, 0,
+                               0, 0, 0, 0, 0, 0,
+                               0, 0, 0, 0, 0, 0,
+                               0, 0, 0, 0, 0, 0]
+
+        self.est_line_pub_verbose.publish(msg)
 
     # Utility static methods
     @staticmethod
@@ -2276,7 +2458,8 @@ class analyze_slam:
         ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1], color='g', label='Final estimated poses')
 
         if plot_rope_detects and self.n_rope_detects > 0:
-            ax.scatter(self.posterior_rope_detects[:, 0], self.posterior_rope_detects[:, 1], color='gray', label='Rope detections')
+            ax.scatter(self.posterior_rope_detects[:, 0], self.posterior_rope_detects[:, 1], color='gray',
+                       label='Rope detections')
 
         if self.corresponding_detections is not None:
             rope_errors = analyze_slam.calculate_distances(self.corresponding_detections[:, :2],
