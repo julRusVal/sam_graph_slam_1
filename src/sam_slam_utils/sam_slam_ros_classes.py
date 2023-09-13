@@ -936,9 +936,12 @@ class sam_slam_listener:
                 print("Initializing analysis")
 
                 self.analysis = analyze_slam(self.online_graph)
+
                 self.analysis.save_for_sensor_processing(self.file_path)
                 self.analysis.save_2d_poses(self.file_path)
                 self.analysis.calculate_corresponding_points(debug=False)
+
+                print("Analysis initialized")
 
                 # All other analysis methods should most likely be called by sam_listener_online_slam_node.py
 

@@ -56,11 +56,14 @@ def main():
         if listener.data_written and not data_processed:
             print("Processing data")
             # listener.analysis.calculate_corresponding_points(debug=True)
+
             listener.analysis.visualize_final(plot_gt=False,
                                               plot_dr=False)
 
             listener.analysis.visualize_online(plot_final=True, plot_correspondence=True)
             listener.analysis.plot_error_positions()
+
+            listener.analysis.show_buoy_info()
 
             data_processed = True
             # rospy.signal_shutdown("Shutting down gracefully")

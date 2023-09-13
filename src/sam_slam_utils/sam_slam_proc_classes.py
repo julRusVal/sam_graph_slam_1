@@ -690,11 +690,16 @@ class online_slam_2d:
         # === DA parameters ===
         # TODO improve data association threshold
         self.manual_associations = rospy.get_param("manual_associations", False)
-        print(f"Manual associations: {self.manual_associations}")
+        # currently only applied to buoys
         self.da_distance_threshold = rospy.get_param('da_distance_threshold', -1.0)
+        self.da_m_distance_threshold = rospy.get_param('da_m_distance_threshold', -1.0)
+
+        if self.da_m_distance_threshold > 0:
+            self.da_distance_threshold = -1
 
         # === Rope detection parameters ===
         self.individual_rope_detections = rospy.get_param("individual_rope_detections", True)
+        self.use_rope_detections = rospy.get_param("use_rope_detections", True)
 
         # === Prior parameters ===
         # Currently this only applies to the rope priors
@@ -704,19 +709,34 @@ class online_slam_2d:
         # Agent prior sigmas
         self.prior_ang_sig = rospy.get_param('prior_ang_sig_deg', 1.0) * np.pi / 180
         self.prior_dist_sig = rospy.get_param('prior_dist_sig', 1.0)
+
         # buoy prior sigmas
         self.buoy_dist_sig_init = rospy.get_param('buoy_dist_sig', 1.0)
+
         # rope prior sigmas
-        # This is used in the naive
+        # Used in the naive
         self.rope_dist_sig_init = rospy.get_param('rope_dist_sig', 15.0)
+        # Used for less naive rope priors
         self.rope_along_sig_init = rospy.get_param('rope_along_sig', 15.0)
         self.rope_cross_sig_init = rospy.get_param('rope_cross_sig', 2.0)
+
         # agent odometry sigmas
         self.odo_ang_sig = rospy.get_param('odo_ang_sig_deg', 0.1) * np.pi / 180
         self.odo_dist_sig = rospy.get_param('dist_sig', 0.1)
+
         # detection sigmas
-        self.detect_ang_sig = rospy.get_param('detect_ang_sig_deg', 1.0) * np.pi / 180
-        self.detect_dist_sig = rospy.get_param('detect_dist_sig', .1)
+        # When individual detections are used buoys and ropes should have the same noise model
+        # buoy
+        self.buoy_detect_ang_sig = rospy.get_param('buoy_detect_ang_sig_deg', 1.0) * np.pi / 180
+        self.buoy_detect_dist_sig = rospy.get_param('buoy_detect_dist_sig', .1)
+
+        # ropes
+        if self.individual_rope_detections:
+            self.detect_ang_sig = self.buoy_detect_ang_sig
+            self.detect_dist_sig = self.buoy_detect_dist_sig
+        else:
+            self.detect_ang_sig = rospy.get_param('detect_ang_sig_deg', 1.0) * np.pi / 180
+            self.detect_dist_sig = rospy.get_param('detect_dist_sig', .1)
 
         # ===== Noise models =====
         self.prior_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.prior_dist_sig,
@@ -733,6 +753,10 @@ class online_slam_2d:
                                                                 self.odo_dist_sig,
                                                                 self.odo_ang_sig))
 
+        self.buoy_detection_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.buoy_detect_dist_sig,
+                                                                               self.buoy_detect_ang_sig]))
+
+        # This should be renamed rope_detection_model
         self.detection_model = gtsam.noiseModel.Diagonal.Sigmas(np.array([self.detect_dist_sig,
                                                                           self.detect_ang_sig]))
 
@@ -765,6 +789,9 @@ class online_slam_2d:
         self.initial_pose_set = False
         self.busy = False
         self.busy_queue = False
+
+        # ===== DA and outlier info =====
+        self.buoy_detection_info = []
 
         # ===== Debugging =====
         self.da_check = {}
@@ -1118,7 +1145,7 @@ class online_slam_2d:
                                                       self.b[buoy_association_id],
                                                       detect_bearing,
                                                       detect_range,
-                                                      self.detection_model))
+                                                      self.buoy_detection_model))
 
         # === Rope ===
         if relative_detection is not None and da_id == -ObjectID.ROPE.value:
@@ -1295,19 +1322,39 @@ class online_slam_2d:
                     if self.manual_associations and da_id != -ObjectID.BUOY.value:
                         buoy_association_id = da_id
                     else:
+                        # If no covariance estimate is available DA uses only euclidean distance
                         if current_covariance is None:
                             buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
+                            # dummy m distance
+                            buoy_association_m_dist = 0
+
+                        # If covariance is present M distance is also available
                         else:
-                            buoy_association_id, buoy_association_dist, _ = (
+                            buoy_association_id, buoy_association_dist, buoy_association_m_dist = (
                                 self.associate_detection_likelihood(self.est_detect_loc, current_covariance))
 
                         # Debug
                         print(f'Buoy DA Distance: {buoy_association_dist} ({self.da_distance_threshold})')
 
+                        # outlier thresholding
                         if self.da_distance_threshold > 0 and buoy_association_dist > self.da_distance_threshold:
                             if self.verbose_graph_buoy_detections:
-                                print(f'DA distance threshold exceeded, buoy detection ignored.')
+                                print(f'DA euclidean distance threshold exceeded, buoy detection ignored. (euclidean)')
                             valid_buoy_da = False
+
+                        if self.da_m_distance_threshold > 0 and buoy_association_m_dist > self.da_m_distance_threshold:
+                            if self.verbose_graph_buoy_detections:
+                                print(f'DA mahalanobis distance threshold exceeded, buoy detection ignored. ')
+                            valid_buoy_da = False
+
+                        if valid_buoy_da:
+                            recorded_association = buoy_association_id
+                        else:
+                            recorded_association = -1
+
+                        self.buoy_detection_info.append([recorded_association,
+                                                         buoy_association_dist,
+                                                         buoy_association_m_dist])
 
                         # ===== DA debugging =====
                         # Apply relative detection to gt to find the true DA
@@ -1334,7 +1381,7 @@ class online_slam_2d:
                                                                   self.b[buoy_association_id],
                                                                   detect_bearing,
                                                                   detect_range,
-                                                                  self.detection_model))
+                                                                  self.buoy_detection_model))
 
                 # === Rope ===
                 if relative_detection is not None and da_id == -ObjectID.ROPE.value:
@@ -1383,9 +1430,10 @@ class online_slam_2d:
                         self.r_associations[self.current_r_ind] = rope_association_ind
 
                         if self.individual_rope_detections:
-                            self.graph.addPriorPoint2(self.r[self.current_r_ind],
-                                                      self.rope_centers[rope_association_ind],
-                                                      self.rope_noise_models[rope_association_ind])
+                            if self.use_rope_detections:
+                                self.graph.addPriorPoint2(self.r[self.current_r_ind],
+                                                          self.rope_centers[rope_association_ind],
+                                                          self.rope_noise_models[rope_association_ind])
 
                         # The Nacho method is used when the individual_rope_detections is set to False
                         else:
@@ -1904,7 +1952,7 @@ class online_slam_2d:
 
         :return:
         """
-        # Check that self.r has been initialized
+        # Check that self.l has been initialized
         if self.l is None:
             return
 
@@ -1949,6 +1997,10 @@ class online_slam_2d:
             self.est_line_pub.publish(est_lines)
 
     def publish_est_line_verbose(self, rope_id):
+        # Check that self.l has been initialized
+        if self.l is None:
+            return
+
         # Check for current marginals
         if self.current_marginals is None:
             return
@@ -2153,6 +2205,7 @@ class analyze_slam:
         da_check: The online version uses the ground truth and the relative detection data to find the DA ground truth
         """
         # TODO Unify the online and offline versions of the analysis
+        # TODO Maybe just drop offline version or learn how to code to make this less of a mess...
 
         if hasattr(slam_object, 'detections_graph'):
             self.detections = slam_object.detections_graph
@@ -2187,6 +2240,24 @@ class analyze_slam:
         else:
             self.rope_buoy_ind = None
             self.n_ropes = 0
+
+        if hasattr(slam_object, 'buoy_detection_info'):
+            self.buoy_detection_info = np.array(slam_object.buoy_detection_info)
+        else:
+            self.buoy_detection_info = None
+
+        if hasattr(slam_object, 'da_distance_threshold'):
+            self.da_distance_threshold = np.array(slam_object.da_distance_threshold)
+        else:
+            self.buoy_detection_info = -1
+
+        if hasattr(slam_object, 'da_m_distance_threshold'):
+            self.da_m_distance_threshold = np.array(slam_object.da_m_distance_threshold)
+        else:
+            self.buoy_detection_info = -1
+
+
+
 
         # ===== Visualization parameters =====
         self.dr_color = 'r'
@@ -2364,6 +2435,8 @@ class analyze_slam:
         """
         Visualize The Posterior
         """
+        print("Analysis: visualize_final")
+
         # Check if Optimization has occurred
         if self.current_estimate is None:
             print('Need to perform optimization before it can be printed!')
@@ -2484,6 +2557,9 @@ class analyze_slam:
         """
         Visualize the online estimate compared to the final estimate
         """
+
+        print("Analysis: visualize_online")
+
         # Check if Optimization has occurred
         if self.current_estimate is None:
             print('Need to perform optimization before it can be printed!')
@@ -2583,6 +2659,8 @@ class analyze_slam:
         :return:
         """
 
+        print("Analysis: plot_error_positions")
+
         dr_error = analyze_slam.calculate_distances(self.dr_poses[:, :2], self.posterior_poses[:, :2])
         online_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.posterior_poses[:, :2])
 
@@ -2605,6 +2683,9 @@ class analyze_slam:
         # Show the plot
         plt.grid(True)
         plt.show()
+
+        data = np.hstack((dr_error, online_error))
+        np.savetxt('/home/julian/Documents/thesis_figs/dr_online_error.csv', data, delimiter=',')
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):
         """
@@ -2781,6 +2862,53 @@ class analyze_slam:
         ax_t.plot(post_error[:, 2], self.post_color, label='Posterior')
         ax_t.title.set_text(f'Theta Error\nD.R. MSE: {dr_mse_error[2]:.4f}\n Posterior MSE: {post_mse_error[2]:.4f}')
         ax_t.legend()
+
+        plt.show()
+
+    def show_buoy_info(self):
+        """
+        Plots associations and distances of buoy detections
+        :return:
+        """
+        if self.buoy_detection_info is None:
+            return
+
+        associations = self.buoy_detection_info[:, 0]
+        e_distances = self.buoy_detection_info[:, 1]
+        m_distances = self.buoy_detection_info[:, 2]
+
+        true_associations = np.array((3, -1, 2,
+                                      0, 5,
+                                      4, 1,
+                                      4,
+                                      3, -1, 2))
+
+        print(f"Associations: {associations}")
+        print(f"True associations: {true_associations}")
+
+        # ===== Plot =====
+        fig, (ax_da, ax_e_dist, ax_m_dist) = plt.subplots(1, 3)
+        # Data associations
+        ax_da.plot(associations)
+        ax_da.plot(true_associations, color='green', label='Truth')
+        ax_da.set_title('Data associations')
+        ax_da.legend()
+
+        # Euclidean distances
+        ax_e_dist.set_title('Euclidean distances')
+        ax_e_dist.plot(e_distances, label='Euclidean distances')
+        # plot threshold
+        if self.da_distance_threshold > 0:
+            ax_e_dist.axhline(self.da_distance_threshold, color='red', linestyle='--', linewidth=1, label='Threshold')
+
+
+        # Mahalanobis distances
+        ax_m_dist.set_title('Mahalanobis distances')
+        ax_m_dist.plot(m_distances, label='Mahalanobis distances')
+        # plot threshold
+        if self.da_m_distance_threshold > 0:
+            ax_m_dist.axhline(self.da_m_distance_threshold, color='red', linestyle='--', linewidth=1, label='Threshold')
+
 
         plt.show()
 
