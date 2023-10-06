@@ -71,8 +71,8 @@ x_2_pos = (2, 0)
 x_3_pos = (3, 0)
 x_4_pos = (4, 0)
 x_5_pos = (5, 0)
-r_0_pos = (2.5, 1)
-b_0_pos = (2.5, -1)
+r_0_pos = (2.5, 1)  # (2.5, 1)
+b_0_pos = (2.5, -1)  # (2.5, -1)
 positions = {
     'Prior Factor': (x_0_pos[0] - 0.5, x_0_pos[1]),
     'Factor 1': calculate_midpoint(x_0_pos, x_1_pos),
@@ -87,11 +87,11 @@ positions = {
     'x_4': x_4_pos,
     'x_5': x_5_pos,
     'r_0': r_0_pos,
-    rope_prior_factor: (r_0_pos[0], r_0_pos[1] + 0.5),
+    rope_prior_factor: (r_0_pos[0], r_0_pos[1] + 0.75),
     rope_factor_name_2: calculate_midpoint(x_2_pos, r_0_pos),
     rope_factor_name_3: calculate_midpoint(x_3_pos, r_0_pos),
     'b_0': b_0_pos,
-    buoy_prior_factor: (b_0_pos[0], b_0_pos[1] - 0.5),
+    buoy_prior_factor: (b_0_pos[0], b_0_pos[1] - 0.75),
     buoy_factor_name_1: calculate_midpoint(x_1_pos, b_0_pos),
     buoy_factor_name_4: calculate_midpoint(x_4_pos, b_0_pos),
     'BLANK': (x_5_pos[0] + 0.75, 0)
@@ -162,17 +162,25 @@ node_sizes = {
     'BLANK': 50
 }
 
-# Set up plot layout with specified positions
-pos = positions
 
 # Draw the factor graph with specified node sizes and colors
-nx.draw(G, pos, with_labels=False, node_color=[node_colors[node] for node in G.nodes()],
+nx.draw(G, positions, with_labels=False, node_color=[node_colors[node] for node in G.nodes()],
         edgecolors=[node_edge_colors[node] for node in G.nodes()], font_color='black',
         node_size=[node_sizes[node] for node in G.nodes()])
 
+# === Labels ===
 # draw only non factor labels
-labels_to_use = {node: f'$\\mathit{{{node}}}$' for node in G.nodes() if node[0] in ['x', 'r', 'b'] }
-nx.draw_networkx_labels(G, pos,labels=labels_to_use)
+# labels_to_use = {node: f'$\\mathit{{{node}}}$' for node in G.nodes() if node[0] in ['x', 'r', 'b'] }
+# Change x labels to m
+labels_to_use = {}
+for node in G.nodes():
+    if node[0] in ['r', 'b']:
+        labels_to_use[node] = f'$\\mathit{{{node}}}$'
+    elif node[0] in ['x']:
+        new_label = f'm_{node[-1]}'
+        labels_to_use[node] = f'$\\mathit{{{new_label}}}$'
+
+nx.draw_networkx_labels(G, positions, labels=labels_to_use)
 
 nx.draw_networkx_edges(G, pos=positions, edgelist=[('x_5', 'BLANK')], style='dashed', edge_color='black')
 
@@ -183,6 +191,7 @@ node_colors = [prior_color, buoy_prior_color, rope_prior_color, DR_color, range_
 legend_colors = node_colors
 legend_handles = [plt.Line2D([0], [0], marker='o', color='w', label=label, markerfacecolor=color, markersize=10) for label, color in zip(legend_labels, legend_colors)]
 plt.legend(handles=legend_handles, loc='upper left')
+plt.axis('equal')
 
 
 # Show the plot

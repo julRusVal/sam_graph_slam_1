@@ -22,10 +22,10 @@
     <param name="simulated_detections" value="True"/>
     <param name="rope_associations" value="True"/>
     <param name="prioritize_buoy_detections" value="True"/>
-    <param name="da_distance_threshold" value="7.5"/>
+    <param name="da_distance_threshold" value="5"/>
     <param name="da_m_distance_threshold" value="-1.0"/>
-    <param name="individual_rope_detections" value="True"/>
-    <param name="use_rope_detections" value="False"/>
+    <param name="individual_rope_detections" value="False"/>
+    <param name="use_rope_detections" value="True"/>
     <param name="update_priors" value="False"/>
 
     <!-- Detector data -->
@@ -54,7 +54,7 @@
     <param name="detect_dist_sig" value="15.0"/>
 
     <!-- Detection sigmas -->
-    <param name="rope_along_sig" value="15.0"/>
+    <param name="rope_along_sig" value="3.0"/>
     <param name="rope_cross_sig" value="1.0"/>
 
     <!-- Output parameters -->

@@ -8,6 +8,7 @@ Script for processing data from SMaRC's Stonefish simulation
 from __future__ import annotations
 import itertools
 import queue
+import os
 
 # Maths
 import numpy as np
@@ -1484,7 +1485,9 @@ class online_slam_2d:
                 self.publish_est_buoys()
                 if not self.individual_rope_detections:
                     self.publish_est_line()
-                    self.publish_est_line_verbose(2)
+                    # self.publish_est_line_verbose(0)
+                    # self.publish_est_line_verbose(1)
+                    # self.publish_est_line_verbose(2)
 
                 # Buoy detection
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value:
@@ -2138,7 +2141,17 @@ class analyze_slam:
     """
 
     # Saving methods
-    def __init__(self, slam_object: offline_slam_2d | online_slam_2d):
+    def __init__(self, slam_object: offline_slam_2d | online_slam_2d, output_path=None):
+        # Directory for saving analysis
+        #self.file_path = output_path
+        if output_path is None or not os.path.isdir(output_path):
+            self.file_path = ''
+        else:
+            if output_path[-1] != '/':
+                output_path = output_path + '/'
+            self.file_path = output_path
+
+
         # unpack slam object
         self.slam = slam_object
         self.graph = slam_object.graph
@@ -2276,7 +2289,7 @@ class analyze_slam:
         self.plot_limits = None
         self.find_plot_limits()
 
-    def save_for_sensor_processing(self, file_path=''):
+    def save_for_sensor_processing(self):
         """
         Saves three files related to the camera: camera_gt.csv, camera_dr.csv, camera_est.csv
         Saves three files related to the sss: sss_gt.csv, sss_dr.csv, sss_est.csv
@@ -2285,6 +2298,9 @@ class analyze_slam:
 
         :return:
         """
+        if self.file_path is None:
+            print("Analysis output path not specified")
+            return
 
         # ===== Save base link (wrt map) poses =====
         camera_gt = []
@@ -2360,14 +2376,14 @@ class analyze_slam:
 
         # write to camera and sss files
         if len(camera_gt) > 0:
-            write_array_to_csv(file_path + 'camera_gt.csv', camera_gt)
-            write_array_to_csv(file_path + 'camera_dr.csv', camera_dr)
-            write_array_to_csv(file_path + 'camera_est.csv', camera_est)
+            write_array_to_csv(self.file_path + 'camera_gt.csv', camera_gt)
+            write_array_to_csv(self.file_path + 'camera_dr.csv', camera_dr)
+            write_array_to_csv(self.file_path + 'camera_est.csv', camera_est)
 
         if len(sss_gt) > 0:
-            write_array_to_csv(file_path + 'sss_gt.csv', sss_gt)
-            write_array_to_csv(file_path + 'sss_dr.csv', sss_dr)
-            write_array_to_csv(file_path + 'sss_est.csv', sss_est)
+            write_array_to_csv(self.file_path + 'sss_gt.csv', sss_gt)
+            write_array_to_csv(self.file_path + 'sss_dr.csv', sss_dr)
+            write_array_to_csv(self.file_path + 'sss_est.csv', sss_est)
 
         # ===== Save buoy estimated positions =====
         # only the x an y coords are estimated, buoys are assumed to have z = 0
@@ -2379,21 +2395,26 @@ class analyze_slam:
                 buoys_est[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
 
             # Write to file
-            write_array_to_csv(file_path + 'buoys_est.csv', buoys_est)
+            write_array_to_csv(self.file_path + 'buoys_est.csv', buoys_est)
 
-    def save_2d_poses(self, file_path=''):
+    def save_2d_poses(self):
         """
         Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
         format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
 
         :return:
         """
-        write_array_to_csv(file_path + 'analysis_gt.csv', self.gt_poses)
-        write_array_to_csv(file_path + 'analysis_dr.csv', self.dr_poses)
-        write_array_to_csv(file_path + 'analysis_est.csv', self.posterior_poses)
+
+        if self.file_path is None:
+            print("Analysis output path not specified")
+            return
+
+        write_array_to_csv(self.file_path + 'analysis_gt.csv', self.gt_poses)
+        write_array_to_csv(self.file_path + 'analysis_dr.csv', self.dr_poses)
+        write_array_to_csv(self.file_path + 'analysis_est.csv', self.posterior_poses)
 
         if self.online_poses is not None:
-            write_array_to_csv(file_path + 'analysis_online.csv', self.online_poses)
+            write_array_to_csv(self.file_path + 'analysis_online.csv', self.online_poses)
 
     # Plotting methods
     def find_plot_limits(self):
@@ -2553,6 +2574,10 @@ class analyze_slam:
         ax.legend(fontsize=self.legend_size)
         plt.show()
 
+        # if self.file_path is not None:
+        #     plt.savefig(self.file_path + "fig/final.png", dpi=300)
+
+
     def visualize_online(self, plot_dr=False, plot_final=False, plot_buoy=True, plot_correspondence=False):
         """
         Visualize the online estimate compared to the final estimate
@@ -2664,6 +2689,8 @@ class analyze_slam:
         dr_error = analyze_slam.calculate_distances(self.dr_poses[:, :2], self.posterior_poses[:, :2])
         online_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.posterior_poses[:, :2])
 
+        print(f"shape: {online_error.shape}")
+
         dr_rmse = np.sqrt(np.mean(dr_error ** 2))
         online_rmse = np.sqrt(np.mean(online_error ** 2))
 
@@ -2676,15 +2703,15 @@ class analyze_slam:
 
         # Add labels and title
         plt.xlabel('Poses', fontsize=self.label_size)
-        plt.ylabel('Absolute Error [m]', fontsize=self.label_size)
-        plt.title('Absolute Error Comparison', fontsize=self.title_size)
+        plt.ylabel('Error [m]', fontsize=self.label_size)
+        plt.title('Error Comparison', fontsize=self.title_size)
         plt.legend(fontsize=self.legend_size)
 
         # Show the plot
         plt.grid(True)
         plt.show()
 
-        data = np.hstack((dr_error, online_error))
+        data = np.vstack((dr_error, online_error))
         np.savetxt('/home/julian/Documents/thesis_figs/dr_online_error.csv', data, delimiter=',')
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):

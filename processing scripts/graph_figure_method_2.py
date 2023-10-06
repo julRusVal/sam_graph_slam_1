@@ -176,17 +176,24 @@ node_sizes = {
     'BLANK': 50
 }
 
-# Set up plot layout with specified positions
-pos = positions
-
 # Draw the factor graph with specified node sizes and colors
-nx.draw(G, pos, with_labels=False, node_color=[node_colors[node] for node in G.nodes()],
+nx.draw(G, positions, with_labels=False, node_color=[node_colors[node] for node in G.nodes()],
         edgecolors=[node_edge_colors[node] for node in G.nodes()], font_color='black',
         node_size=[node_sizes[node] for node in G.nodes()])
 
+# === Labels ===
 # draw only non factor labels
-labels_to_use = {node: f'$\\mathit{{{node}}}$' for node in G.nodes() if node[0] in ['x', 'r', 'b'] }
-nx.draw_networkx_labels(G, pos,labels=labels_to_use)
+# labels_to_use = {node: f'$\\mathit{{{node}}}$' for node in G.nodes() if node[0] in ['x', 'r', 'b'] }
+# Change x labels to m
+labels_to_use = {}
+for node in G.nodes():
+    if node[0] in ['r', 'b']:
+        labels_to_use[node] = f'$\\mathit{{{node}}}$'
+    elif node[0] in ['x']:
+        new_label = f'm_{node[-1]}'
+        labels_to_use[node] = f'$\\mathit{{{new_label}}}$'
+
+nx.draw_networkx_labels(G, positions, labels=labels_to_use)
 
 nx.draw_networkx_edges(G, pos=positions, edgelist=[('x_5', 'BLANK')], style='dashed', edge_color='black')
 
