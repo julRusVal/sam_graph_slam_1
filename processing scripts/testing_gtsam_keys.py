@@ -3,6 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import gtsam.utils.plot as gtsam_plot
 
+
+# graph = gtsam.NonlinearFactorGraph()
+# parameters = gtsam.ISAM2Params()
+# isam = gtsam.ISAM2(parameters)
+
 prior_model = gtsam.noiseModel.Diagonal.Sigmas((0.3, 0.3, 0.1))
 odometry_model = gtsam.noiseModel.Diagonal.Sigmas((0.2, 0.2, 0.1))
 Between = gtsam.BetweenFactorPose2
