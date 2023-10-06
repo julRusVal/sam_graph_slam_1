@@ -1525,6 +1525,9 @@ if __name__ == '__main__':
     inds_med_size = 55  # 45 worked well
     show_final_post = True
 
+    buoy_center_size_threshold = 5
+    buoy_center_exclusion_zone = 25
+
     # ===== Boat sonar data =====
     process_boat_sss = False
 
@@ -1692,8 +1695,8 @@ if __name__ == '__main__':
                                      use_starboard=False)
 
         # Process buoy detections
-        sss_analysis.post_find_buoy_centers(min_region_size=5,
-                                            exclusion_zone=25)
+        sss_analysis.post_find_buoy_centers(min_region_size=buoy_center_size_threshold,  # 5
+                                            exclusion_zone=buoy_center_exclusion_zone)
 
         # Work in progress,
         # sss_analysis.post_find_buoy_offsets(window_size=55, plot=True)
