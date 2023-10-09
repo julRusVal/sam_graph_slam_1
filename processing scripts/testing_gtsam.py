@@ -14,6 +14,10 @@ b_01 = p_0.between(p_1)
 b_12 = p_1.between(p_2)
 
 graph = gtsam.NonlinearFactorGraph()
+parameters = gtsam.ISAM2Params()
+# self.parameters.setRelinearizeThreshold(0.1)
+# self.parameters.setRelinearizeSkip(1)
+isam = gtsam.ISAM2(parameters)
 
 point = np.array((3, 5), dtype=np.float64)
 
