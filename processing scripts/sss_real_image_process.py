@@ -1514,7 +1514,7 @@ if __name__ == '__main__':
 
     # ===== CPD method =====
     perform_cpd = False
-    cpd_show = True
+    cpd_show = False
     cpd_max_depth = 100
     cpd_ratio = 1.1  # 1.55 was default
     cpd_med_size = 0
@@ -1525,12 +1525,17 @@ if __name__ == '__main__':
     # ===== Post ====
     perform_post = True
     ringing_max_count = 2
-    ringing_show = True
+    ringing_show = False
     limiting_min = 30
     limiting_max = 100
-    limiting_show = True
+    limiting_show = False
     inds_med_size = 55  # 45 worked well
-    show_final_post = True
+    show_final_post = False
+
+    buoy_center_size_threshold = 5
+    buoy_center_exclusion_zone = 25
+
+    rope_exclusion_size = 25
 
     # ===== Boat sonar data =====
     process_boat_sss = False
@@ -1699,8 +1704,8 @@ if __name__ == '__main__':
                                      use_starboard=False)
 
         # Process buoy detections
-        sss_analysis.post_find_buoy_centers(min_region_size=5,
-                                            exclusion_zone=25)
+        sss_analysis.post_find_buoy_centers(min_region_size=buoy_center_size_threshold,  # 5
+                                            exclusion_zone=buoy_center_exclusion_zone)
 
         # Work in progress,
         # sss_analysis.post_find_buoy_offsets(window_size=55, plot=True)
@@ -1722,7 +1727,7 @@ if __name__ == '__main__':
                                       max_index=limiting_max,
                                       show_results=limiting_show)
 
-        sss_analysis.post_exclude_rope_in_buoy_area(radius=25, show_results=True)
+        sss_analysis.post_exclude_rope_in_buoy_area(radius=rope_exclusion_size, show_results=True)
 
         post_port_detection_inds, post_star_detection_inds = sss_analysis.find_rising_edges(data=sss_analysis.post_rope,
                                                                                             threshold=0,
