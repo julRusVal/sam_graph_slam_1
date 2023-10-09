@@ -949,7 +949,7 @@ class process_sss:
             ax2.title.set_text(f'Output Image')
             ax2.imshow(img_rope_output)
 
-            ax3.title.set_text(f'Maks')
+            ax3.title.set_text(f'Mask')
             ax3.imshow(buoy_mask * 255)
 
             plt.show()
@@ -1007,13 +1007,20 @@ class process_sss:
         """
         This method is for generating images for icra paper
 
+        Note: only port are shown due to the survey path taken
+
         :return:
         """
         circ_rad = 10
         circ_thick = 2
 
-        start_ind = 4800
-        end_ind = 5650
+        # start_ind = 4800  # values for image in icra submission
+        # end_ind = 5650
+
+        start_ind = 0
+        end_ind = int(self.img.shape[0] - 1)
+
+        end_ind_column = int(self.img.shape[1]//2)
 
         if self.post_rope_original is None:
             print("Post processing was not initialized!")
@@ -1047,10 +1054,10 @@ class process_sss:
         # Save
         print("Saving detection for ICRA paper")
         image_path = f"data/detector_output_original_{start_ind}_{end_ind}.png"
-        cv2.imwrite(image_path, img_color[start_ind:end_ind, :, ::-1])
+        cv2.imwrite(image_path, img_color[start_ind:end_ind, :end_ind_column, ::-1])
 
         image_path = f"data/detector_output_marked_{start_ind}_{end_ind}.png"
-        cv2.imwrite(image_path, img_combined[start_ind:end_ind, :, ::-1])
+        cv2.imwrite(image_path, img_combined[start_ind:end_ind, :end_ind_column, ::-1])
 
     def post_interleave_detection_inds(self, channel_data, channel_id, med_filter_kernel=0):
         """
