@@ -520,9 +520,9 @@ while running:
     clock.tick(simulation.target_fps)
 
 # Save 
-save_array_as_csv(sam.path, '../processing scripts/trajectory.csv')
-save_array_as_csv(sam.path_noisy, '../processing scripts/trajectory_gt.csv')
-save_array_as_csv(simulation.farm_buoys, '../processing scripts/landmarks.csv')
+save_array_as_csv(sam.path, '../testing scripts/trajectory.csv')
+save_array_as_csv(sam.path_noisy, '../testing scripts/trajectory_gt.csv')
+save_array_as_csv(simulation.farm_buoys, '../testing scripts/landmarks.csv')
 
 # Quit Pygame
 pygame.display.quit()

@@ -73,7 +73,7 @@ def show_graph(graph, result, poses, landmarks):
 rng = default_rng()
 
 # Data source
-import_data = True
+import_data = False
 
 # Initial position noise
 dist_sigma_initial = 0.01
@@ -109,8 +109,8 @@ colors = ['orange', 'green', 'purple', 'cyan', 'brown', 'pink', 'gray', 'olive']
 # %% Data
 if import_data:
     # Import the data
-    poses_list = read_csv_to_array("../processing scripts/trajectory.csv")
-    landmarks = read_csv_to_array("../processing scripts/landmarks.csv")
+    poses_list = read_csv_to_array("../testing scripts/trajectory.csv")
+    landmarks = read_csv_to_array("../testing scripts/landmarks.csv")
     N = len(poses_list)
     N_landmarks = len(landmarks)
 else:
