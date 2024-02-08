@@ -794,6 +794,9 @@ class online_slam_2d:
         # ===== DA and outlier info =====
         self.buoy_detection_info = []
 
+        # ===== Performance info =====
+        self.performance_metrics = []
+
         # ===== Debugging =====
         self.da_check = {}
         self.est_detect_loc = None
@@ -1307,8 +1310,13 @@ class online_slam_2d:
                 else:
                     current_covariance = None
 
+                # record detection type for performance metrics
+                relative_detection_state = 0
+
                 # === Buoy ===
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+                    relative_detection_state = 1  # perfomance metrics
+
                     # data association flag
                     valid_buoy_da = True
 
@@ -1386,6 +1394,7 @@ class online_slam_2d:
 
                 # === Rope ===
                 if relative_detection is not None and da_id == -ObjectID.ROPE.value:
+                    relative_detection_state = 2  # performance metrics
                     valid_rope = True
 
                     # Calculate the map location of the detection given relative measurements and current estimate
@@ -1455,6 +1464,7 @@ class online_slam_2d:
                 start_time = rospy.Time.now()
 
                 # Incremental update
+                # TODO Only calculate
                 self.isam.update(self.graph, self.initial_estimate)
                 self.current_estimate = self.isam.calculateEstimate()
 
@@ -1467,6 +1477,12 @@ class online_slam_2d:
 
                 end_time = rospy.Time.now()
                 update_time = (end_time - start_time).to_sec()
+
+                # === record performance metrics of update ===
+                # [time(s), factor count, detection state]
+                factor_count = self.graph.nrFactors()
+                # detection state: 0 = odometry only, 1 = Buoy detection, 2 = rope detection
+                self.performance_metrics.append([update_time, factor_count, relative_detection_state])
 
                 # === Update inferred priors ===
                 if self.update_priors:
@@ -2269,6 +2285,10 @@ class analyze_slam:
         else:
             self.buoy_detection_info = -1
 
+        if hasattr(slam_object, 'performance_metrics'):
+            self.performance_metrics = np.array(slam_object.performance_metrics)
+        else:
+            self.performance_metrics = None
 
 
 
@@ -2399,7 +2419,7 @@ class analyze_slam:
 
     def save_2d_poses(self):
         """
-        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        Saves three things: camera_gt.csv, camera_dr.csv, camera_est.csv
         format: [[x, y, z, q_w, q_x, q_y, q_z, img seq #]]
 
         :return:
@@ -2415,6 +2435,24 @@ class analyze_slam:
 
         if self.online_poses is not None:
             write_array_to_csv(self.file_path + 'analysis_online.csv', self.online_poses)
+
+    def save_performance_metrics(self):
+        """
+        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        format: [[update time, factor count]]
+
+        :return:
+        """
+
+        if self.file_path is None:
+            print("Analysis output path not specified")
+            return
+
+        if self.performance_metrics is None:
+            print("Performance metrics no defined")
+            return
+
+        write_array_to_csv(self.file_path + 'performance_metrics.csv', self.performance_metrics)
 
     # Plotting methods
     def find_plot_limits(self):

@@ -1,4 +1,5 @@
 <?xml version="1.0"?>
+<!-- Launch file for Method 3, no rope landmarks, for ICRA-->
 <launch>
     <arg name="robot_name" default="sam"/>
     
