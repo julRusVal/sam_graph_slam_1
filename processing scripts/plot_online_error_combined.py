@@ -4,6 +4,7 @@ compared to their own final estimates.
 """
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # Settings
 dr_color = 'r'
@@ -16,47 +17,70 @@ title_size = 16
 legend_size = 12
 label_size = 14
 
+iros_data = True
+
 # Paths
+if iros_data:
+    # This will load the IROS data
+    script_directory = os.path.dirname(os.path.abspath(__file__))
 
-# Method 1
-method_1_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_new"
-# Method 2
-method_2_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_rope"
-# Method 3
-method_3_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_no_rope"
+    # method 1
+    method_1_path = script_directory + "/data/iros_method_1"
+    method_1_error = np.genfromtxt(method_1_path + "/dr_online_error.csv",
+                                   delimiter=',', dtype=float)
+    method_1_detections = np.genfromtxt(method_1_path + '/detections_graph.csv',
+                                        delimiter=',', dtype=float)
 
-# Load
-# method 1
-new = np.genfromtxt('/home/julian/Documents/thesis_figs/dr_online_error_new.csv',
-                    delimiter=',', dtype=float)
+    # method 2
+    method_2_path = script_directory + "/data/iros_method_2"
+    method_2_error = np.genfromtxt(method_2_path + "/dr_online_error.csv",
+                                   delimiter=',', dtype=float)
+    method_2_detections = np.genfromtxt(method_2_path + '/detections_graph.csv',
+                                        delimiter=',', dtype=float)
 
-method_1_detections = np.genfromtxt(method_1_path + '/detections_graph.csv',
-                    delimiter=',', dtype=float)
+    # method 1
+    method_3_path = script_directory + "/data/iros_method_3"
+    method_3_error = np.genfromtxt(method_3_path + "/dr_online_error.csv",
+                                   delimiter=',', dtype=float)
+    method_3_detections = np.genfromtxt(method_3_path + '/detections_graph.csv',
+                                        delimiter=',', dtype=float)
+else:
+    # This will load the ICRA data
+    # Note that the ICRA data is organized a little bit differently
 
+    # method 1
+    method_1_error = np.genfromtxt('/home/julian/Documents/thesis_figs/dr_online_error_new.csv',
+                                   delimiter=',', dtype=float)
 
-# method 2
-nr = np.genfromtxt('/home/julian/Documents/thesis_figs/dr_online_error_no_rope.csv',
-                   delimiter=',', dtype=float)
+    method_1_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_new"
+    method_1_detections = np.genfromtxt(method_1_path + '/detections_graph.csv',
+                                        delimiter=',', dtype=float)
 
-method_2_detections = np.genfromtxt(method_2_path + '/detections_graph.csv',
-                    delimiter=',', dtype=float)
+    # method 2
+    method_2_error = np.genfromtxt('/home/julian/Documents/thesis_figs/dr_online_error_no_rope.csv',
+                                   delimiter=',', dtype=float)
 
-# method 3
-r = np.genfromtxt('/home/julian/Documents/thesis_figs/dr_online_error_with_rope.csv',
-                  delimiter=',', dtype=float)
+    method_2_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_rope"
+    method_2_detections = np.genfromtxt(method_2_path + '/detections_graph.csv',
+                                        delimiter=',', dtype=float)
 
-method_3_detections = np.genfromtxt(method_3_path + '/detections_graph.csv',
-                    delimiter=',', dtype=float)
+    # method 3
+    method_3_error = np.genfromtxt('/home/julian/Documents/thesis_figs/dr_online_error_with_rope.csv',
+                                   delimiter=',', dtype=float)
+
+    method_3_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_no_rope"
+    method_3_detections = np.genfromtxt(method_3_path + '/detections_graph.csv',
+                                        delimiter=',', dtype=float)
 
 # data = [new, nr, r]
-data = [new, r, nr]
+data = [method_1_error, method_2_error, method_3_error]
 detections = [method_1_detections, method_2_detections, method_3_detections]
 # data_colors = [post_color, online_color, gt_color]
 data_colors = [post_color, gt_color, online_color]
 titles = ["Method 1", "Method 2", "Method 3"]
 
 crossings = [[25, 45, 100, 145, 155, 210],
-            [155, 160],
+             [155, 160],
              [30, 160, 175]]
 
 # buoy_detections = [11, 33, 55, 84,
@@ -71,7 +95,7 @@ plot_buoy_detections = True
 
 # Create a plot
 n_plots = len(data)
-fig, ax = plt.subplots(n_plots, 1, sharey=True, figsize=(9, 6), dpi=150)
+fig, ax = plt.subplots(n_plots, 1, sharex=True, figsize=(9, 6), dpi=150)
 
 for i in range(0, n_plots):
     dr_error = data[i][0, :]
@@ -97,8 +121,6 @@ for i in range(0, n_plots):
         for detection_ignore_ind, detection_ind in enumerate(detections_inds):
             if detection_ignore_ind not in detections_ignore:
                 ax[i].axvline(detection_ind, color='cyan', linestyle='--')
-
-
 
     # Add labels and title
     ax[i].legend(fontsize=legend_size, loc='upper left')

@@ -1454,11 +1454,13 @@ class online_slam_2d:
                                                                       self.detection_model))
 
                     # Add factor between current x and current r
-                    self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
-                                                              self.r[self.current_r_ind],
-                                                              detect_bearing,
-                                                              detect_range,
-                                                              self.detection_model))
+                    # added if statement to completely ignore rope factors for performance metrics
+                    if self.use_rope_detections:
+                        self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                                  self.r[self.current_r_ind],
+                                                                  detect_bearing,
+                                                                  detect_range,
+                                                                  self.detection_model))
 
                 # Time update process
                 start_time = rospy.Time.now()
@@ -2750,7 +2752,7 @@ class analyze_slam:
         plt.show()
 
         data = np.vstack((dr_error, online_error))
-        np.savetxt('/home/julian/Documents/thesis_figs/dr_online_error.csv', data, delimiter=',')
+        np.savetxt(self.file_path + 'dr_online_error.csv', data, delimiter=',')
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):
         """
