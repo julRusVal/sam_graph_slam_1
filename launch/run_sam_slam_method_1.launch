@@ -1,4 +1,5 @@
 <?xml version="1.0"?>
+<!-- Launch file for Method 1, single point landmark per rope, for ICRA-->
 <launch>
     <arg name="robot_name" default="sam"/>
     

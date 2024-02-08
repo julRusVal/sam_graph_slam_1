@@ -27,6 +27,8 @@ import math
 from sss_object_detection.consts import ObjectID
 from sss_object_detection.cpd_detector import CPDetector
 
+# Import for basic time
+import time
 
 class process_sss:
     def __init__(self, data_file_name, seq_file_name, start_ind=None, end_ind=None, max_range_ind=None,
@@ -1059,7 +1061,7 @@ class process_sss:
         image_path = f"data/detector_output_marked_{start_ind}_{end_ind}.png"
         cv2.imwrite(image_path, img_combined[start_ind:end_ind, :end_ind_column, ::-1])
 
-    def post_interleave_detection_inds(self, channel_data, channel_id, med_filter_kernel=0):
+    def post_interleave_detection_inds(self, channel_data, channel_id, med_filter_kernel=0, show_results=False):
         """
         column 0 is the first detection and column 1 is the 2nd detection.
         The columns will be interleaved together for further filtering.
@@ -1105,29 +1107,29 @@ class process_sss:
         else:
             channel_id = 'INVALID'
             print("Improper channel ID given!")
+        if show_results:
+            # Generate raw sonar image of correct size
+            img_color = np.dstack((self.img, self.img, self.img))
+            img_color = np.repeat(img_color, 2, axis=0)
 
-        # Generate raw sonar image of correct size
-        img_color = np.dstack((self.img, self.img, self.img))
-        img_color = np.repeat(img_color, 2, axis=0)
+            # Form plot
+            interleaved_fig, (ax1, ax2) = plt.subplots(1, 2)
+            interleaved_fig.suptitle(f'Post: Interleaved results - {channel_id.upper()}\n'
+                                     f'Median Filter size: {med_filter_kernel}')
 
-        # Form plot
-        interleaved_fig, (ax1, ax2) = plt.subplots(1, 2)
-        interleaved_fig.suptitle(f'Post: Interleaved results - {channel_id.upper()}\n'
-                                 f'Median Filter size: {med_filter_kernel}')
+            ax1.title.set_text('Raw Sensor Data')
 
-        ax1.title.set_text('Raw Sensor Data')
+            ax1.imshow(img_color, aspect=.05)
 
-        ax1.imshow(img_color, aspect=.05)
+            ax2.title.set_text(f'Interleaved Indices')
+            ax2.plot(data_interleaved, x_values, label="original")
+            ax2.plot(data_interleaved_med, x_values, label="Median Filtered")
 
-        ax2.title.set_text(f'Interleaved Indices')
-        ax2.plot(data_interleaved, x_values, label="original")
-        ax2.plot(data_interleaved_med, x_values, label="Median Filtered")
+            plt.legend()
+            ax2.invert_yaxis()
+            ax2.invert_xaxis()
 
-        plt.legend()
-        ax2.invert_yaxis()
-        ax2.invert_xaxis()
-
-        plt.show()
+            plt.show()
 
         return data_interleaved, data_interleaved_med
 
@@ -1506,7 +1508,7 @@ if __name__ == '__main__':
     template_h_threshold = 3000  # buoy
 
     # ===== Standard canny detector =====
-    perform_standard_canny = True
+    perform_standard_canny = False
     standard_canny_show = False
     standard_canny_med_size = 7
     standard_canny_l_thresh = 175
@@ -1537,6 +1539,10 @@ if __name__ == '__main__':
 
     rope_exclusion_size = 25
 
+    show_final_inds_port = False
+
+    start_time = time.time()
+
     # ===== Boat sonar data =====
     process_boat_sss = False
 
@@ -1545,7 +1551,7 @@ if __name__ == '__main__':
     boat_file_name = 'Sonar_2023-05-03_20.51.26.sl2'
 
     start_ind = 0  # 2000  # 3400  # 3400  # 6300
-    end_ind = 0  # 6000  # 5700  # 4600  # 7200
+    end_ind = 0  # 7608# 6000  # 5700  # 4600  # 7200
     max_range_ing = 175
 
     # detections = [[7106, 1092], [6456, 1064],
@@ -1682,6 +1688,9 @@ if __name__ == '__main__':
         sss_analysis.show_detections(grad_results=grad_method_results,
                                      canny_results=canny_custom)
 
+    pre_end_time = time.time()
+    post_end_time = None
+
     while perform_post:
         # check if the needed pre-processing has been saved and
         if canny_custom is None:
@@ -1727,34 +1736,39 @@ if __name__ == '__main__':
                                       max_index=limiting_max,
                                       show_results=limiting_show)
 
-        sss_analysis.post_exclude_rope_in_buoy_area(radius=rope_exclusion_size, show_results=True)
+        sss_analysis.post_exclude_rope_in_buoy_area(radius=rope_exclusion_size, show_results=False)
 
         post_port_detection_inds, post_star_detection_inds = sss_analysis.find_rising_edges(data=sss_analysis.post_rope,
                                                                                             threshold=0,
                                                                                             max_count=2,
-                                                                                            show=True,
+                                                                                            show=False,
                                                                                             save_output=False)
 
         port_inter_raw, port_inter_med = sss_analysis.post_interleave_detection_inds(
             channel_data=post_port_detection_inds,
             channel_id='port',
-            med_filter_kernel=inds_med_size)
+            med_filter_kernel=inds_med_size,
+            show_results=False)
 
         star_inter_raw, star_inter_med = sss_analysis.post_interleave_detection_inds(
             channel_data=post_star_detection_inds,
             channel_id='star',
-            med_filter_kernel=inds_med_size)
+            med_filter_kernel=inds_med_size,
+            show_results=False)
         # sss_analysis.post_de_interleave(interleaved_med)
 
         sss_analysis.post_interleaved_to_2d(interleaved_port=port_inter_med,
                                             interleaved_star=None)
 
-        sss_analysis.post_plot_inds(channel_id='port')
+        if show_final_inds_port:
+            sss_analysis.post_plot_inds(channel_id='port')
 
         # sss_analysis.post_find_buoy_offsets(window_size=55, plot=True)
 
         sss_analysis.post_final_buoys(plot=False)
         sss_analysis.post_final_ropes(plot=False)
+
+        post_end_time = time.time()
 
         if show_final_post:
             sss_analysis.post_overlay_detections()
@@ -1764,6 +1778,22 @@ if __name__ == '__main__':
 
         break
 
+    # Show timings
+    pre_time = pre_end_time - start_time
+
+    if post_end_time is not None:
+        post_time = post_end_time - pre_end_time
+        complete_time = post_end_time - start_time
+
+    else:
+        post_time = 0
+        complete_time = pre_time
+
+    size = sss_analysis.end_ind - sss_analysis.start_ind - 1
+    print(f"Processed count : {size}")
+    print(f"Pre-processing time: {pre_time}")
+    print(f"Post-processing time: {post_time}")
+    print(f"Complete time: {complete_time}")
     # %%
     # lines = cv.HoughLines(canny_custom, rho=1, theta=np.pi / 180, threshold=25)
     # linesP = cv.HoughLinesP(canny_custom, rho=1, theta=np.pi / 180, threshold=25, minLineLength=25, maxLineGap=10)

@@ -2,11 +2,15 @@ import gtsam
 import numpy as np
 import matplotlib.pyplot as plt
 import gtsam.utils.plot as gtsam_plot
+import sys
+from pympler import asizeof
 
+def Calculate_graph_size(graph_object):
+    return asizeof.asizeof(graph_object)
 
-# graph = gtsam.NonlinearFactorGraph()
-# parameters = gtsam.ISAM2Params()
-# isam = gtsam.ISAM2(parameters)
+graph = gtsam.NonlinearFactorGraph()
+parameters = gtsam.ISAM2Params()
+isam = gtsam.ISAM2(parameters)
 
 prior_model = gtsam.noiseModel.Diagonal.Sigmas((0.3, 0.3, 0.1))
 odometry_model = gtsam.noiseModel.Diagonal.Sigmas((0.2, 0.2, 0.1))
@@ -31,6 +35,8 @@ slam_initial.insert(2, gtsam.Pose2(2.30, 0.10, -0.20))
 slam_initial.insert(3, gtsam.Pose2(4.10, 0.10, 0.10))
 slam_initial.insert(l[1], gtsam.Point2(1.80, 2.10))
 slam_initial.insert(l[2], gtsam.Point2(4.10, 1.80))
+
+isam_thing = isam.update(slam_graph, slam_initial)
 
 optimizer = gtsam.LevenbergMarquardtOptimizer(slam_graph, slam_initial)
 slam_result = optimizer.optimize()

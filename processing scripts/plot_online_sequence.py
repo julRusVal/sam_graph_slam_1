@@ -22,24 +22,33 @@ root_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_te
 # Method 2
 root_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_rope"
 # Method 3
-root_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_no_rope"
+# root_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_no_rope"
 
 online_path = root_path + "/analysis_online.csv"
 buoy_path = root_path + "/buoys.csv"
+
+dr_path = root_path + "/dr_poses_graph.csv"
+gt_path = root_path + "/gt_poses_graph.csv"
 
 ropes = [[0, 5],
          [1, 4],
          [2, 3]]
 
 last_ind = 30
-start_ind = 150
-stop_ind = 180
+start_ind = 20  # 150
+stop_ind = 40  # 180
 
 # Load
 online = np.genfromtxt(online_path,
                   delimiter=',', dtype=float)
 
 buoys = np.genfromtxt(buoy_path,
+                   delimiter=',', dtype=float)
+
+dr = np.genfromtxt(dr_path,
+                   delimiter=',', dtype=float)
+
+gt = np.genfromtxt(gt_path,
                    delimiter=',', dtype=float)
 
 for count in range(start_ind, online.shape[0]):
@@ -65,5 +74,5 @@ for count in range(start_ind, online.shape[0]):
     if count == stop_ind:
         plt.show()
     else:
-        plt.pause(0.5)  # Pause for 1 second (adjust as needed)
+        plt.pause(1)  # Pause for 1 second (adjust as needed)
 
