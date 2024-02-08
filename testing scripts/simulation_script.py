@@ -109,8 +109,8 @@ colors = ['orange', 'green', 'purple', 'cyan', 'brown', 'pink', 'gray', 'olive']
 # %% Data
 if import_data:
     # Import the data
-    poses_list = read_csv_to_array("trajectory.csv")
-    landmarks = read_csv_to_array("landmarks.csv")
+    poses_list = read_csv_to_array("../processing scripts/trajectory.csv")
+    landmarks = read_csv_to_array("../processing scripts/landmarks.csv")
     N = len(poses_list)
     N_landmarks = len(landmarks)
 else:

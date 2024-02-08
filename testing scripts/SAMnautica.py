@@ -295,6 +295,9 @@ class SAM_sim:
         # Simulation
         self.sim = simulation
 
+        # random number generator
+        self.rng = default_rng()
+
         # Initial
         self.x = x
         self.y = y
@@ -369,9 +372,9 @@ class SAM_sim:
         self.path.append([self.x, self.y, self.angle])
 
     def Generate_noisy_initial_pose(self):
-        noisy_initial = [self.path[0][0] + rng.normal(0.0, self.dist_sigma_initial),
-                         self.path[0][1] + rng.normal(0.0, self.dist_sigma_initial),
-                         self.path[0][2] + rng.normal(0.0, self.ang_sigma_initial)]
+        noisy_initial = [self.path[0][0] + self.rng.normal(0.0, self.dist_sigma_initial),
+                         self.path[0][1] + self.rng.normal(0.0, self.dist_sigma_initial),
+                         self.path[0][2] + self.rng.normal(0.0, self.ang_sigma_initial)]
         return noisy_initial
 
     def generate_noisy_path(self):
@@ -391,8 +394,8 @@ class SAM_sim:
         # Build up the odometry lists
         self.odometry.append([delta_dist, 0, delta_theta])
 
-        delta_dist_noisy = delta_dist + rng.normal(0.0, self.dist_sigma)
-        delta_theta_noisy = norm_ang(delta_theta + rng.normal(0.0, self.ang_sigma))
+        delta_dist_noisy = delta_dist + self.rng.normal(0.0, self.dist_sigma)
+        delta_theta_noisy = norm_ang(delta_theta + self.rng.normal(0.0, self.ang_sigma))
 
         self.odometry_noisy.append([delta_dist_noisy,
                                     0,
@@ -454,7 +457,7 @@ sam = SAM_sim(x=20.0,
               detect_half_angle=np.pi / 32)
 
 # %% Begin Simulation
-rng = default_rng()
+# rng = default_rng()
 # Initialize Pygame
 pygame.init()
 
@@ -517,9 +520,9 @@ while running:
     clock.tick(simulation.target_fps)
 
 # Save 
-save_array_as_csv(sam.path, 'trajectory.csv')
-save_array_as_csv(sam.path_noisy, 'trajectory_gt.csv')
-save_array_as_csv(simulation.farm_buoys, 'landmarks.csv')
+save_array_as_csv(sam.path, '../processing scripts/trajectory.csv')
+save_array_as_csv(sam.path_noisy, '../processing scripts/trajectory_gt.csv')
+save_array_as_csv(simulation.farm_buoys, '../processing scripts/landmarks.csv')
 
 # Quit Pygame
 pygame.display.quit()
