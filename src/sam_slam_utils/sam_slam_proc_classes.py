@@ -701,6 +701,11 @@ class online_slam_2d:
         # === Rope detection parameters ===
         self.individual_rope_detections = rospy.get_param("individual_rope_detections", True)
         self.use_rope_detections = rospy.get_param("use_rope_detections", True)
+        self.rope_batch_size = rospy.get_param("rope_batch_size", 0)
+        self.rope_batch_current_size = 0
+        self.rope_batch_factors = []
+        self.rope_batch_priors = []
+        self.rope_batch_initial_estimates = []
 
         # === Prior parameters ===
         # Currently this only applies to the rope priors
@@ -1171,7 +1176,10 @@ class online_slam_2d:
             self.graph.addPriorPoint2(self.r[self.current_r_ind], rope_prior, self.prior_model_rope)
 
             # Initial estimate
-            self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
+            if self.rope_batch_size >= 0:
+                self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
+            else:
+                self.rope_batch_initial_estimates.append([self.r[self.current_r_ind], self.est_detect_loc])
 
             # Add factor between current x and current r
 
@@ -1396,6 +1404,7 @@ class online_slam_2d:
                 if relative_detection is not None and da_id == -ObjectID.ROPE.value:
                     relative_detection_state = 2  # performance metrics
                     valid_rope = True
+                    self.rope_batch_current_size += 1
 
                     # Calculate the map location of the detection given relative measurements and current estimate
                     self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
@@ -1411,7 +1420,10 @@ class online_slam_2d:
                     self.r[self.current_r_ind] = gtsam.symbol('r', self.current_r_ind)
 
                     # Initial estimate
-                    self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
+                    if self.rope_batch_size >= 0:
+                        self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
+                    else:
+                        self.rope_batch_initial_estimates.append([self.r[self.current_r_ind], self.est_detect_loc])
 
                     # if current_covariance is not None:
                     #     self.associate_rope_detection_likelihood(self.est_detect_loc, current_covariance)
@@ -1422,11 +1434,16 @@ class online_slam_2d:
 
                     # Naive method
                     if self.rope_priors is None:
-                        rope_prior = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
+                        avg_rope_position = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
                         if self.individual_rope_detections:
-                            self.graph.addPriorPoint2(self.r[self.current_r_ind],
-                                                      rope_prior,
-                                                      self.prior_model_rope)
+                            if self.rope_batch_size >= 0:
+                                self.rope_batch_priors.append([self.r[self.current_r_ind],
+                                                               avg_rope_position,
+                                                               self.prior_model_rope])
+                            else:
+                                self.graph.addPriorPoint2(self.r[self.current_r_ind],
+                                                          avg_rope_position,
+                                                          self.prior_model_rope)
 
                     # Slightly less naive method
                     else:
@@ -1441,24 +1458,56 @@ class online_slam_2d:
 
                         if self.individual_rope_detections:
                             if self.use_rope_detections:
-                                self.graph.addPriorPoint2(self.r[self.current_r_ind],
-                                                          self.rope_centers[rope_association_ind],
-                                                          self.rope_noise_models[rope_association_ind])
+                                if self.rope_batch_size >= 0:
+                                    self.rope_batch_priors.append([self.r[self.current_r_ind],
+                                                                   self.rope_centers[rope_association_ind],
+                                                                   self.rope_noise_models[rope_association_ind]])
+                                else:
+                                    self.graph.addPriorPoint2(self.r[self.current_r_ind],
+                                                              self.rope_centers[rope_association_ind],
+                                                              self.rope_noise_models[rope_association_ind])
 
                         # The Nacho method is used when the individual_rope_detections is set to False
                         else:
-                            self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
-                                                                      self.l[rope_association_ind],
-                                                                      detect_bearing,
-                                                                      detect_range,
-                                                                      self.detection_model))
+                            x_l_range_bearing_factor = gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                                                  self.l[rope_association_ind],
+                                                                                  detect_bearing,
+                                                                                  detect_range,
+                                                                                  self.detection_model)
+
+                            if self.rope_batch_size >= 0:
+                                self.rope_batch_factors.append(x_l_range_bearing_factor)
+                            else:
+                                self.graph.add(x_l_range_bearing_factor)
 
                     # Add factor between current x and current r
-                    self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
-                                                              self.r[self.current_r_ind],
-                                                              detect_bearing,
-                                                              detect_range,
-                                                              self.detection_model))
+                    x_r_range_bearing_factor = gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                                          self.r[self.current_r_ind],
+                                                                          detect_bearing,
+                                                                          detect_range,
+                                                                          self.detection_model)
+
+                    if self.rope_batch_size >= 0:
+                        self.rope_batch_factors.append(x_r_range_bearing_factor)
+                    else:
+                        self.graph.add(x_r_range_bearing_factor)
+
+                # Check if the enough rope detections have been accumulated
+                if self.rope_batch_current_size >= self.rope_batch_size:
+                    # Initial values
+                    for rope_initial in self.rope_batch_initial_estimates:
+                        self.initial_estimate.insert(*rope_initial)
+                    self.rope_batch_initial_estimates = []
+
+                    # Priors
+                    for rope_prior in self.rope_batch_priors:
+                        self.graph.addPriorPoint2(*rope_prior)
+                    self.rope_batch_priors = []
+
+                    # Factors
+                    for rope_factor in self.rope_batch_factors:
+                        self.graph.add(rope_factor)
+                    self.rope_batch_factors = []
 
                 # Time update process
                 start_time = rospy.Time.now()
@@ -2159,14 +2208,13 @@ class analyze_slam:
     # Saving methods
     def __init__(self, slam_object: offline_slam_2d | online_slam_2d, output_path=None):
         # Directory for saving analysis
-        #self.file_path = output_path
+        # self.file_path = output_path
         if output_path is None or not os.path.isdir(output_path):
             self.file_path = ''
         else:
             if output_path[-1] != '/':
                 output_path = output_path + '/'
             self.file_path = output_path
-
 
         # unpack slam object
         self.slam = slam_object
@@ -2289,8 +2337,6 @@ class analyze_slam:
             self.performance_metrics = np.array(slam_object.performance_metrics)
         else:
             self.performance_metrics = None
-
-
 
         # ===== Visualization parameters =====
         self.dr_color = 'r'
@@ -2614,7 +2660,6 @@ class analyze_slam:
 
         # if self.file_path is not None:
         #     plt.savefig(self.file_path + "fig/final.png", dpi=300)
-
 
     def visualize_online(self, plot_dr=False, plot_final=False, plot_buoy=True, plot_correspondence=False):
         """
@@ -2966,14 +3011,12 @@ class analyze_slam:
         if self.da_distance_threshold > 0:
             ax_e_dist.axhline(self.da_distance_threshold, color='red', linestyle='--', linewidth=1, label='Threshold')
 
-
         # Mahalanobis distances
         ax_m_dist.set_title('Mahalanobis distances')
         ax_m_dist.plot(m_distances, label='Mahalanobis distances')
         # plot threshold
         if self.da_m_distance_threshold > 0:
             ax_m_dist.axhline(self.da_m_distance_threshold, color='red', linestyle='--', linewidth=1, label='Threshold')
-
 
         plt.show()
 
