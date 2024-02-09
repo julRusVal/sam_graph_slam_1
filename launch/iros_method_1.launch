@@ -28,7 +28,11 @@
     <param name="da_m_distance_threshold" value="-1.0"/>
     <param name="individual_rope_detections" value="False"/>
     <param name="use_rope_detections" value="True"/>
+    <param name="rope_batch_size" value="10"/>
+
     <param name="update_priors" value="False"/>
+
+
 
     <!-- Detector data -->
     <param name= "buoy_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_buoys.csv"/>
