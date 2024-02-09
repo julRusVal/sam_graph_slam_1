@@ -1494,6 +1494,7 @@ class online_slam_2d:
 
                 # Check if the enough rope detections have been accumulated
                 if self.rope_batch_current_size >= self.rope_batch_size:
+                    print('Starting Rope Batch Update')
                     # Initial values
                     for rope_initial in self.rope_batch_initial_estimates:
                         self.initial_estimate.insert(*rope_initial)
@@ -1508,6 +1509,7 @@ class online_slam_2d:
                     for rope_factor in self.rope_batch_factors:
                         self.graph.add(rope_factor)
                     self.rope_batch_factors = []
+                    self.rope_batch_current_size = 0
 
                 # Time update process
                 start_time = rospy.Time.now()
