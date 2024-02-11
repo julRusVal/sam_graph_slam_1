@@ -706,6 +706,11 @@ class online_slam_2d:
         self.rope_batch_factors = []
         self.rope_batch_priors = []
         self.rope_batch_initial_estimates = []
+        # This method will override the behaviour set by self.rope_batch_size
+        self.rope_batch_by_line = rospy.get_param("rope_batch_by_line", False)
+        self.rope_last_line = None
+        self.rope_last_time = None
+        self.rope_last_line_timeout = rospy.get_param("rope_batch_by_line_timeout", 100)
 
         # === Prior parameters ===
         # Currently this only applies to the rope priors
@@ -1436,7 +1441,9 @@ class online_slam_2d:
                     # DA can be handled by Euclidean distance or max-likelihood
                     # Priors are only added if individual_rope_detections is set to True
 
-                    # Naive method
+                    # Sets rope prior bases on average of buoy positions
+                    # This will allow for plotting/mapping of rope detections but doesn't make them very useful for
+                    # localization.
                     if self.rope_priors is None:
                         avg_rope_position = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
                         if self.individual_rope_detections:
@@ -1449,7 +1456,9 @@ class online_slam_2d:
                                                           avg_rope_position,
                                                           self.prior_model_rope)
 
-                    # Slightly less naive method
+                    # This method of assigning Priors first attempts to associate each rope detection with a particular
+                    # rope. This association can be based on euclidean distance or max likelihood. The likelihood method
+                    # uses the marginals calculated by GTSAM, this might require us to optimize at each time step
                     else:
                         # Currently there is no outlier detection/rejection for ropes
                         if current_covariance is None:
@@ -1460,6 +1469,8 @@ class online_slam_2d:
                                                                                                   current_covariance)
                         self.r_associations[self.current_r_ind] = rope_association_ind
 
+                        # Here individual_rope_detection refers to the assignment of landmarks to detections. If true,
+                        # detection is assigned a unique landmark.
                         if self.individual_rope_detections:
                             if self.use_rope_detections:
                                 if self.rope_batch_size >= 0:
@@ -1497,8 +1508,15 @@ class online_slam_2d:
                         else:
                             self.graph.add(x_r_range_bearing_factor)
 
-                # Check if the enough rope detections have been accumulated
-                if self.rope_batch_current_size >= self.rope_batch_size != 0:
+                # Rope detections are added Using three methods
+                # (1) Individually -> self.rope_batch_size <= 0
+                # (2) Batches of specified number -> self.rope_batch_size > 0
+                # (3) By lines (Newest method) -> self.rope_batch_by_line == True
+                # The line method (3) overrides the other two methods.
+                # This method was added in the rope_batching_by_line branch
+
+                # Method 2 - Check if the specified number of rope detections have been accumulated
+                if self.rope_batch_current_size >= self.rope_batch_size and not self.rope_batch_by_line:
                     print('Starting Rope Batch Update')
                     if self.verbose_graph_rope_batching:
                         print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
@@ -1532,6 +1550,36 @@ class online_slam_2d:
                             print(rope_factor)
                     self.rope_batch_factors = []
                     self.rope_batch_current_size = 0
+
+                # Method 3 - check if batching by line conditions have been met
+                elif self.rope_batch_by_line:
+                    if self.rope_last_line is None or self.rope_last_time is None:
+                        self.rope_last_time = rospy.Time.now()
+                        self.rope_last_line = rope_association_ind
+                    else:
+                        different_rope_condition = rope_association_ind != self.rope_last_line
+                        time_condition = (rospy.Time.now() - self.rope_last_time).to_time() >= \
+                                         self.rope_last_line_timeout
+
+                        if different_rope_condition or time_condition:
+                            # Initial values
+                            for rope_initial in self.rope_batch_initial_estimates:
+                                self.initial_estimate.insert(*rope_initial)
+                            self.rope_batch_initial_estimates = []
+
+                            # Priors
+                            for rope_prior in self.rope_batch_priors:
+                                self.graph.addPriorPoint2(*rope_prior)
+                            self.rope_batch_priors = []
+
+                            # Factors
+                            for rope_factor in self.rope_batch_factors:
+                                self.graph.add(rope_factor)
+                            self.rope_batch_factors = []
+                            self.rope_batch_current_size = 0
+
+                        self.rope_last_time = rospy.Time.now()
+                        self.rope_last_line = rope_association_ind
 
                 # Time update process
                 start_time = rospy.Time.now()
@@ -2819,7 +2867,7 @@ class analyze_slam:
         plt.show()
 
         data = np.vstack((dr_error, online_error))
-        np.savetxt('/home/julian/Documents/thesis_figs/dr_online_error.csv', data, delimiter=',')
+        np.savetxt(self.file_path + 'dr_online_error.csv', data, delimiter=',')
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):
         """
