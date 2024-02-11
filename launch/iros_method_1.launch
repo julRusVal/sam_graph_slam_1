@@ -29,6 +29,7 @@
     <param name="individual_rope_detections" value="False"/>
     <param name="use_rope_detections" value="True"/>
     <param name="rope_batch_size" value="10"/>
+    <param name="rope_batch_by_line" value="True"/>
 
     <param name="update_priors" value="False"/>
 
