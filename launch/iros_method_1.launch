@@ -28,7 +28,8 @@
     <param name="da_m_distance_threshold" value="-1.0"/>
     <param name="individual_rope_detections" value="False"/>
     <param name="use_rope_detections" value="True"/>
-    <param name="rope_batch_size" value="1"/>
+    <param name="rope_batch_size" value="10"/>
+    <param name="rope_batch_by_line" value="True"/>
 
     <param name="update_priors" value="False"/>
 
@@ -72,7 +73,6 @@
 
     <param name="verbose_graph_update" value="false"/>
     <param name="verbose_graph_rope_detections" value="True"/>
-    <param name="verbose_graph_rope_batching" value="True"/>
     <param name="verbose_graph_buoy_detections" value="True"/>
     <param name="verbose_graph_rope_associations" value="False"/>
     <param name="verbose_graph_buoy_associations" value="False"/>
