@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import cv2
 
 """
-Script for generating a plot of the 
+Script for generating a plot of the template used for buoy detection
 """
 def construct_template_kernel(size, sigma, feature_width):
     gaussian_kernel = cv2.getGaussianKernel(size, sigma)

@@ -2797,7 +2797,7 @@ class analyze_slam:
         plt.show()
 
         data = np.vstack((dr_error, online_error))
-        np.savetxt('/home/julian/Documents/thesis_figs/dr_online_error.csv', data, delimiter=',')
+        np.savetxt(self.file_path + 'dr_online_error.csv', data, delimiter=',')
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):
         """
