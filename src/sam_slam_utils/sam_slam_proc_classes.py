@@ -839,6 +839,7 @@ class online_slam_2d:
         # ===== Verboseness parameters =====
         self.verbose_graph_update = rospy.get_param('verbose_graph_update', False)
         self.verbose_graph_rope_detections = rospy.get_param('verbose_graph_rope_detections', False)
+        self.verbose_graph_rope_batching = rospy.get_param('verbose_graph_rope_batching', False)
         self.verbose_graph_buoy_detections = rospy.get_param('verbose_graph_buoy_detections', False)
         self.verbose_graph_rope_associations = rospy.get_param('verbose_graph_rope_associations',
                                                                False)
@@ -1420,10 +1421,13 @@ class online_slam_2d:
                     self.r[self.current_r_ind] = gtsam.symbol('r', self.current_r_ind)
 
                     # Initial estimate
-                    if self.rope_batch_size >= 0:
-                        self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
-                    else:
-                        self.rope_batch_initial_estimates.append([self.r[self.current_r_ind], self.est_detect_loc])
+                    self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
+
+                    # TODO figure out when initial initial values should be inserted into the graph
+                    # if self.rope_batch_size >= 0:
+                    #     self.rope_batch_initial_estimates.append([self.r[self.current_r_ind], self.est_detect_loc])
+                    # else:
+                    #     self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
 
                     # if current_covariance is not None:
                     #     self.associate_rope_detection_likelihood(self.est_detect_loc, current_covariance)
@@ -1482,7 +1486,11 @@ class online_slam_2d:
 
                     # Add factor between current x and current r
                     if self.use_rope_detections:
-                        x_r_range_bearing_factor = gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],                                                 self.detection_model)
+                        x_r_range_bearing_factor = gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                                              self.r[self.current_r_ind],
+                                                                              detect_bearing,
+                                                                              detect_range,
+                                                                              self.detection_model)
 
                         if self.rope_batch_size >= 0:
                             self.rope_batch_factors.append(x_r_range_bearing_factor)
@@ -1490,21 +1498,38 @@ class online_slam_2d:
                             self.graph.add(x_r_range_bearing_factor)
 
                 # Check if the enough rope detections have been accumulated
-                if self.rope_batch_current_size >= self.rope_batch_size:
+                if self.rope_batch_current_size >= self.rope_batch_size != 0:
                     print('Starting Rope Batch Update')
-                    # Initial values
+                    if self.verbose_graph_rope_batching:
+                        print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
+                        print(f"Priors: {len(self.rope_batch_priors)}")
+                        print(f"Factors: {len(self.rope_batch_factors)}")
+
+                    # Initial value
                     for rope_initial in self.rope_batch_initial_estimates:
                         self.initial_estimate.insert(*rope_initial)
+                        if self.verbose_graph_rope_batching:
+                            print(rope_initial)
                     self.rope_batch_initial_estimates = []
 
                     # Priors
+                    if self.verbose_graph_rope_batching:
+                        print("Priors:")
                     for rope_prior in self.rope_batch_priors:
                         self.graph.addPriorPoint2(*rope_prior)
+
+                        if self.verbose_graph_rope_batching:
+                            print(rope_prior)
                     self.rope_batch_priors = []
 
                     # Factors
+                    if self.verbose_graph_rope_batching:
+                        print("Factors:")
                     for rope_factor in self.rope_batch_factors:
                         self.graph.add(rope_factor)
+
+                        if self.verbose_graph_rope_batching:
+                            print(rope_factor)
                     self.rope_batch_factors = []
                     self.rope_batch_current_size = 0
 

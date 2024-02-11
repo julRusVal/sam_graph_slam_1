@@ -5,6 +5,7 @@ most plotting is carried out at runtime this plots based on the saved output
 """
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # Settings
 dr_color = 'r'
@@ -24,6 +25,12 @@ root_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_te
 root_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_rope"
 # Method 3
 # root_path = "/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_no_rope"
+
+# IROS
+script_directory = os.path.dirname(os.path.abspath(__file__))
+
+# method 1
+root_path = script_directory + "/data/iros_method_1"
 
 online_path = root_path + "/analysis_online.csv"
 buoy_path = root_path + "/buoys.csv"
