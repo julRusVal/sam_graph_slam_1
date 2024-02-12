@@ -27,14 +27,20 @@
     <param name="prioritize_buoy_detections" value="True"/>
     <param name="da_distance_threshold" value="7.5"/>
     <param name="da_m_distance_threshold" value="-1.0"/>
-    <param name="individual_rope_detections" value="False"/>
+    <param name="update_priors" value="False"/>
+
+    <!-- Method comparison parameters -->
     <param name="use_rope_detections" value="True"/>
+    <param name="individual_rope_detections" value="False"/>
     <param name="rope_batch_size" value="10"/>
     <param name="rope_batch_by_line" value="True"/>
     <param name="rope_batch_by_line_timeout" value="3"/>
-
-    <param name="update_priors" value="False"/>
-
+    <param name="rope_batch_by_swath" value="True"/>
+    <param name="swath_seq_ids" value="[[78109, 78750],
+                                        [79642, 80327],
+                                        [81038, 81630],
+                                        [81650, 83460],
+                                        [84177, 84831]]" />
 
 
     <!-- Detector data -->
@@ -75,7 +81,7 @@
 
     <param name="verbose_graph_update" value="False"/>
     <param name="verbose_graph_rope_detections" value="False"/>
-    <param name="verbose_graph_rope_batching" value="False"/>
+    <param name="verbose_graph_rope_batching" value="True"/>
     <param name="verbose_graph_buoy_detections" value="True"/>
     <param name="verbose_graph_rope_associations" value="False"/>
     <param name="verbose_graph_buoy_associations" value="False"/>

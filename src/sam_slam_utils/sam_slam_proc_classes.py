@@ -9,6 +9,7 @@ from __future__ import annotations
 import itertools
 import queue
 import os
+import ast
 
 # Maths
 import numpy as np
@@ -713,6 +714,8 @@ class online_slam_2d:
         self.rope_last_time = None
         self.rope_last_line_timeout = rospy.get_param("rope_batch_by_line_timeout", 100)
         self.rope_current_lines = []  # Debugging of rope batching by lines
+        self.rope_batch_by_swath = rospy.get_param("rope_batch_by_swath", False)
+        self.swath_seq_ids = ast.literal_eval(rospy.get_param("swath_seq_ids", "[]"))
 
         # === Prior parameters ===
         # Currently this only applies to the rope priors
@@ -852,7 +855,7 @@ class online_slam_2d:
                                                                False)
         self.verbose_graph_buoy_associations = rospy.get_param('verbose_graph_buoy_associations',
                                                                False)
-
+        print(f'swath list {self.swath_seq_ids}')
         print('Graph Class Initialized')
 
     def buoy_setup(self, buoys):

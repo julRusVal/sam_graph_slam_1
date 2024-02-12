@@ -70,7 +70,7 @@
     <param name="verbose_listener_cameras" value="false"/>
 
     <param name="verbose_graph_update" value="false"/>
-    <param name="verbose_graph_rope_detections" value="True"/>
+    <param name="verbose_graph_rope_detections" value="False"/>
     <param name="verbose_graph_buoy_detections" value="True"/>
     <param name="verbose_graph_rope_associations" value="False"/>
     <param name="verbose_graph_buoy_associations" value="False"/>
