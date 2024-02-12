@@ -543,6 +543,9 @@ class sam_slam_listener:
                 # detection type is specified by ObjectID
                 detection_type = result.id
 
+                # detection score is currently used to communicate the seq_id corresponding to the current detection
+                detection_seq_id = result.score
+
                 # Pose in base_link, convert to map
                 det_pose_base = result.pose
                 det_pos_map = self.transform_pose(det_pose_base,
@@ -599,11 +602,13 @@ class sam_slam_listener:
                     if not self.online_graph.busy:
                         if self.verbose_detections:
                             print(f"Detection update - Buoy - x{self.online_graph.current_x_ind + 1}")
-                        self.online_graph.online_update_queued(dr_pose, gt_pose,
-                                                               np.array((det_pose_base.pose.position.x,
-                                                                         det_pose_base.pose.position.y),
-                                                                        dtype=np.float64),
-                                                               da_id=det_da)
+                        self.online_graph.online_update_queued(dr_pose=dr_pose, gt_pose=gt_pose,
+                                                               relative_detection=np.array(
+                                                                   (det_pose_base.pose.position.x,
+                                                                    det_pose_base.pose.position.y),
+                                                                   dtype=np.float64),
+                                                               da_id=det_da,
+                                                               seq_id=detection_seq_id)
                     else:
                         print('Busy condition found - Detection - Buoy')
 
@@ -628,11 +633,13 @@ class sam_slam_listener:
                     if not self.online_graph.busy:
                         if self.verbose_detections:
                             print(f"Detection update - Rope - x{self.online_graph.current_x_ind + 1}")
-                        self.online_graph.online_update_queued(dr_pose, gt_pose,
-                                                               np.array((det_pose_base.pose.position.x,
-                                                                         det_pose_base.pose.position.y),
-                                                                        dtype=np.float64),
-                                                               da_id=det_da)
+                        self.online_graph.online_update_queued(dr_pose=dr_pose, gt_pose=gt_pose,
+                                                               relative_detection=np.array(
+                                                                   (det_pose_base.pose.position.x,
+                                                                    det_pose_base.pose.position.y),
+                                                                   dtype=np.float64),
+                                                               da_id=det_da,
+                                                               seq_id=detection_seq_id)
                     else:
                         print('Busy condition found - Detection - Rope')
 

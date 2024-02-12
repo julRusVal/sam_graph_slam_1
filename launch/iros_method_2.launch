@@ -19,6 +19,7 @@
 
     <!-- Detection and association parameters -->
     <param name="simulated_data" value="False"/>
+    <param name="detector_seq_id_as_score" value="True"/>
     <param name="record_ground_truth" value="True"/>
     <param name="manual_associations" value="False"/>
     <param name="simulated_detections" value="True"/>
@@ -28,7 +29,7 @@
     <param name="da_m_distance_threshold" value="-1.0"/>
     <param name="individual_rope_detections" value="True"/>
     <param name="use_rope_detections" value="True"/>
-    <param name="rope_batch_size" value="10"/>
+    <param name="rope_batch_size" value="0"/>
 
     <param name="update_priors" value="False"/>
 

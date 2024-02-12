@@ -1235,7 +1235,7 @@ class online_slam_2d:
 
         return
 
-    def online_update_queued(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None):
+    def online_update_queued(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None, seq_id=None):
         """
         Pose format [x, y, z, q_w, q_x, q_y, q_z]
         """
@@ -1244,8 +1244,11 @@ class online_slam_2d:
             self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
             return
 
+        if seq_id is not None:
+            seq_id = int(seq_id)
+
         # Queue
-        self.buffer.put((dr_pose, gt_pose, relative_detection, id_string, da_id))
+        self.buffer.put((dr_pose, gt_pose, relative_detection, id_string, da_id, seq_id))
 
         if not self.busy_queue:
             self.busy_queue = True
@@ -1256,7 +1259,7 @@ class online_slam_2d:
                     print("Buffer is empty.")
                     break
 
-                dr_pose, gt_pose, relative_detection, id_string, da_id = buffered_data
+                dr_pose, gt_pose, relative_detection, id_string, da_id, seq_id = buffered_data
 
                 # === Record relevant poses ===
                 # dr
@@ -1398,7 +1401,8 @@ class online_slam_2d:
 
                     if self.verbose_graph_buoy_detections and relative_detection is not None:
                         print(
-                            f'Buoy detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}  DA: {buoy_association_id}')
+                            f'Buoy detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
+                            f'  Seq id: {seq_id}  DA: {buoy_association_id}')
 
                     # ===== Add detection to graph =====
                     if valid_buoy_da:
@@ -1420,7 +1424,8 @@ class online_slam_2d:
                     detect_range = computed_est.range(self.est_detect_loc)
 
                     if self.verbose_graph_rope_detections:
-                        print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}')
+                        print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
+                              f' Seq id: {seq_id}')
 
                     # ===== Add detection to graph =====
                     # Add the rope landmark
@@ -1576,7 +1581,7 @@ class online_slam_2d:
                             timeout_condition = False
                         else:
                             timeout_condition = (
-                                                            rospy.Time.now() - self.rope_last_time).to_sec() >= self.rope_last_line_timeout
+                                                        rospy.Time.now() - self.rope_last_time).to_sec() >= self.rope_last_line_timeout
 
                         # Update and reset
                         self.rope_current_lines.append(self.rope_current_line)

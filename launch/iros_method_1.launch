@@ -19,6 +19,7 @@
 
     <!-- Detection and association parameters -->
     <param name="simulated_data" value="False"/>
+    <param name="detector_seq_id_as_score" value="True"/>
     <param name="record_ground_truth" value="True"/>
     <param name="manual_associations" value="False"/>
     <param name="simulated_detections" value="True"/>
@@ -66,15 +67,15 @@
     <param name="rope_cross_sig" value="1.0"/>
 
     <!-- Output parameters -->
-    <param name="verbose_listener_DRs" value="false"/>
-    <param name="verbose_listener_detections" value="false"/>
-    <param name="verbose_listener_sonars" value="false"/>
-    <param name="verbose_listener_buoys" value="true"/>
+    <param name="verbose_listener_DRs" value="False"/>
+    <param name="verbose_listener_detections" value="False"/>
+    <param name="verbose_listener_sonars" value="False"/>
+    <param name="verbose_listener_buoys" value="True"/>
     <param name="verbose_listener_cameras" value="false"/>
 
-    <param name="verbose_graph_update" value="false"/>
-    <param name="verbose_graph_rope_detections" value="True"/>
-    <param name="verbose_graph_rope_batching" value="True"/>
+    <param name="verbose_graph_update" value="False"/>
+    <param name="verbose_graph_rope_detections" value="False"/>
+    <param name="verbose_graph_rope_batching" value="False"/>
     <param name="verbose_graph_buoy_detections" value="True"/>
     <param name="verbose_graph_rope_associations" value="False"/>
     <param name="verbose_graph_buoy_associations" value="False"/>
