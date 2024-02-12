@@ -714,8 +714,11 @@ class online_slam_2d:
         self.rope_last_time = None
         self.rope_last_line_timeout = rospy.get_param("rope_batch_by_line_timeout", 100)
         self.rope_current_lines = []  # Debugging of rope batching by lines
-        self.rope_batch_by_swath = rospy.get_param("rope_batch_by_swath", False)
+        # this method will override the rope batching
+        self.batch_by_swath = rospy.get_param("batch_by_swath", False)
         self.swath_seq_ids = ast.literal_eval(rospy.get_param("swath_seq_ids", "[]"))
+        self.batch_swath_factors = [[] for _ in range(len(self.swath_seq_ids))]
+        self.batch_swath_priors = [[] for _ in range(len(self.swath_seq_ids))]
 
         # === Prior parameters ===
         # Currently this only applies to the rope priors
@@ -1335,6 +1338,10 @@ class online_slam_2d:
                 # record detection type for performance metrics
                 relative_detection_state = 0
 
+                # === Swath Update Info ===
+                # Determine if current update is a member of a designated swath, and if optimization is warranted
+                current_swath_ind, current_optimize = self.check_seq_id(current_seq_id=seq_id)
+
                 # === Buoy ===
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value:
                     relative_detection_state = 1  # perfomance metrics
@@ -1409,11 +1416,17 @@ class online_slam_2d:
 
                     # ===== Add detection to graph =====
                     if valid_buoy_da:
-                        self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
-                                                                  self.b[buoy_association_id],
-                                                                  detect_bearing,
-                                                                  detect_range,
-                                                                  self.buoy_detection_model))
+                        x_b_range_bearing_factor = gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+                                                                              self.b[buoy_association_id],
+                                                                              detect_bearing,
+                                                                              detect_range,
+                                                                              self.buoy_detection_model)
+
+                        if self.batch_by_swath:
+                            if current_swath_ind > -1:
+                                self.batch_swath_factors[current_swath_ind].append(x_b_range_bearing_factor)
+                        else:
+                            self.graph.add(x_b_range_bearing_factor)
 
                 # === Rope ===
                 if relative_detection is not None and da_id == -ObjectID.ROPE.value:
@@ -1457,10 +1470,19 @@ class online_slam_2d:
                     if self.rope_priors is None:
                         avg_rope_position = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
                         if self.individual_rope_detections:
-                            if self.rope_batch_size >= 0:
+                            # Swath Updating
+                            if self.batch_by_swath:
+                                if current_swath_ind > -1:
+                                    self.batch_swath_priors[current_swath_ind].append([self.r[self.current_r_ind],
+                                                                                       avg_rope_position,
+                                                                                       self.prior_model_rope])
+                            # Batch updating of rope detections
+                            elif self.rope_batch_size >= 0:
                                 self.rope_batch_priors.append([self.r[self.current_r_ind],
                                                                avg_rope_position,
                                                                self.prior_model_rope])
+
+                            # Individual updating of rope detections
                             else:
                                 self.graph.addPriorPoint2(self.r[self.current_r_ind],
                                                           avg_rope_position,
@@ -1486,10 +1508,23 @@ class online_slam_2d:
                         # detection is assigned a unique landmark.
                         if self.individual_rope_detections:
                             if self.use_rope_detections:
-                                if self.rope_batch_size >= 0:
+
+                                # Swath Updating
+                                if self.batch_by_swath:
+                                    if current_swath_ind > -1:
+                                        self.batch_swath_priors[current_swath_ind].append([self.r[self.current_r_ind],
+                                                                                           self.rope_centers[
+                                                                                               rope_association_ind],
+                                                                                           self.rope_noise_models[
+                                                                                               rope_association_ind]])
+
+                                # Batch updating of rope detections
+                                elif self.rope_batch_size >= 0:
                                     self.rope_batch_priors.append([self.r[self.current_r_ind],
                                                                    self.rope_centers[rope_association_ind],
                                                                    self.rope_noise_models[rope_association_ind]])
+
+                                # Individual updating of rope detections
                                 else:
                                     self.graph.addPriorPoint2(self.r[self.current_r_ind],
                                                               self.rope_centers[rope_association_ind],
@@ -1503,8 +1538,13 @@ class online_slam_2d:
                                                                                   detect_range,
                                                                                   self.detection_model)
 
-                            if self.rope_batch_size >= 0:
+                            if self.batch_by_swath:
+                                if current_swath_ind > -1:
+                                    self.batch_swath_factors.append(x_l_range_bearing_factor)
+
+                            elif self.rope_batch_size >= 0:
                                 self.rope_batch_factors.append(x_l_range_bearing_factor)
+
                             else:
                                 self.graph.add(x_l_range_bearing_factor)
 
@@ -1515,6 +1555,10 @@ class online_slam_2d:
                                                                               detect_bearing,
                                                                               detect_range,
                                                                               self.detection_model)
+
+                        if self.batch_by_swath:
+                            if current_swath_ind > -1:
+                                self.batch_swath_factors.append(x_r_range_bearing_factor)
 
                         if self.rope_batch_size >= 0:
                             self.rope_batch_factors.append(x_r_range_bearing_factor)
@@ -1527,6 +1571,41 @@ class online_slam_2d:
                 # (3) By lines (Newest method) -> self.rope_batch_by_line == True
                 # The line method (3) overrides the other two methods.
                 # This method was added in the rope_batching_by_line branch
+
+                # Swath method
+                if self.batch_by_swath and current_optimize:
+                    if self.verbose_graph_rope_batching:
+                        print('Starting swath Batch Update')
+                        print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
+                        print(f"Priors: {len(self.rope_batch_priors)}")
+                        print(f"Factors: {len(self.rope_batch_factors)}")
+
+                    # # Initial value
+                    # for rope_initial in self.rope_batch_initial_estimates:
+                    #     self.initial_estimate.insert(*rope_initial)
+                    #     if self.verbose_graph_rope_batching:
+                    #         print(rope_initial)
+                    # self.rope_batch_initial_estimates = []
+
+                    # Priors
+                    if self.verbose_graph_rope_batching:
+                        print("Priors:")
+                    for rope_prior in self.batch_swath_priors[current_swath_ind]:
+                        self.graph.addPriorPoint2(*rope_prior)
+
+                        if self.verbose_graph_rope_batching:
+                            print(rope_prior)
+                    self.batch_swath_priors[current_swath_ind] = []
+
+                    # Factors
+                    if self.verbose_graph_rope_batching:
+                        print("Factors:")
+                    for rope_factor in self.batch_swath_factors[current_swath_ind]:
+                        self.graph.add(rope_factor)
+
+                        if self.verbose_graph_rope_batching:
+                            print(rope_factor)
+                    self.batch_swath_factors[current_swath_ind] = []
 
                 # Method 2 - Check if the specified number of rope detections have been accumulated
                 if self.rope_batch_current_size >= self.rope_batch_size and not self.rope_batch_by_line:
@@ -2264,6 +2343,23 @@ class online_slam_2d:
                                0, 0, 0, 0, 0, 0]
 
         self.est_line_pub_verbose.publish(msg)
+
+    def check_seq_id(self, current_seq_id):
+        # checks if current_seq_id is within the bounds of the defined
+        current_swath_ind = -1
+        optimize = False
+        for swath_ind, swath in enumerate(self.swath_seq_ids):
+            # Check if current_seq_id is in bounds
+            for sub_swath in swath:
+                if sub_swath[0] <= current_seq_id <= sub_swath[-1]:
+                    current_swath_ind = swath_ind
+
+            # Check if current_seq_ids is max -> time to optimize
+            swath_max = max(max(sub_swath) for sub_swath in swath)
+            if current_seq_id == swath_max:
+                optimize = True
+
+        return current_swath_ind, optimize
 
     # Utility static methods
     @staticmethod

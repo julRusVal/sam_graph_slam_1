@@ -36,11 +36,18 @@
     <param name="rope_batch_by_line" value="True"/>
     <param name="rope_batch_by_line_timeout" value="3"/>
     <param name="rope_batch_by_swath" value="True"/>
-    <param name="swath_seq_ids" value="[[78109, 78750],
-                                        [79642, 80327],
-                                        [81038, 81630],
-                                        [81650, 83460],
-                                        [84177, 84831]]" />
+
+    <!--
+    <param name="swath_seq_ids" value= "[[[78109, 78750], [84177, 84831]],
+                                        [[79642, 80327]],
+                                        [[81038, 81630],[81650, 83460]]]" />
+    -->
+
+    <param name="swath_seq_ids" value="[[[78109, 78750]],
+                                        [[79642, 80327]],
+                                        [[81038, 81630]],
+                                        [[81650, 83460]],
+                                        [[84177, 84831]]]" />
 
 
     <!-- Detector data -->
