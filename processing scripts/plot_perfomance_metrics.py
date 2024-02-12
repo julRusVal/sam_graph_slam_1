@@ -22,6 +22,8 @@ buoy_color = 'k'
 title_size = 16
 legend_size = 12
 label_size = 14
+figure_width = 8
+figure_height = 6
 
 # Paths
 script_directory = os.path.dirname(os.path.abspath(__file__))
@@ -74,7 +76,7 @@ for i in range(0, n_plots):
     ax[i].plot(update_times, color=dr_color, label=f'update_times')
     # ax[i].set_xlabel('X-axis')
     if i == n_plots // 2:
-        ax[i].set_ylabel('time [s]', color='k')
+        ax[i].set_ylabel('Update times [s]', fontsize=label_size, color='k')
     ax[i].tick_params('y', color='k')
 
     # Create the second subplot with the right y-axis
@@ -87,8 +89,11 @@ for i in range(0, n_plots):
     ax_2.append(ax[i].twinx())
     ax_2[i].plot(factor_counts, color=data_colors[i], label='factor_counts')
     if i == n_plots // 2:
-        ax_2[i].set_ylabel('Factor count', color='k')
+        ax_2[i].set_ylabel('Factor counts', fontsize=label_size, color='k')
     ax_2[i].tick_params('y', colors='k')
+
+    if i == n_plots - 1:
+        ax[i].set_xlabel('m_t', fontsize=label_size, color='k')
 
     # Add a legend
     lines, labels = ax[i].get_legend_handles_labels()
@@ -104,4 +109,5 @@ for i in range(0, n_plots):
 # plt.ylabel('Error [m]', fontsize=label_size)
 # plt.grid(True)
 # plt.tight_layout()
+fig.set_size_inches(figure_width, figure_height)
 plt.show()

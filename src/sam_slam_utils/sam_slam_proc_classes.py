@@ -709,8 +709,10 @@ class online_slam_2d:
         # This method will override the behaviour set by self.rope_batch_size
         self.rope_batch_by_line = rospy.get_param("rope_batch_by_line", False)
         self.rope_last_line = None
+        self.rope_current_line = None
         self.rope_last_time = None
         self.rope_last_line_timeout = rospy.get_param("rope_batch_by_line_timeout", 100)
+        self.rope_current_lines = []  # Debugging of rope batching by lines
 
         # === Prior parameters ===
         # Currently this only applies to the rope priors
@@ -1456,8 +1458,10 @@ class online_slam_2d:
                                                           avg_rope_position,
                                                           self.prior_model_rope)
 
+                            self.rope_current_line = -1
+
                     # This method of assigning Priors first attempts to associate each rope detection with a particular
-                    # rope. This association can be based on euclidean distance or max likelihood. The likelihood method
+                    # rope. This association can be based on Euclidean distance or max likelihood. The likelihood method
                     # uses the marginals calculated by GTSAM, this might require us to optimize at each time step
                     else:
                         # Currently there is no outlier detection/rejection for ropes
@@ -1468,6 +1472,7 @@ class online_slam_2d:
                             rope_association_ind, _, _ = self.associate_rope_detection_likelihood(self.est_detect_loc,
                                                                                                   current_covariance)
                         self.r_associations[self.current_r_ind] = rope_association_ind
+                        self.rope_current_line = rope_association_ind  # this is used for the line batching
 
                         # Here individual_rope_detection refers to the assignment of landmarks to detections. If true,
                         # detection is assigned a unique landmark.
@@ -1517,8 +1522,8 @@ class online_slam_2d:
 
                 # Method 2 - Check if the specified number of rope detections have been accumulated
                 if self.rope_batch_current_size >= self.rope_batch_size and not self.rope_batch_by_line:
-                    print('Starting Rope Batch Update')
                     if self.verbose_graph_rope_batching:
+                        print('Starting Rope Batch Update - Method 2')
                         print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
                         print(f"Priors: {len(self.rope_batch_priors)}")
                         print(f"Factors: {len(self.rope_batch_factors)}")
@@ -1553,15 +1558,74 @@ class online_slam_2d:
 
                 # Method 3 - check if batching by line conditions have been met
                 elif self.rope_batch_by_line:
-                    if self.rope_last_line is None or self.rope_last_time is None:
-                        self.rope_last_time = rospy.Time.now()
-                        self.rope_last_line = rope_association_ind
-                    else:
-                        different_rope_condition = rope_association_ind != self.rope_last_line
-                        time_condition = (rospy.Time.now() - self.rope_last_time).to_time() >= \
-                                         self.rope_last_line_timeout
+                    if self.rope_current_line is not None:
+                        # 2 conditions trigger adding the rope detection factors
+                        # (1) Detection of a different line
+                        # (2) last time of a set of detections associated with a particular line exceeds timeout
 
-                        if different_rope_condition or time_condition:
+                        # new line detected
+                        if self.rope_last_time is None:
+                            different_rope_condition = False
+                        elif self.rope_current_line == -1:
+                            different_rope_condition = True  # -1 used to indicate no priors of ropes
+                        else:
+                            different_rope_condition = self.rope_current_line != self.rope_last_line
+
+                        # timeout condition
+                        if self.rope_last_time is None:
+                            timeout_condition = False
+                        else:
+                            timeout_condition = (
+                                                            rospy.Time.now() - self.rope_last_time).to_sec() >= self.rope_last_line_timeout
+
+                        # Update and reset
+                        self.rope_current_lines.append(self.rope_current_line)
+                        self.rope_last_line = self.rope_current_line
+                        self.rope_last_time = rospy.Time.now()
+                        self.rope_current_line = None
+
+                        # Note: in the case of different_rope_condition we should exclude the last element from the
+                        # update and saved for later
+
+                        # Method 3 - different rope condition
+                        if different_rope_condition:
+                            if self.verbose_graph_rope_batching:
+                                print('Starting Rope Batch Update - Method 3 - New rope')
+                                print(f"Line indices: {self.rope_current_lines[:-1]}")
+                                print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
+                                print(f"Priors: {len(self.rope_batch_priors)}")
+                                print(f"Factors: {len(self.rope_batch_factors)}")
+
+                            # clear line DA indices
+                            self.rope_current_lines = self.rope_current_lines[-1:]
+
+                            # Initial values
+                            for rope_initial in self.rope_batch_initial_estimates[:-1]:
+                                self.initial_estimate.insert(*rope_initial)
+                            self.rope_batch_initial_estimates = self.rope_batch_initial_estimates[-1:]
+
+                            # Priors
+                            for rope_prior in self.rope_batch_priors[:-1]:
+                                self.graph.addPriorPoint2(*rope_prior)
+                            self.rope_batch_priors = self.rope_batch_priors[-1:]
+
+                            # Factors
+                            for rope_factor in self.rope_batch_factors[:-1]:
+                                self.graph.add(rope_factor)
+                            self.rope_batch_factors = self.rope_batch_factors[-1:]
+                            self.rope_batch_current_size = len(self.rope_batch_factors)
+
+                        elif timeout_condition:
+                            if self.verbose_graph_rope_batching:
+                                print('Starting Rope Batch Update - Method 3 - Timeout')
+                                print(f"Line indices: {self.rope_current_lines}")
+                                print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
+                                print(f"Priors: {len(self.rope_batch_priors)}")
+                                print(f"Factors: {len(self.rope_batch_factors)}")
+
+                                # clear line DA indices
+                                self.rope_current_lines = []
+
                             # Initial values
                             for rope_initial in self.rope_batch_initial_estimates:
                                 self.initial_estimate.insert(*rope_initial)
@@ -1578,14 +1642,11 @@ class online_slam_2d:
                             self.rope_batch_factors = []
                             self.rope_batch_current_size = 0
 
-                        self.rope_last_time = rospy.Time.now()
-                        self.rope_last_line = rope_association_ind
-
                 # Time update process
                 start_time = rospy.Time.now()
 
                 # Incremental update
-                # TODO Only calculate
+                # TODO Only calculate when required, the current way is required for valid marginals for DA
                 self.isam.update(self.graph, self.initial_estimate)
                 self.current_estimate = self.isam.calculateEstimate()
 
@@ -2426,6 +2487,8 @@ class analyze_slam:
         self.y_tick = 5
         self.plot_limits = None
         self.find_plot_limits()
+        self.figure_width = 8
+        self.figure_height = 8
 
     def save_for_sensor_processing(self):
         """
@@ -2592,6 +2655,7 @@ class analyze_slam:
 
     def visualize_raw(self):
         fig, ax = plt.subplots()
+        fig.set_size_inches(self.figure_width, self.figure_height)
         ax.set_aspect('equal')
         plt.title(f'Raw data')
         plt.axis(self.plot_limits)
@@ -2603,7 +2667,11 @@ class analyze_slam:
         ax.scatter(self.gt_poses[:, 0], self.gt_poses[:, 1], color=self.gt_color, label='Ground truth')
         ax.scatter(self.dr_poses[:, 0], self.dr_poses[:, 1], color=self.dr_color, label='Dead reckoning')
 
-        ax.legend()
+        ax.legend(fontsize=self.legend_size)
+
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-raw.png", dpi=300)
+
         plt.show()
         return
 
@@ -2621,6 +2689,7 @@ class analyze_slam:
 
         # ===== Matplotlip options =====
         fig, ax = plt.subplots()
+        fig.set_size_inches(self.figure_width, self.figure_height)
         ax.set_aspect('equal')
         plt.title(f'Final Estimate', fontsize=self.title_size)
         plt.xlabel('x [m]', fontsize=self.label_size)
@@ -2728,10 +2797,11 @@ class analyze_slam:
                     ax.plot(x_vals, y_vals, color='orange')
 
         ax.legend(fontsize=self.legend_size)
-        plt.show()
 
-        # if self.file_path is not None:
-        #     plt.savefig(self.file_path + "fig/final.png", dpi=300)
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-final.png", dpi=300)
+
+        plt.show()
 
     def visualize_online(self, plot_dr=False, plot_final=False, plot_buoy=True, plot_correspondence=False):
         """
@@ -2747,6 +2817,7 @@ class analyze_slam:
 
         # ===== Matplotlip options =====
         fig, ax = plt.subplots()
+        fig.set_size_inches(self.figure_width, self.figure_height)
         ax.set_aspect('equal')
         plt.title(f'Online Estimate', fontsize=self.title_size)
         plt.xlabel('x [m]', fontsize=self.label_size)
@@ -2829,6 +2900,10 @@ class analyze_slam:
         # see visualizing_posterior() for example
 
         ax.legend(fontsize=self.legend_size)
+
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-online.png", dpi=300)
+
         plt.show()
 
     def plot_error_positions(self):
@@ -3070,6 +3145,7 @@ class analyze_slam:
 
         # ===== Plot =====
         fig, (ax_da, ax_e_dist, ax_m_dist) = plt.subplots(1, 3)
+        fig.set_size_inches(self.figure_width, self.figure_height)
         # Data associations
         ax_da.plot(associations)
         ax_da.plot(true_associations, color='green', label='Truth')
@@ -3089,6 +3165,9 @@ class analyze_slam:
         # plot threshold
         if self.da_m_distance_threshold > 0:
             ax_m_dist.axhline(self.da_m_distance_threshold, color='red', linestyle='--', linewidth=1, label='Threshold')
+
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-info.png", dpi=300)
 
         plt.show()
 

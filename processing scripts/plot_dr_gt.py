@@ -129,7 +129,7 @@ plt.ylim(min_y, max_y)
 plt.legend(fontsize=legend_size, loc='upper right')
 
 plt.axis('equal')
-#plt.tight_layout()
+# plt.tight_layout()
 
 # Show the plot
 plt.grid(True)
