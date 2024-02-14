@@ -55,8 +55,8 @@
     <param name="buoy_detect_ang_sig_deg" value="0.5"/>
     <param name="buoy_detect_dist_sig" value=".25"/>
     <!-- ropes -->
-    <param name="detect_ang_sig_deg" value="25.0"/>
-    <param name="detect_dist_sig" value="15.0"/>
+    <param name="detect_ang_sig_deg" value="0.5"/>  <!-- ICRA: 25.0 -->
+    <param name="detect_dist_sig" value="0.25"/>  <!-- ICRA: 15.0 -->
 
     <!-- Detection sigmas -->
     <param name="rope_along_sig" value="15.0"/>

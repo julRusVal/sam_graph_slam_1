@@ -21,7 +21,7 @@
     <param name="simulated_data" value="False"/>
     <param name="detector_seq_id_as_score" value="True"/>
     <param name="record_ground_truth" value="True"/>
-    <param name="manual_associations" value="False"/>
+    <param name="manual_associations" value="True"/>
     <param name="simulated_detections" value="True"/>
     <param name="rope_associations" value="True"/>
     <param name="prioritize_buoy_detections" value="True"/>
@@ -29,14 +29,23 @@
     <param name="da_m_distance_threshold" value="-1.0"/>
     <param name="update_priors" value="False"/>
 
+    <!-- Manual DA for buoy detections -->
+    <param name="buoy_seq_ids" value="[78109, 78515, 78750, 79642, 80327,
+                                       81038, 81630, 83460, 84177, 84601,
+                                       84831]" />
+
+    <param name="buoy_line_ids" value="[3, -1, 2, 0, 5,
+                                        4, 1, 4, 3, -1,
+                                        2]" />
+
     <!-- Method comparison parameters -->
     <param name="use_rope_detections" value="True"/>
     <param name="individual_rope_detections" value="False"/>
     <param name="rope_batch_size" value="10"/>
     <param name="rope_batch_by_line" value="True"/>
     <param name="rope_batch_by_line_timeout" value="3"/>
-    <param name="rope_batch_by_swath" value="True"/>
-
+    <param name="batch_by_swath" value="True"/>
+    <param name="batch_by_swath_manual_rope_da" value="True"/>
     <!--
     <param name="swath_seq_ids" value= "[[[78109, 78750], [84177, 84831]],
                                         [[79642, 80327]],
@@ -48,6 +57,12 @@
                                         [[81038, 81630]],
                                         [[81650, 83460]],
                                         [[84177, 84831]]]" />
+
+    <param name="swath_line_ids" value="[2,
+                                        0,
+                                        1,
+                                        1,
+                                        2]" />
 
 
     <!-- Detector data -->

@@ -692,6 +692,11 @@ class online_slam_2d:
         # === DA parameters ===
         # TODO improve data association threshold
         self.manual_associations = rospy.get_param("manual_associations", False)
+        self.buoy_seq_ids = ast.literal_eval(rospy.get_param("buoy_seq_ids", "[]"))
+        self.buoy_line_ids = ast.literal_eval(rospy.get_param("buoy_line_ids", "[]"))
+        if len(self.buoy_seq_ids) != len(self.buoy_line_ids) or len(self.buoy_seq_ids) == 0:
+            self.manual_associations = False
+
         # currently only applied to buoys
         self.da_distance_threshold = rospy.get_param('da_distance_threshold', -1.0)
         self.da_m_distance_threshold = rospy.get_param('da_m_distance_threshold', -1.0)
@@ -703,10 +708,14 @@ class online_slam_2d:
         self.individual_rope_detections = rospy.get_param("individual_rope_detections", True)
         self.use_rope_detections = rospy.get_param("use_rope_detections", True)
         self.rope_batch_size = rospy.get_param("rope_batch_size", 0)
+
+        # = Rope update by count =
         self.rope_batch_current_size = 0
         self.rope_batch_factors = []
         self.rope_batch_priors = []
         self.rope_batch_initial_estimates = []
+
+        # = Rope update method using line DA =
         # This method will override the behaviour set by self.rope_batch_size
         self.rope_batch_by_line = rospy.get_param("rope_batch_by_line", False)
         self.rope_last_line = None
@@ -716,9 +725,19 @@ class online_slam_2d:
         self.rope_current_lines = []  # Debugging of rope batching by lines
         # this method will override the rope batching
         self.batch_by_swath = rospy.get_param("batch_by_swath", False)
+
+        # = Swath update method =
         self.swath_seq_ids = ast.literal_eval(rospy.get_param("swath_seq_ids", "[]"))
+        # Allows for manual DA of rope detections by swath
+        self.swath_line_inds = ast.literal_eval(rospy.get_param("swath_line_ids", "[]"))
+        self.batch_by_swath_manual_rope_da = rospy.get_param("batch_by_swath_manual_rope_da", False)
+        # Check for valid, matching size, between seq ids and line inds
+        if len(self.swath_seq_ids) != len(self.swath_line_inds):
+            self.batch_by_swath_manual_rope_da = False
         self.batch_swath_factors = [[] for _ in range(len(self.swath_seq_ids))]
         self.batch_swath_priors = [[] for _ in range(len(self.swath_seq_ids))]
+        self.current_swath_ind = -1
+        self.current_optimize = False
 
         # === Prior parameters ===
         # Currently this only applies to the rope priors
@@ -1075,171 +1094,171 @@ class online_slam_2d:
             print("problem")
         return
 
-    def online_update(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None):
-        """
-        OLD, DO NOT USE!!!
-
-        Pose format [x, y, z, q_w, q_x, q_y, q_z]
-        """
-        if not self.initial_pose_set:
-            print("Attempting to update before initial pose")
-            self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
-            return
-
-        # Attempt at preventing saturation
-        self.busy = True
-
-        # === Record relevant poses ===
-        # dr
-        self.dr_Pose2s.append(correct_dr(create_Pose2(dr_pose[:7])))
-        self.dr_Pose3s.append(create_Pose3(dr_pose))
-        self.dr_pose_raw.append(dr_pose)
-        if self.dr_pose_rpd is not None and len(dr_pose) == 10:
-            self.dr_pose_rpd.append(dr_pose[7:10])
-
-        # gt
-        self.gt_Pose2s.append(create_Pose2(gt_pose))
-        self.gt_Pose3s.append(create_Pose3(gt_pose))
-        self.gt_pose_raw.append(gt_pose)
-
-        # Find the relative odometry between dr_poses
-        between_odometry = self.dr_Pose2s[-2].between(self.dr_Pose2s[-1])
-        self.between_Pose2s.append(between_odometry)
-
-        # Add label
-        self.current_x_ind += 1
-        self.x[self.current_x_ind] = gtsam.symbol('x', self.current_x_ind)
-
-        # Add type or sensor identifier
-        # This used to associate nodes of the graph with sensor reading, processed offline
-        if relative_detection is None and id_string is None:
-            self.sensor_string_at_key[self.current_x_ind] = 'odometry'
-        elif relative_detection is not None and id_string is None:
-            self.sensor_string_at_key[self.current_x_ind] = 'detection'
-        else:
-            self.sensor_string_at_key[self.current_x_ind] = id_string
-
-        # ===== Add the between factor =====
-        self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
-                                                self.x[self.current_x_ind],
-                                                between_odometry,
-                                                self.odometry_model))
-
-        # Compute initialization value from the current estimate and odometry
-        computed_est = self.current_estimate.atPose2(self.x[self.current_x_ind - 1]).compose(between_odometry)
-
-        # Update initial estimate
-        self.initial_estimate.insert(self.x[self.current_x_ind], computed_est)
-
-        # ===== Process detection =====
-        # === Buoy ===
-        # TODO this might need to be more robust, not assume detections will lead to graph update
-        if relative_detection is not None and da_id != -ObjectID.ROPE.value:
-            # Calculate the map location of the detection given relative measurements and current estimate
-            self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
-            detect_bearing = computed_est.bearing(self.est_detect_loc)
-            detect_range = computed_est.range(self.est_detect_loc)
-
-            if self.manual_associations and da_id != -ObjectID.BUOY.value:
-                buoy_association_id = da_id
-            else:
-                buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
-
-                # ===== DA debugging =====
-                # Apply relative detection to gt to find the true DA
-                self.true_detect_loc = self.gt_Pose2s[-1].transformFrom(np.array(relative_detection, dtype=np.float64))
-                true_association_id, true_association_dist = self.associate_detection(self.true_detect_loc)
-
-                if buoy_association_id == true_association_id:
-                    self.da_check[self.current_x_ind] = [True,
-                                                         buoy_association_id, true_association_id,
-                                                         buoy_association_dist, true_association_dist]
-                else:
-                    self.da_check[self.current_x_ind] = [False,
-                                                         buoy_association_id, true_association_id,
-                                                         buoy_association_dist, true_association_dist]
-
-            if self.verbose_graph_buoy_detections and relative_detection is not None:
-                print(
-                    f'Buoy detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}  DA: {buoy_association_id}')
-
-            # ===== Add detection to graph =====
-            self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
-                                                      self.b[buoy_association_id],
-                                                      detect_bearing,
-                                                      detect_range,
-                                                      self.buoy_detection_model))
-
-        # === Rope ===
-        if relative_detection is not None and da_id == -ObjectID.ROPE.value:
-            # Calculate the map location of the detection given relative measurements and current estimate
-            self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
-            detect_bearing = computed_est.bearing(self.est_detect_loc)
-            detect_range = computed_est.range(self.est_detect_loc)
-
-            if self.verbose_graph_rope_detections:
-                print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}')
-
-            # ===== Add detection to graph =====
-            # Add the rope landmark
-            self.current_r_ind += 1
-            self.r[self.current_r_ind] = gtsam.symbol('r', self.current_r_ind)
-
-            # Add new landmarks prior and noise
-            rope_prior = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
-            self.graph.addPriorPoint2(self.r[self.current_r_ind], rope_prior, self.prior_model_rope)
-
-            # Initial estimate
-            if self.rope_batch_size >= 0:
-                self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
-            else:
-                self.rope_batch_initial_estimates.append([self.r[self.current_r_ind], self.est_detect_loc])
-
-            # Add factor between current x and current r
-
-            self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
-                                                      self.r[self.current_r_ind],
-                                                      detect_bearing,
-                                                      detect_range,
-                                                      self.detection_model))
-
-        # Time update process
-        start_time = rospy.Time.now()
-
-        # Incremental update
-        self.isam.update(self.graph, self.initial_estimate)
-        self.current_estimate = self.isam.calculateEstimate()
-
-        # self.graph.resize(0)
-        self.initial_estimate.clear()
-
-        # === Save online estimated pose2 ===
-        # Online estimate is saved for later analysis
-        self.online_Pose2s.append(self.current_estimate.atPose2(self.x[self.current_x_ind]))
-
-        end_time = rospy.Time.now()
-        update_time = (end_time - start_time).to_sec()
-
-        # Release the graph
-        self.busy = False
-
-        # ===== debugging and visualizations =====
-        # Log to terminal
-        if self.verbose_graph_update:
-            print(f"Done with update - x{self.current_x_ind}: {update_time} s")
-
-        # === Debug publishing ===
-        self.publish_estimated_pos_marker_and_transform(computed_est)
-        # TODO publish path
-        # self.publish_est_path()
-        # Buoy detection
-        if relative_detection is not None and da_id != -ObjectID.ROPE.value:
-            self.publish_detection_markers(buoy_association_id)
-
-        if self.x is None:
-            print("problem")
-
-        return
+    # def online_update(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None):
+    #     """
+    #     OLD, DO NOT USE!!!
+    #
+    #     Pose format [x, y, z, q_w, q_x, q_y, q_z]
+    #     """
+    #     if not self.initial_pose_set:
+    #         print("Attempting to update before initial pose")
+    #         self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
+    #         return
+    #
+    #     # Attempt at preventing saturation
+    #     self.busy = True
+    #
+    #     # === Record relevant poses ===
+    #     # dr
+    #     self.dr_Pose2s.append(correct_dr(create_Pose2(dr_pose[:7])))
+    #     self.dr_Pose3s.append(create_Pose3(dr_pose))
+    #     self.dr_pose_raw.append(dr_pose)
+    #     if self.dr_pose_rpd is not None and len(dr_pose) == 10:
+    #         self.dr_pose_rpd.append(dr_pose[7:10])
+    #
+    #     # gt
+    #     self.gt_Pose2s.append(create_Pose2(gt_pose))
+    #     self.gt_Pose3s.append(create_Pose3(gt_pose))
+    #     self.gt_pose_raw.append(gt_pose)
+    #
+    #     # Find the relative odometry between dr_poses
+    #     between_odometry = self.dr_Pose2s[-2].between(self.dr_Pose2s[-1])
+    #     self.between_Pose2s.append(between_odometry)
+    #
+    #     # Add label
+    #     self.current_x_ind += 1
+    #     self.x[self.current_x_ind] = gtsam.symbol('x', self.current_x_ind)
+    #
+    #     # Add type or sensor identifier
+    #     # This used to associate nodes of the graph with sensor reading, processed offline
+    #     if relative_detection is None and id_string is None:
+    #         self.sensor_string_at_key[self.current_x_ind] = 'odometry'
+    #     elif relative_detection is not None and id_string is None:
+    #         self.sensor_string_at_key[self.current_x_ind] = 'detection'
+    #     else:
+    #         self.sensor_string_at_key[self.current_x_ind] = id_string
+    #
+    #     # ===== Add the between factor =====
+    #     self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
+    #                                             self.x[self.current_x_ind],
+    #                                             between_odometry,
+    #                                             self.odometry_model))
+    #
+    #     # Compute initialization value from the current estimate and odometry
+    #     computed_est = self.current_estimate.atPose2(self.x[self.current_x_ind - 1]).compose(between_odometry)
+    #
+    #     # Update initial estimate
+    #     self.initial_estimate.insert(self.x[self.current_x_ind], computed_est)
+    #
+    #     # ===== Process detection =====
+    #     # === Buoy ===
+    #     # TODO this might need to be more robust, not assume detections will lead to graph update
+    #     if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+    #         # Calculate the map location of the detection given relative measurements and current estimate
+    #         self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
+    #         detect_bearing = computed_est.bearing(self.est_detect_loc)
+    #         detect_range = computed_est.range(self.est_detect_loc)
+    #
+    #         if self.manual_associations and da_id != -ObjectID.BUOY.value:
+    #             buoy_association_id = da_id
+    #         else:
+    #             buoy_association_id, buoy_association_dist = self.associate_detection(self.est_detect_loc)
+    #
+    #             # ===== DA debugging =====
+    #             # Apply relative detection to gt to find the true DA
+    #             self.true_detect_loc = self.gt_Pose2s[-1].transformFrom(np.array(relative_detection, dtype=np.float64))
+    #             true_association_id, true_association_dist = self.associate_detection(self.true_detect_loc)
+    #
+    #             if buoy_association_id == true_association_id:
+    #                 self.da_check[self.current_x_ind] = [True,
+    #                                                      buoy_association_id, true_association_id,
+    #                                                      buoy_association_dist, true_association_dist]
+    #             else:
+    #                 self.da_check[self.current_x_ind] = [False,
+    #                                                      buoy_association_id, true_association_id,
+    #                                                      buoy_association_dist, true_association_dist]
+    #
+    #         if self.verbose_graph_buoy_detections and relative_detection is not None:
+    #             print(
+    #                 f'Buoy detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}  DA: {buoy_association_id}')
+    #
+    #         # ===== Add detection to graph =====
+    #         self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+    #                                                   self.b[buoy_association_id],
+    #                                                   detect_bearing,
+    #                                                   detect_range,
+    #                                                   self.buoy_detection_model))
+    #
+    #     # === Rope ===
+    #     if relative_detection is not None and da_id == -ObjectID.ROPE.value:
+    #         # Calculate the map location of the detection given relative measurements and current estimate
+    #         self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
+    #         detect_bearing = computed_est.bearing(self.est_detect_loc)
+    #         detect_range = computed_est.range(self.est_detect_loc)
+    #
+    #         if self.verbose_graph_rope_detections:
+    #             print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}')
+    #
+    #         # ===== Add detection to graph =====
+    #         # Add the rope landmark
+    #         self.current_r_ind += 1
+    #         self.r[self.current_r_ind] = gtsam.symbol('r', self.current_r_ind)
+    #
+    #         # Add new landmarks prior and noise
+    #         rope_prior = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
+    #         self.graph.addPriorPoint2(self.r[self.current_r_ind], rope_prior, self.prior_model_rope)
+    #
+    #         # Initial estimate
+    #         if self.rope_batch_size >= 0:
+    #             self.initial_estimate.insert(self.r[self.current_r_ind], self.est_detect_loc)
+    #         else:
+    #             self.rope_batch_initial_estimates.append([self.r[self.current_r_ind], self.est_detect_loc])
+    #
+    #         # Add factor between current x and current r
+    #
+    #         self.graph.add(gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
+    #                                                   self.r[self.current_r_ind],
+    #                                                   detect_bearing,
+    #                                                   detect_range,
+    #                                                   self.detection_model))
+    #
+    #     # Time update process
+    #     start_time = rospy.Time.now()
+    #
+    #     # Incremental update
+    #     self.isam.update(self.graph, self.initial_estimate)
+    #     self.current_estimate = self.isam.calculateEstimate()
+    #
+    #     # self.graph.resize(0)
+    #     self.initial_estimate.clear()
+    #
+    #     # === Save online estimated pose2 ===
+    #     # Online estimate is saved for later analysis
+    #     self.online_Pose2s.append(self.current_estimate.atPose2(self.x[self.current_x_ind]))
+    #
+    #     end_time = rospy.Time.now()
+    #     update_time = (end_time - start_time).to_sec()
+    #
+    #     # Release the graph
+    #     self.busy = False
+    #
+    #     # ===== debugging and visualizations =====
+    #     # Log to terminal
+    #     if self.verbose_graph_update:
+    #         print(f"Done with update - x{self.current_x_ind}: {update_time} s")
+    #
+    #     # === Debug publishing ===
+    #     self.publish_estimated_pos_marker_and_transform(computed_est)
+    #     # TODO publish path
+    #     # self.publish_est_path()
+    #     # Buoy detection
+    #     if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+    #         self.publish_detection_markers(buoy_association_id)
+    #
+    #     if self.x is None:
+    #         print("problem")
+    #
+    #     return
 
     def online_update_queued(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None, seq_id=None):
         """
@@ -1338,16 +1357,18 @@ class online_slam_2d:
                 # record detection type for performance metrics
                 relative_detection_state = 0
 
-                # === Swath Update Info ===
-                # Determine if current update is a member of a designated swath, and if optimization is warranted
-                current_swath_ind, current_optimize = self.check_seq_id(current_seq_id=seq_id)
-
                 # === Buoy ===
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+                    # Detection state info
                     relative_detection_state = 1  # perfomance metrics
 
                     # data association flag
                     valid_buoy_da = True
+
+                    # Swath update info
+                    # Determine if current update is a member of a designated swath, and if optimization is warranted
+                    if seq_id is not None:
+                        self.current_swath_ind, self.current_optimize = self.check_seq_id(current_seq_id=seq_id)
 
                     # Calculate the map location of the detection given relative measurements and current estimate
                     self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
@@ -1357,8 +1378,24 @@ class online_slam_2d:
                     # if current_covariance is not None:
                     #     self.associate_detection_likelihood(self.est_detect_loc, current_covariance, marginals)
 
-                    if self.manual_associations and da_id != -ObjectID.BUOY.value:
-                        buoy_association_id = da_id
+                    # TODO Old method of manual buoy DA, why did I do it this way
+                    # if self.manual_associations and da_id != -ObjectID.BUOY.value:
+                    #     buoy_association_id = da_id
+
+                    if self.manual_associations and seq_id is not None:
+                        try:
+                            index = self.buoy_seq_ids.index(seq_id)
+                            buoy_association_id = self.buoy_line_ids[index]
+                            valid_buoy_da = buoy_association_id != -1
+                        except ValueError:
+                            buoy_association_id = -1
+                            valid_buoy_da = False
+
+                        # Record detection for debugging
+                        self.buoy_detection_info.append([buoy_association_id,
+                                                         0,  # buoy_association_dist
+                                                         0])  # buoy_association_m_dist
+
                     else:
                         # If no covariance estimate is available DA uses only euclidean distance
                         if current_covariance is None:
@@ -1390,6 +1427,7 @@ class online_slam_2d:
                         else:
                             recorded_association = -1
 
+                        # Record detection for debugging
                         self.buoy_detection_info.append([recorded_association,
                                                          buoy_association_dist,
                                                          buoy_association_m_dist])
@@ -1423,16 +1461,25 @@ class online_slam_2d:
                                                                               self.buoy_detection_model)
 
                         if self.batch_by_swath:
-                            if current_swath_ind > -1:
-                                self.batch_swath_factors[current_swath_ind].append(x_b_range_bearing_factor)
+                            if self.current_swath_ind > -1:
+                                self.batch_swath_factors[self.current_swath_ind].append(x_b_range_bearing_factor)
                         else:
                             self.graph.add(x_b_range_bearing_factor)
 
                 # === Rope ===
                 if relative_detection is not None and da_id == -ObjectID.ROPE.value:
+                    # Detection state info
                     relative_detection_state = 2  # performance metrics
                     valid_rope = True
-                    self.rope_batch_current_size += 1
+
+                    # Batch update info
+                    if self.rope_batch_size > 0:
+                        self.rope_batch_current_size += 1
+
+                    # Swath update info
+                    # Determine if current update is a member of a designated swath, and if optimization is warranted
+                    if seq_id is not None:
+                        self.current_swath_ind, self.current_optimize = self.check_seq_id(current_seq_id=seq_id)
 
                     # Calculate the map location of the detection given relative measurements and current estimate
                     self.est_detect_loc = computed_est.transformFrom(np.array(relative_detection, dtype=np.float64))
@@ -1472,8 +1519,8 @@ class online_slam_2d:
                         if self.individual_rope_detections:
                             # Swath Updating
                             if self.batch_by_swath:
-                                if current_swath_ind > -1:
-                                    self.batch_swath_priors[current_swath_ind].append([self.r[self.current_r_ind],
+                                if self.current_swath_ind > -1:
+                                    self.batch_swath_priors[self.current_swath_ind].append([self.r[self.current_r_ind],
                                                                                        avg_rope_position,
                                                                                        self.prior_model_rope])
                             # Batch updating of rope detections
@@ -1490,14 +1537,20 @@ class online_slam_2d:
 
                             self.rope_current_line = -1
 
+                    # === Data Association of Rope Detection
                     # This method of assigning Priors first attempts to associate each rope detection with a particular
                     # rope. This association can be based on Euclidean distance or max likelihood. The likelihood method
                     # uses the marginals calculated by GTSAM, this might require us to optimize at each time step
+                    # Currently there is no outlier detection/rejection for ropes
+                    # Also the option for manual associations
                     else:
-                        # Currently there is no outlier detection/rejection for ropes
-                        if current_covariance is None:
-                            # Use euclidean distance for data association
+                        # Manual associations based on seq
+                        if self.batch_by_swath_manual_rope_da and self.current_swath_ind > -1:
+                            rope_association_ind = self.swath_line_inds[self.current_swath_ind]
+                        # Data association based on Euclidean distance
+                        elif current_covariance is None:
                             rope_association_ind = self.associate_rope_detection(self.est_detect_loc)
+                        # Data association based on max likelihood, requires marginal computation by GTSAM
                         else:
                             rope_association_ind, _, _ = self.associate_rope_detection_likelihood(self.est_detect_loc,
                                                                                                   current_covariance)
@@ -1508,22 +1561,20 @@ class online_slam_2d:
                         # detection is assigned a unique landmark.
                         if self.individual_rope_detections:
                             if self.use_rope_detections:
-
+                                # Handling the prior associated with the current rope detection
                                 # Swath Updating
                                 if self.batch_by_swath:
-                                    if current_swath_ind > -1:
-                                        self.batch_swath_priors[current_swath_ind].append([self.r[self.current_r_ind],
+                                    if self.current_swath_ind > -1:
+                                        self.batch_swath_priors[self.current_swath_ind].append([self.r[self.current_r_ind],
                                                                                            self.rope_centers[
                                                                                                rope_association_ind],
                                                                                            self.rope_noise_models[
                                                                                                rope_association_ind]])
-
                                 # Batch updating of rope detections
                                 elif self.rope_batch_size >= 0:
                                     self.rope_batch_priors.append([self.r[self.current_r_ind],
                                                                    self.rope_centers[rope_association_ind],
                                                                    self.rope_noise_models[rope_association_ind]])
-
                                 # Individual updating of rope detections
                                 else:
                                     self.graph.addPriorPoint2(self.r[self.current_r_ind],
@@ -1532,33 +1583,36 @@ class online_slam_2d:
 
                         # The Nacho method is used when the individual_rope_detections is set to False
                         else:
+                            # Define the new factor between current x and detected l < single point landmark for rope
                             x_l_range_bearing_factor = gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
                                                                                   self.l[rope_association_ind],
                                                                                   detect_bearing,
                                                                                   detect_range,
                                                                                   self.detection_model)
-
+                            # Handling the factor associated with the current rope detection -> 'line' landmark
+                            # Swath Updating
                             if self.batch_by_swath:
-                                if current_swath_ind > -1:
-                                    self.batch_swath_factors.append(x_l_range_bearing_factor)
-
+                                if self.current_swath_ind > -1:
+                                    self.batch_swath_factors[self.current_swath_ind].append(x_l_range_bearing_factor)
+                            # Batch updating of rope detections
                             elif self.rope_batch_size >= 0:
                                 self.rope_batch_factors.append(x_l_range_bearing_factor)
-
+                            # Individual updating of rope detections
                             else:
                                 self.graph.add(x_l_range_bearing_factor)
 
-                    # Add factor between current x and current r
+                    # === Add factor between current x and current r ===
                     if self.use_rope_detections:
+                        # Define the new factor between current x and detected r < single point landmark for detection
                         x_r_range_bearing_factor = gtsam.BearingRangeFactor2D(self.x[self.current_x_ind],
                                                                               self.r[self.current_r_ind],
                                                                               detect_bearing,
                                                                               detect_range,
-                                                                              self.detection_model)
 
+                                                                              self.detection_model)
                         if self.batch_by_swath:
-                            if current_swath_ind > -1:
-                                self.batch_swath_factors.append(x_r_range_bearing_factor)
+                            if self.current_swath_ind > -1:
+                                self.batch_swath_factors[self.current_swath_ind].append(x_r_range_bearing_factor)
 
                         if self.rope_batch_size >= 0:
                             self.rope_batch_factors.append(x_r_range_bearing_factor)
@@ -1567,81 +1621,50 @@ class online_slam_2d:
 
                 # Rope detections are added Using three methods
                 # (1) Individually -> self.rope_batch_size <= 0
+                # (s) By defined swath
                 # (2) Batches of specified number -> self.rope_batch_size > 0
                 # (3) By lines (Newest method) -> self.rope_batch_by_line == True
                 # The line method (3) overrides the other two methods.
                 # This method was added in the rope_batching_by_line branch
 
                 # Swath method
-                if self.batch_by_swath and current_optimize:
-                    if self.verbose_graph_rope_batching:
-                        print('Starting swath Batch Update')
-                        print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
-                        print(f"Priors: {len(self.rope_batch_priors)}")
-                        print(f"Factors: {len(self.rope_batch_factors)}")
-
-                    # # Initial value
-                    # for rope_initial in self.rope_batch_initial_estimates:
-                    #     self.initial_estimate.insert(*rope_initial)
-                    #     if self.verbose_graph_rope_batching:
-                    #         print(rope_initial)
-                    # self.rope_batch_initial_estimates = []
-
-                    # Priors
-                    if self.verbose_graph_rope_batching:
-                        print("Priors:")
-                    for rope_prior in self.batch_swath_priors[current_swath_ind]:
-                        self.graph.addPriorPoint2(*rope_prior)
-
+                if self.batch_by_swath:
+                    if self.current_optimize:
                         if self.verbose_graph_rope_batching:
-                            print(rope_prior)
-                    self.batch_swath_priors[current_swath_ind] = []
+                            print(f'Starting swath Batch Update - {self.current_swath_ind}')
+                            print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
+                            print(f"Priors: {len(self.rope_batch_priors)}")
+                            print(f"Factors: {len(self.rope_batch_factors)}")
 
-                    # Factors
-                    if self.verbose_graph_rope_batching:
-                        print("Factors:")
-                    for rope_factor in self.batch_swath_factors[current_swath_ind]:
-                        self.graph.add(rope_factor)
+                        # # Initial value
+                        # for rope_initial in self.rope_batch_initial_estimates:
+                        #     self.initial_estimate.insert(*rope_initial)
+                        #     if self.verbose_graph_rope_batching:
+                        #         print(rope_initial)
+                        # self.rope_batch_initial_estimates = []
 
-                        if self.verbose_graph_rope_batching:
-                            print(rope_factor)
-                    self.batch_swath_factors[current_swath_ind] = []
+                        # Priors
+                        # if self.verbose_graph_rope_batching:
+                        #     print("Priors:")
+                        for rope_prior in self.batch_swath_priors[self.current_swath_ind]:
+                            self.graph.addPriorPoint2(*rope_prior)
 
-                # Method 2 - Check if the specified number of rope detections have been accumulated
-                if self.rope_batch_current_size >= self.rope_batch_size and not self.rope_batch_by_line:
-                    if self.verbose_graph_rope_batching:
-                        print('Starting Rope Batch Update - Method 2')
-                        print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
-                        print(f"Priors: {len(self.rope_batch_priors)}")
-                        print(f"Factors: {len(self.rope_batch_factors)}")
+                            # if self.verbose_graph_rope_batching:
+                            #     print(rope_prior)
+                        # self.batch_swath_priors[self.current_swath_ind] = []
 
-                    # Initial value
-                    for rope_initial in self.rope_batch_initial_estimates:
-                        self.initial_estimate.insert(*rope_initial)
-                        if self.verbose_graph_rope_batching:
-                            print(rope_initial)
-                    self.rope_batch_initial_estimates = []
+                        # Factors
+                        # if self.verbose_graph_rope_batching:
+                        #     print("Factors:")
+                        for rope_factor in self.batch_swath_factors[self.current_swath_ind]:
+                            self.graph.add(rope_factor)
 
-                    # Priors
-                    if self.verbose_graph_rope_batching:
-                        print("Priors:")
-                    for rope_prior in self.rope_batch_priors:
-                        self.graph.addPriorPoint2(*rope_prior)
+                            # if self.verbose_graph_rope_batching:
+                            #     print(rope_factor)
+                        # self.batch_swath_factors[self.current_swath_ind] = []
 
-                        if self.verbose_graph_rope_batching:
-                            print(rope_prior)
-                    self.rope_batch_priors = []
-
-                    # Factors
-                    if self.verbose_graph_rope_batching:
-                        print("Factors:")
-                    for rope_factor in self.rope_batch_factors:
-                        self.graph.add(rope_factor)
-
-                        if self.verbose_graph_rope_batching:
-                            print(rope_factor)
-                    self.rope_batch_factors = []
-                    self.rope_batch_current_size = 0
+                        # Reset optimization status
+                        self.current_optimize = False
 
                 # Method 3 - check if batching by line conditions have been met
                 elif self.rope_batch_by_line:
@@ -1728,6 +1751,42 @@ class online_slam_2d:
                                 self.graph.add(rope_factor)
                             self.rope_batch_factors = []
                             self.rope_batch_current_size = 0
+
+                # Method 2 - Check if the specified number of rope detections have been accumulated
+                elif self.rope_batch_current_size >= self.rope_batch_size:
+                    if self.verbose_graph_rope_batching:
+                        print('Starting Rope Batch Update - Method 2')
+                        print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
+                        print(f"Priors: {len(self.rope_batch_priors)}")
+                        print(f"Factors: {len(self.rope_batch_factors)}")
+
+                    # Initial value
+                    for rope_initial in self.rope_batch_initial_estimates:
+                        self.initial_estimate.insert(*rope_initial)
+                        if self.verbose_graph_rope_batching:
+                            print(rope_initial)
+                    self.rope_batch_initial_estimates = []
+
+                    # Priors
+                    if self.verbose_graph_rope_batching:
+                        print("Priors:")
+                    for rope_prior in self.rope_batch_priors:
+                        self.graph.addPriorPoint2(*rope_prior)
+
+                        if self.verbose_graph_rope_batching:
+                            print(rope_prior)
+                    self.rope_batch_priors = []
+
+                    # Factors
+                    if self.verbose_graph_rope_batching:
+                        print("Factors:")
+                    for rope_factor in self.rope_batch_factors:
+                        self.graph.add(rope_factor)
+
+                        if self.verbose_graph_rope_batching:
+                            print(rope_factor)
+                    self.rope_batch_factors = []
+                    self.rope_batch_current_size = 0
 
                 # Time update process
                 start_time = rospy.Time.now()
@@ -3022,8 +3081,6 @@ class analyze_slam:
 
         dr_error = analyze_slam.calculate_distances(self.dr_poses[:, :2], self.posterior_poses[:, :2])
         online_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.posterior_poses[:, :2])
-
-        print(f"shape: {online_error.shape}")
 
         dr_rmse = np.sqrt(np.mean(dr_error ** 2))
         online_rmse = np.sqrt(np.mean(online_error ** 2))
