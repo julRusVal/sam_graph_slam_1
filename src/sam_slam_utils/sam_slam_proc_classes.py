@@ -2765,7 +2765,7 @@ class analyze_slam:
 
     def save_3d_poses(self):
         """
-        Saves two files of the 3d poses of
+        Saves three files of the 3d poses of dr, estimate or final, online
         format: [[timestamp, x, y, z, q_x, q_y, q_z, q_w]]
 
         Currently, the timestamp is just the index to allow for association between dr and estimation
@@ -2782,9 +2782,9 @@ class analyze_slam:
             print("Analysis output path not specified")
             return
 
-        # ===== Save base link (wrt map) poses =====
         dr_3d_poses = []
         est_3d_poses = []
+        online_3d_poses = []
 
         # form the required list of lists
         for x_ind in range(len(self.x)):
@@ -2794,7 +2794,10 @@ class analyze_slam:
             # X, Y, and yaw are estimated using the factor graph
             est_x, est_y, est_yaw = self.posterior_poses[x_ind, :3]
 
-            # Estimated 3D pose
+
+            online_x, online_y, online_yaw = self.online_poses[x_ind, :3]
+
+            # Estimated 3D pose (final)
             """
             Initially I saved the roll and pitch reported by dr odom and combined those with the estimated
             yaw to for the new estimated 3d pose but that was giving strange results...
@@ -2825,6 +2828,7 @@ class analyze_slam:
             depth = self.slam.dr_pose_rpd[x_ind][2]
 
             est_quats_xyzw = quaternion_from_euler(roll, pitch, est_yaw)  # output: [x, y, z, w]
+            online_quats_xyzw = quaternion_from_euler(roll, pitch, online_yaw)  # output: [x, y, z, w]
 
             # Format: [timestamp, x, y, z, q_x, q_y, q_z, q_w]
             # NOTE: the order of of the quaternions, I'm sorry GTSAM is w,x,y,z while ROS is x,y,z,w
@@ -2837,14 +2841,20 @@ class analyze_slam:
                            est_x, est_y, -depth,
                            est_quats_xyzw[0], est_quats_xyzw[1], est_quats_xyzw[2], est_quats_xyzw[3]]
 
+            online_3d_pose = [x_ind,
+                           online_x, online_y, -depth,
+                           online_quats_xyzw[0], online_quats_xyzw[1], online_quats_xyzw[2], online_quats_xyzw[3]]
+
             dr_3d_poses.append(dr_3d_pose)
             est_3d_poses.append(est_3d_pose)
+            online_3d_poses.append(online_3d_pose)
 
         if yaw_error_flag:
             print("Error: save_3d_poses(), yaw_threshold exceeding")
 
         write_array_to_csv(self.file_path + 'analysis_dr_3d.csv', dr_3d_poses)
-        write_array_to_csv(self.file_path + 'analysis_est_3d.csv', est_3d_poses)
+        write_array_to_csv(self.file_path + 'analysis_final_3d.csv', est_3d_poses)
+        write_array_to_csv(self.file_path + 'analysis_online_3d.csv', online_3d_poses)
 
     def save_2d_poses(self):
         """
