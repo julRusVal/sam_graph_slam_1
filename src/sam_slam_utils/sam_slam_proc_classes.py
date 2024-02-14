@@ -1521,8 +1521,8 @@ class online_slam_2d:
                             if self.batch_by_swath:
                                 if self.current_swath_ind > -1:
                                     self.batch_swath_priors[self.current_swath_ind].append([self.r[self.current_r_ind],
-                                                                                       avg_rope_position,
-                                                                                       self.prior_model_rope])
+                                                                                            avg_rope_position,
+                                                                                            self.prior_model_rope])
                             # Batch updating of rope detections
                             elif self.rope_batch_size >= 0:
                                 self.rope_batch_priors.append([self.r[self.current_r_ind],
@@ -1565,11 +1565,12 @@ class online_slam_2d:
                                 # Swath Updating
                                 if self.batch_by_swath:
                                     if self.current_swath_ind > -1:
-                                        self.batch_swath_priors[self.current_swath_ind].append([self.r[self.current_r_ind],
-                                                                                           self.rope_centers[
-                                                                                               rope_association_ind],
-                                                                                           self.rope_noise_models[
-                                                                                               rope_association_ind]])
+                                        self.batch_swath_priors[self.current_swath_ind].append(
+                                            [self.r[self.current_r_ind],
+                                             self.rope_centers[
+                                                 rope_association_ind],
+                                             self.rope_noise_models[
+                                                 rope_association_ind]])
                                 # Batch updating of rope detections
                                 elif self.rope_batch_size >= 0:
                                     self.rope_batch_priors.append([self.r[self.current_r_ind],
@@ -2707,6 +2708,7 @@ class analyze_slam:
             # Roll, pitch, and depth are provided from the odometry
             roll_old = self.slam.dr_pose_rpd[key][0]
             pitch_old = self.slam.dr_pose_rpd[key][1]
+
             # This quaternion is stored [w, x, y, z]
             dr_q = self.slam.dr_pose_raw[key][3:7]
             # This function expects a quaternions of the form [x, y, z, w]
@@ -2720,7 +2722,7 @@ class analyze_slam:
             est_y = self.posterior_poses[key, 1]
             est_yaw = self.posterior_poses[key, 2]
 
-            quats = quaternion_from_euler(roll, pitch, est_yaw)
+            quats = quaternion_from_euler(roll, pitch, est_yaw)  # output: [x, y, z, w]
 
             # This quaternion is stored [w, x, y, z]
             sensor_est_pose = [est_x, est_y, -depth,
@@ -2760,6 +2762,89 @@ class analyze_slam:
 
             # Write to file
             write_array_to_csv(self.file_path + 'buoys_est.csv', buoys_est)
+
+    def save_3d_poses(self):
+        """
+        Saves two files of the 3d poses of
+        format: [[timestamp, x, y, z, q_x, q_y, q_z, q_w]]
+
+        Currently, the timestamp is just the index to allow for association between dr and estimation
+
+        :return:
+        """
+
+        print("Analysis: save_3d_poses")
+
+        yaw_threshold = 0.01
+        yaw_error_flag = False
+
+        if self.file_path is None:
+            print("Analysis output path not specified")
+            return
+
+        # ===== Save base link (wrt map) poses =====
+        dr_3d_poses = []
+        est_3d_poses = []
+
+        # form the required list of lists
+        for x_ind in range(len(self.x)):
+            # DR
+            dr_x, dr_y, dr_yaw = self.dr_poses[x_ind, :3]
+
+            # X, Y, and yaw are estimated using the factor graph
+            est_x, est_y, est_yaw = self.posterior_poses[x_ind, :3]
+
+            # Estimated 3D pose
+            """
+            Initially I saved the roll and pitch reported by dr odom and combined those with the estimated
+            yaw to for the new estimated 3d pose but that was giving strange results...
+
+            New plan is to extract the roll and pith in the NOW corrected dr pose info. Then combine with the estimated
+            yaw to form the new 3d pose quaternion
+            """
+
+            # Roll, pitch, and depth are provided from the odometry
+            # roll_old = self.slam.dr_pose_rpd[key][0]
+            # pitch_old = self.slam.dr_pose_rpd[key][1]
+
+            # Extract quaternions of current DR
+            dr_quats = self.slam.dr_pose_raw[x_ind][3:7]  # This quaternion is stored [w, x, y, z]
+            dr_quats_xyzw = [dr_quats[1], dr_quats[2], dr_quats[3], dr_quats[0]]
+
+            # Convert from quaternions of the form [x, y, z, w] -> roll, pitch, yaw
+            # This function expects a quaternions of the form [x, y, z, w]
+            dr_rpy = euler_from_quaternion(dr_quats_xyzw)
+
+            # Check for agreement between the DR data, dr_poses and dr_pose_raw
+            if abs(dr_yaw - dr_rpy[2]) > yaw_threshold:
+                yaw_error_flag = True
+                break
+
+            roll = dr_rpy[0]
+            pitch = dr_rpy[1]
+            depth = self.slam.dr_pose_rpd[x_ind][2]
+
+            est_quats_xyzw = quaternion_from_euler(roll, pitch, est_yaw)  # output: [x, y, z, w]
+
+            # Format: [timestamp, x, y, z, q_x, q_y, q_z, q_w]
+            # NOTE: the order of of the quaternions, I'm sorry GTSAM is w,x,y,z while ROS is x,y,z,w
+
+            dr_3d_pose = [x_ind,
+                          dr_x, dr_y, -depth,
+                          dr_quats_xyzw[0], dr_quats_xyzw[1], dr_quats_xyzw[2], dr_quats_xyzw[3]]
+
+            est_3d_pose = [x_ind,
+                           est_x, est_y, -depth,
+                           est_quats_xyzw[0], est_quats_xyzw[1], est_quats_xyzw[2], est_quats_xyzw[3]]
+
+            dr_3d_poses.append(dr_3d_pose)
+            est_3d_poses.append(est_3d_pose)
+
+        if yaw_error_flag:
+            print("Error: save_3d_poses(), yaw_threshold exceeding")
+
+        write_array_to_csv(self.file_path + 'analysis_dr_3d.csv', dr_3d_poses)
+        write_array_to_csv(self.file_path + 'analysis_est_3d.csv', est_3d_poses)
 
     def save_2d_poses(self):
         """

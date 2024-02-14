@@ -945,6 +945,7 @@ class sam_slam_listener:
                 self.analysis = analyze_slam(self.online_graph, self.file_path)
                 self.analysis.save_for_sensor_processing()
                 self.analysis.save_2d_poses()
+                self.analysis.save_3d_poses()
                 self.analysis.save_performance_metrics()
                 self.analysis.calculate_corresponding_points(debug=False)
 
