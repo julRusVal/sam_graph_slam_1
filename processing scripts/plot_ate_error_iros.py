@@ -14,6 +14,7 @@ legend_size = 12
 label_size = 14
 
 plot = True
+plot_errors = True
 
 # ATE setting
 offset = 0.0
