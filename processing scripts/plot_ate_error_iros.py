@@ -13,8 +13,9 @@ title_size = 16
 legend_size = 12
 label_size = 14
 
-plot = True
-plot_errors = True
+plot_final_dr = True
+plot_final_online = True
+
 
 # ATE setting
 offset = 0.0
@@ -64,22 +65,79 @@ if iros_data:
                                         delimiter=',', dtype=float)
 else:
     raise ValueError("Please specify a directory")
-
+# === Method 1 ===
 method_1_final_dr_ate = trajectory_analysis.TrajectoryAnalysis(method_1_final_path,
                                                                method_1_dr_path,
                                                                output_directory_path=method_1_path,
                                                                verbose=verbose)
 
+method_1_final_online_ate = trajectory_analysis.TrajectoryAnalysis(method_1_final_path,
+                                                                   method_1_online_path,
+                                                                   output_directory_path=method_1_path,
+                                                                   verbose=verbose)
+
+# === Method 2 ===
 method_2_final_dr_ate = trajectory_analysis.TrajectoryAnalysis(method_2_final_path,
                                                                method_2_dr_path,
                                                                output_directory_path=method_2_path,
                                                                verbose=verbose)
 
+method_2_final_online_ate = trajectory_analysis.TrajectoryAnalysis(method_2_final_path,
+                                                                   method_2_online_path,
+                                                                   output_directory_path=method_2_path,
+                                                                   verbose=verbose)
+
+# === Method 3 ===
 method_3_final_dr_ate = trajectory_analysis.TrajectoryAnalysis(method_3_final_path,
                                                                method_3_dr_path,
                                                                output_directory_path=method_3_path,
                                                                verbose=verbose)
 
-if plot:
-    print("plotting")
-    method_1_final_dr_ate.plot_trajectories()
+method_3_final_online_ate = trajectory_analysis.TrajectoryAnalysis(method_3_final_path,
+                                                                   method_3_online_path,
+                                                                   output_directory_path=method_3_path,
+                                                                   verbose=verbose)
+
+# test = trajectory_analysis.TrajectoryAnalysis(method_1_dr_path, method_1_final_path,
+#                                                                output_directory_path=method_1_path,
+#                                                                verbose=verbose)
+
+if plot_final_dr:
+    method_1_final_dr_ate.plot_trajectories(title="Method 1 - Final/DR", plot_name="analysis_method_1_final_dr_ate")
+    method_2_final_dr_ate.plot_trajectories(title="Method 2 - Final/DR", plot_name="analysis_method_2_final_dr_ate")
+    method_3_final_dr_ate.plot_trajectories(title="Method 3 - Final/DR", plot_name="analysis_method_3_final_dr_ate")
+
+    # test.plot_trajectories(title="Method 1 - DR/Final", plot_name="analysis_method_1_dr_final_ate")
+
+    method_1_ate = method_1_final_dr_ate.trans_error
+    method_2_ate = method_2_final_dr_ate.trans_error
+    method_3_ate = method_3_final_dr_ate.trans_error
+    method_errors = [method_1_ate, method_2_ate, method_3_ate]
+
+    method_titles = ["Method 1", "Method 2", "Method 3"]
+    method_colors = ['g', 'b', 'm']
+    method_info = list(zip(method_titles, method_colors))
+
+    method_1_final_dr_ate.plot_errors(method_errors, method_info, title="ATE - Final/DR",
+                                      plot_name="analysis_final_dr_ate_errors")
+
+if plot_final_online:
+    method_1_final_online_ate.plot_trajectories(title="Method 1 - Final/Online",
+                                                plot_name="analysis_method_1_final_online_ate")
+    method_2_final_online_ate.plot_trajectories(title="Method 2 - Final/Online",
+                                                plot_name="analysis_method_2_final_online_ate")
+    method_3_final_online_ate.plot_trajectories(title="Method 3 - Final/Online",
+                                                plot_name="analysis_method_3_final_online_ate")
+
+    method_1_ate = method_1_final_online_ate.trans_error
+    method_2_ate = method_2_final_online_ate.trans_error
+    method_3_ate = method_3_final_online_ate.trans_error
+    method_errors = [method_1_ate, method_2_ate, method_3_ate]
+
+    method_titles = ["Method 1", "Method 2", "Method 3"]
+    method_colors = ['g', 'b', 'm']
+    method_info = list(zip(method_titles, method_colors))
+
+    method_1_final_dr_ate.plot_errors(method_errors, method_info, title="ATE - Final/Online",
+                                      plot_name="analysis_final_online_ate_errors")
+

@@ -62,7 +62,10 @@ def plot_traj(ax, stamps, traj, style, color, label):
 
 
 class TrajectoryAnalysis:
-    def __init__(self, ground_truth_trajectory_path, comparison_trajectory_path, output_directory_path=None,
+    def __init__(self, ground_truth_trajectory_path, comparison_trajectory_path,
+                 data_labels=[],
+                 output_directory_path=None,
+                 plot_trajectory_name = None,
                  offset=0,
                  max_difference=0.0001,
                  scale=1.0,
@@ -82,7 +85,6 @@ class TrajectoryAnalysis:
             self.output_path = output_directory_path
         else:
             raise ValueError("Invalid output path")
-
 
         self.ground_trajectory_dict = read_file_list(self.ground_trajectory_path)
         self.comparison_trajectory_dict = read_file_list(self.comparison_trajectory_path)
@@ -119,11 +121,30 @@ class TrajectoryAnalysis:
         self.perform_ate()
 
         # === output parameters and variables
-
         self.aligned_trajectory_path = self.output_path + "/analysis_aligned_trajectory.csv"
         self.aligned_associations_path = self.output_path + "/analysis_aligned_associations.csv"
         self.plot_trajectory_path = self.output_path + "/analysis_ate_trajectory.pdf"
+
+        if isinstance(plot_trajectory_name, str):
+            self.plot_trajectory_name = plot_trajectory_name
+        else:
+            self.plot_trajectory_name = None
         self.plot_error_path = self.output_path + "/analysis_ate_error.pdf"
+
+        # Plotting Settings
+        if isinstance(data_labels, list) and len(data_labels) == 2:
+            self.data_labels = data_labels
+        else:
+            self.data_labels = ['Ground truth', 'Estimated trajectory']
+        self.dr_color = 'r'
+        self.gt_color = 'b'
+        self.post_color = 'g'
+        self.online_color = 'm'
+        self.rope_color = 'b'
+        self.buoy_color = 'k'
+        self.title_size = 16
+        self.legend_size = 12
+        self.label_size = 14
 
     def associate(self, new_offset=None, new_max_difference=None):
         """
@@ -253,28 +274,78 @@ class TrajectoryAnalysis:
         else:
             print(self.ate_rmse)
 
-    def plot_trajectories(self):
+    def plot_trajectories(self, title=None, plot_name=None):
+
+        if plot_name is not None and isinstance(plot_name, str):
+            self.plot_trajectory_name = plot_name
+
         # matplotlib.use('Agg') call before import matplotlib.pyplot ...
         fig = plt.figure()
         ax = fig.add_subplot(111)
         plot_traj(ax, self.second_stamps, self.second_xyz_full.transpose().A,
-                  '-', "red", "Original DR")
+                  '-', "red", label=self.data_labels[1])
 
         plot_traj(ax, self.first_stamps, self.first_xyz_full.transpose().A,
-                  '-', "green", "Final trajectory")
+                  '-', "green", label=self.data_labels[0])
 
         plot_traj(ax, self.second_stamps, self.second_xyz_full_aligned.transpose().A,
-                  '-', "blue", "Aligned DR")
+                  '-', "blue", label=f"Aligned " + self.data_labels[1].casefold())
 
         label = "Difference"
         for (a, b), (x1, y1, z1), (x2, y2, z2) in zip(self.matches, self.first_xyz_matching.transpose().A,
                                                       self.second_xyz_aligned.transpose().A):
-            ax.plot([x1, x2], [y1, y2], '-', color="orange", label=label)
+            ax.plot([x1, x2], [y1, y2], '-', color="orange", label=label, alpha=0.5)
             label = ""
 
         ax.legend()
 
         ax.set_xlabel('x [m]')
         ax.set_ylabel('y [m]')
-        ax.set_title(f"ATE RMSE: {self.ate_rmse}")
-        plt.savefig(self.plot_trajectory_path, format="pdf")
+
+        if isinstance(title, str):
+            ax.set_title(title + f"\nATE RMSE: {self.ate_rmse:.3f}")
+        else:
+            ax.set_title(f"ATE RMSE: {self.ate_rmse}")
+
+        if isinstance(self.plot_trajectory_name, str):
+            plt.savefig(self.output_path + f"/{self.plot_trajectory_name}.pdf", format="pdf")
+        else:
+            plt.savefig(self.plot_trajectory_path, format="pdf")
+
+    def plot_errors(self, errors, error_titles, title=None, plot_name=None):
+        # matplotlib.use('Agg') call before import matplotlib.pyplot ...
+
+        if not isinstance(errors, list) or not isinstance(error_titles, list):
+            raise TypeError("Please provide a list of translational errors and matching names")
+
+        if len(errors) != len(error_titles) or len(errors) == 0:
+            raise ValueError("Please provide at least one")
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        rms_errors = []
+        for error, error_info in zip(errors, error_titles):
+
+            error_title = error_info[0]
+            error_color = error_info[1]
+
+            trans_rmse = np.sqrt(np.dot(error, error) / len(error))
+            rms_errors.append(trans_rmse)
+
+            ax.plot(error, '-', color=error_color, label=error_title + f", RMSE: {trans_rmse:3f} m")
+
+        ax.legend()
+
+        ax.set_xlabel('m_t')
+        ax.set_ylabel('ATE [m]')
+
+        if isinstance(title, str):
+            ax.set_title(title + f"\nATE RMSE: {self.ate_rmse:.3f}")
+        else:
+            ax.set_title(f"ATE RMSE: {self.ate_rmse}")
+
+        if isinstance(plot_name, str):
+            plt.savefig(self.output_path + f"/{plot_name}.pdf", format="pdf")
+        else:
+            plt.savefig(self.plot_error_path, format="pdf")
+
