@@ -8,7 +8,7 @@ from std_msgs.msg import Float64
 from nav_msgs.msg import Odometry
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray
-from geometry_msgs.msg import Pose, PoseStamped
+from geometry_msgs.msg import Pose, PoseStamped, TwistStamped
 from sensor_msgs.msg import Image, CameraInfo
 from smarc_msgs.msg import Sidescan
 
