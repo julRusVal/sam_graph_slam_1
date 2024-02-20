@@ -138,6 +138,5 @@ if plot_final_online:
     method_colors = ['g', 'b', 'm']
     method_info = list(zip(method_titles, method_colors))
 
-    method_1_final_dr_ate.plot_errors(method_errors, method_info, title="ATE - Final/Online",
+    method_1_final_online_ate.plot_errors(method_errors, method_info, title="ATE - Final/Online",
                                       plot_name="analysis_final_online_ate_errors")
-

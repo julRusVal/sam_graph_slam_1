@@ -305,7 +305,7 @@ class TrajectoryAnalysis:
         if isinstance(title, str):
             ax.set_title(title + f"\nATE RMSE: {self.ate_rmse:.3f}")
         else:
-            ax.set_title(f"ATE RMSE: {self.ate_rmse}")
+            ax.set_title(f"ATE RMSE: {self.ate_rmse:.3f}")
 
         if isinstance(self.plot_trajectory_name, str):
             plt.savefig(self.output_path + f"/{self.plot_trajectory_name}.pdf", format="pdf")
@@ -332,7 +332,7 @@ class TrajectoryAnalysis:
             trans_rmse = np.sqrt(np.dot(error, error) / len(error))
             rms_errors.append(trans_rmse)
 
-            ax.plot(error, '-', color=error_color, label=error_title + f", RMSE: {trans_rmse:3f} m")
+            ax.plot(error, '-', color=error_color, label=error_title + f", RMSE: {trans_rmse:.3f} m")
 
         ax.legend()
 
@@ -340,9 +340,9 @@ class TrajectoryAnalysis:
         ax.set_ylabel('ATE [m]')
 
         if isinstance(title, str):
-            ax.set_title(title + f"\nATE RMSE: {self.ate_rmse:.3f}")
+            ax.set_title(title)
         else:
-            ax.set_title(f"ATE RMSE: {self.ate_rmse}")
+            ax.set_title(f"ATE Errors")
 
         if isinstance(plot_name, str):
             plt.savefig(self.output_path + f"/{plot_name}.pdf", format="pdf")
