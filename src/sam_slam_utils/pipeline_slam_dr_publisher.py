@@ -233,6 +233,7 @@ class pipeline_sim_dr_publisher:
                     print(f"last position: {last_pose.translation()}")
                     print(f"Current position: {next_pose.translation()}")
 
+
             # print("GTSAM stuff end")
 
     def update_current_pose_world_frame(self):
@@ -242,7 +243,7 @@ class pipeline_sim_dr_publisher:
             transform = self.tf_buffer.lookup_transform(self.map_frame,
                                                         self.robot_frame,
                                                         rospy.Time(0))
-        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             rospy.logwarn("Failed to look up transform.")
             return
 
