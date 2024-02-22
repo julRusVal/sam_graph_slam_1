@@ -2,14 +2,17 @@ import rospy
 from geometry_msgs.msg import PoseStamped, TwistStamped, Quaternion
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 import tf2_ros
 import tf2_geometry_msgs
-
 import gtsam
-
 import numpy as np
+
+"""
+Work in progress
+Implements a gtsam based dr publisher based on imu data
+see pipeline_slam_gt_dr_publisher.py for implementation based on gt
+"""
 
 
 class pipeline_sim_dr_publisher:
