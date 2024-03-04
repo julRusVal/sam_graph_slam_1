@@ -426,6 +426,12 @@ if __name__ == '__main__':
     detector = process_pointcloud_data(test_data, plot_process_results=True)
     detector.plot_points_and_lines(k=10)
 
+    detection = detector.detection_coords_world
+    print(detection)
+
+    homo_mat = np.eye(4)
+    detection_homo =
+
     # centroid = find_centroid(test_data)
     #
     # # define new plane

@@ -10,6 +10,10 @@ from tf.transformations import quaternion_matrix, compose_matrix, euler_from_qua
 from geometry_msgs.msg import TransformStamped
 import open3d as o3d  # Used for processing point cloud data
 
+"""
+This script is used to save point cloud data from a ROS topic.
+Currently this functionality is superseded by point_cloud_detector.py
+"""
 
 def stamped_transform_to_homogeneous_matrix(transform_stamped: TransformStamped):
     # Extract translation and quaternion components from the TransformStamped message
@@ -63,6 +67,7 @@ class PointCloudSaver:
         self.data_written = False
         self.stacked_pc_original = None
         self.stacked_pc_transformed = None
+        self.stacked_world_to_robot_frame = None
 
         # Data saving settings
         if os.path.isdir(save_location):
@@ -134,6 +139,12 @@ class PointCloudSaver:
         else:
             self.stacked_pc_transformed = np.dstack([self.stacked_pc_transformed, pc_array_transformed])
 
+        # record the transform
+        if self.stacked_world_to_robot_frame is None:
+            self.stacked_world_to_robot_frame = homogeneous_transform
+        else:
+            self.stacked_world_to_robot_frame = np.dstack([self.stacked_world_to_robot_frame, homogeneous_transform])
+
     def save_timer_callback(self, event):
         # Check if no new data has been received for the specified interval
         if self.last_data_time is None:
@@ -163,9 +174,6 @@ class PointCloudSaver:
 
 if __name__ == '__main__':
     try:
-        # Change '/your/point_cloud_topic' to the actual point cloud topic you want to subscribe to
-        # Change 'point_cloud_data.csv' to the desired file name
-        # Change 10 to the desired save interval in seconds
         point_cloud_subscriber = PointCloudSaver(topic='/sam0/mbes/odom/bathy_points',
                                                  save_location='/home/julian/catkin_ws/src/sam_slam/processing scripts/data',
                                                  save_timeout=5)

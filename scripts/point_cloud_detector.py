@@ -14,6 +14,9 @@ from tf.transformations import (quaternion_matrix, compose_matrix, euler_from_qu
                                 quaternion_from_euler)
 from visualization_msgs.msg import Marker
 
+'''
+Basic detector with the ability to save point clouds for offline processing and analysis'''
+
 
 def stamped_transform_to_homogeneous_matrix(transform_stamped: TransformStamped):
     # Extract translation and quaternion components from the TransformStamped message
@@ -53,6 +56,7 @@ def stamped_transform_to_rotation_matrix(transform_stamped: TransformStamped):
 
 class PointCloudSaver:
     def __init__(self, topic='/sam0/mbes/odom/bathy_points',
+                 save_data=False,
                  save_location='', save_timeout=10):
         # Data source setting
         self.point_cloud_topic = topic
@@ -62,11 +66,14 @@ class PointCloudSaver:
         self.robot_frame = 'sam0'  # 'sam0_base_link' transform into robot frame
 
         # Data recording setting
+        self.save_data = save_data
         self.save_timeout = rospy.Duration.from_sec(save_timeout)
         self.last_data_time = None
         self.data_written = False
         self.stacked_pc_original = None
         self.stacked_pc_transformed = None
+        self.stacked_world_to_robot_transform = None
+        self.stacked_robot_to_world_transform = None
 
         # Data saving settings
         if os.path.isdir(save_location):
@@ -151,18 +158,32 @@ class PointCloudSaver:
         print(f"Transformed: {detection_world}")
 
         # # Store the point cloud data, original and transformed
-        # # TODO can these get out of sync? check?
-        # # Original
-        # if self.stacked_pc_original is None:
-        #     self.stacked_pc_original = pc_array
-        # else:
-        #     self.stacked_pc_original = np.dstack([self.stacked_pc_original, pc_array])
-        #
-        # # Transformed
-        # if self.stacked_pc_transformed is None:
-        #     self.stacked_pc_transformed = pc_array_transformed
-        # else:
-        #     self.stacked_pc_transformed = np.dstack([self.stacked_pc_transformed, pc_array_transformed])
+        if self.save_data:
+            # TODO can these get out of sync? check?
+            # Original
+            if self.stacked_pc_original is None:
+                self.stacked_pc_original = pc_array
+            else:
+                self.stacked_pc_original = np.dstack([self.stacked_pc_original, pc_array])
+
+            # Transformed
+            if self.stacked_pc_transformed is None:
+                self.stacked_pc_transformed = pc_array_transformed
+            else:
+                self.stacked_pc_transformed = np.dstack([self.stacked_pc_transformed, pc_array_transformed])
+
+            # record the transform
+            if self.stacked_world_to_robot_transform is None:
+                self.stacked_world_to_robot_transform = homogeneous_transform
+            else:
+                self.stacked_world_to_robot_transform = np.dstack(
+                    [self.stacked_world_to_robot_transform, homogeneous_transform])
+
+            if self.stacked_robot_to_world_transform is None:
+                self.stacked_robot_to_world_transform = inverse_homogeneous_transform
+            else:
+                self.stacked_robot_to_world_transform = np.dstack(
+                    [self.stacked_robot_to_world_transform, inverse_homogeneous_transform])
 
     def save_timer_callback(self, event):
         # Check if no new data has been received for the specified interval
@@ -170,22 +191,29 @@ class PointCloudSaver:
             return
         if rospy.Time.now() - self.last_data_time > self.save_timeout:
             # Save point cloud data to a CSV file
-            # self.save_stacked_point_cloud()
+            if self.save_data:
+                self.save_stacked_point_cloud()
             rospy.signal_shutdown("Script shutting down")
 
     def save_stacked_point_cloud(self):
-        if self.stacked_pc_original is not None and self.stacked_pc_transformed is not None:
+        if self.stacked_pc_original is None or self.stacked_pc_transformed is None:
+            print("No point cloud data to save.")
+        elif self.stacked_world_to_robot_transform is None or self.stacked_robot_to_world_transform is None:
+            print("No transforms to save.")
+        else:
             original_name = f"{self.save_location}pc_original.npy"
             transformed_name = f"{self.save_location}pc_transformed.npy"
+            world_to_local_name = f"{self.save_location}world_to_local.npy"
+            local_to_world_name = f"{self.save_location}local_to_world.npy"
 
             np.save(original_name, self.stacked_pc_original)
             np.save(transformed_name, self.stacked_pc_transformed)
+            np.save(world_to_local_name, self.stacked_world_to_robot_transform)
+            np.save(local_to_world_name, self.stacked_robot_to_world_transform)
 
             self.data_written = True
 
             print(f"Stacked point cloud saved")
-        else:
-            print("No point cloud data to save.")
 
         if self.data_written:
             rospy.signal_shutdown("Script shutting down")
@@ -224,10 +252,8 @@ class PointCloudSaver:
 
 if __name__ == '__main__':
     try:
-        # Change '/your/point_cloud_topic' to the actual point cloud topic you want to subscribe to
-        # Change 'point_cloud_data.csv' to the desired file name
-        # Change 10 to the desired save interval in seconds
         point_cloud_subscriber = PointCloudSaver(topic='/sam0/mbes/odom/bathy_points',
+                                                 save_data=True,
                                                  save_location='/home/julian/catkin_ws/src/sam_slam/processing scripts/data',
                                                  save_timeout=5)
 
