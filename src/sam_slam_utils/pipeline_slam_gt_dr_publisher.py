@@ -1,12 +1,13 @@
-import rospy
-from geometry_msgs.msg import PoseStamped, TwistStamped, Quaternion
-from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu
-from tf.transformations import quaternion_from_euler, euler_from_quaternion, quaternion_from_matrix
-import tf2_ros
-import tf2_geometry_msgs
+#!/usr/bin/env python3
+
 import gtsam
 import numpy as np
+
+import rospy
+import tf2_ros
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 
 """
 Implements dr and gt publisher - dr based on gt

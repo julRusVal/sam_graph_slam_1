@@ -1,12 +1,14 @@
+#!/usr/bin/env python3
+
 import os
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
 import skimage.draw
-from mpl_toolkits.mplot3d import Axes3D
-from sklearn.decomposition import PCA
-from skimage.transform import hough_line, hough_line_peaks, hough_circle, hough_circle_peaks, hough_ellipse
-from skimage.draw import ellipse_perimeter
 from skimage import color
+from skimage.draw import ellipse_perimeter
+from skimage.transform import hough_line, hough_line_peaks, hough_circle, hough_circle_peaks, hough_ellipse
+from sklearn.decomposition import PCA
 
 
 def find_centroid(points):
