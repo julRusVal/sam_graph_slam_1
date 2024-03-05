@@ -82,6 +82,7 @@ class pipeline_sim_dr_gt_publisher:
 
         # DR noise parameters
         self.add_noise = True
+        self.bound_depth = True
 
         # Initialization noise
         self.init_position_sigmas = np.array([1.0, 1.0, 1.0])  # x, y, z
@@ -91,10 +92,11 @@ class pipeline_sim_dr_gt_publisher:
         self.delta_position_sigmas = np.array([0.001, 0.001, 0.001])  # x, y, z - per second
         self.delta_rotation_sigmas = np.array([np.pi / 1e4, np.pi / 1e4, np.pi / 1e3])  # roll, pitch, yaw - per second
 
+        self.depth_sigma = 0.25
+
         # ===== logging settings =====
 
     def imu_callback(self, imu_msg: Imu):
-        print("imu_callback")
         # for simulated data current pose is ground truth
         self.update_current_pose_world_frame()
 
@@ -117,7 +119,6 @@ class pipeline_sim_dr_gt_publisher:
             self.update_dr_pose3()
 
             # Publish dr and gt
-            print("normal")
             self.publish_dr_pose()
             self.publish_gt_pose()
 
@@ -151,8 +152,13 @@ class pipeline_sim_dr_gt_publisher:
     def add_noise_to_initial_pose(self):
         if self.dr_pose3 is None:
             return
+        # Translational noise
         position_noise = np.random.normal(0, self.init_position_sigmas)
-        rotation_noise = np.random.normal(0, self.init_rotation_sigmas)
+
+        # Rotational noise
+        roll_noise, pitch_noise, yaw_noise = np.random.normal(0, self.init_rotation_sigmas)
+        rotation_noise = gtsam.Rot3.RzRyRx(yaw_noise, pitch_noise, roll_noise)
+
         noise_pose3 = gtsam.Pose3(rotation_noise, position_noise)
 
         noisy_pose3 = self.dr_pose3.compose(noise_pose3)
@@ -174,12 +180,25 @@ class pipeline_sim_dr_gt_publisher:
             noise_pose3 = self.return_step_noise_pose3(dt)
             new_dr_pose = new_dr_pose.compose(noise_pose3)
 
+        if self.bound_depth:
+            # Determine depth values
+            depth_noise = np.random.normal(0, self.depth_sigma)
+            bounded_noisey_depth = init_pose3.z() + depth_noise
+
+            # Update the depth, z, value
+            new_translation = new_dr_pose.translation()
+            new_translation[2] = bounded_noisey_depth
+            
+            # Reform Pose3
+            rotation = new_dr_pose.rotation()
+            new_dr_pose = gtsam.Pose3(rotation, new_translation)
+
         self.dr_pose3 = new_dr_pose
         self.dr_stamp = final_time
 
     def return_step_noise_pose3(self, dt):
 
-        yaw_noise, pitch_noise, roll_noise = np.random.normal(0, self.delta_rotation_sigmas * np.sqrt(dt))
+        roll_noise, pitch_noise, yaw_noise = np.random.normal(0, self.delta_rotation_sigmas * np.sqrt(dt))  # r, p, y
         x_noise, y_noise, z_noise = np.random.normal(0, self.delta_position_sigmas * np.sqrt(dt))
 
         rotation_noise = gtsam.Rot3.RzRyRx(yaw_noise, pitch_noise, roll_noise)  # yaw, pitch, roll
@@ -196,7 +215,6 @@ class pipeline_sim_dr_gt_publisher:
         gt_pose_msg.pose.pose = self.current_gt_pose.pose
 
         # Publish the Dead Reckoning pose
-        print("dr_publish")
         self.gt_publisher.publish(gt_pose_msg)
 
     def publish_dr_pose(self):

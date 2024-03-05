@@ -2,6 +2,7 @@
 
 # Imports
 import rospy
+import ast
 from sam_slam_utils.sam_slam_ros_classes import sam_slam_listener
 from sam_slam_utils.sam_slam_proc_classes import online_slam_2d
 
@@ -17,13 +18,19 @@ def main():
     record_gt = rospy.get_param('record_ground_truth', False)
 
     # Define rope structure for analyis visualizatiions
-    if simulated_data:
+    pipeline_lines = ast.literal_eval(rospy.get_param("pipeline_lines", "[]"))
+    if len(pipeline_lines) > 0:  # If pipeline is defined
+        ropes_by_buoy_ind = pipeline_lines
+
+    elif simulated_data:  # Simulated algae farm
+        # TODO move to launch
         # This needs to match the structure defined in simulation environment
         ropes_by_buoy_ind = [[0, 4], [4, 2],
                              [1, 5], [5, 3]]
 
     # Real data
-    else:
+    else:  # real algae farm
+        # TODO move to launch
         # This needs to match the structure defined in algae_map_markers.py
         ropes_by_buoy_ind = [[0, 5],
                              [1, 4],

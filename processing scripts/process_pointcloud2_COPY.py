@@ -7,6 +7,7 @@ from sklearn.decomposition import PCA
 from skimage.transform import hough_line, hough_line_peaks, hough_circle, hough_circle_peaks, hough_ellipse
 from skimage.draw import ellipse_perimeter
 from skimage import color
+from sam_slam_utils import process_pointcloud2
 
 
 def find_centroid(points):
@@ -420,7 +421,11 @@ if __name__ == '__main__':
     script_directory = os.path.dirname(os.path.abspath(__file__))
     data_path = script_directory + "/data/pc_transformed.npy"
 
-    data = np.load(data_path)
+    # transforms paths
+    w2l_transform_path = script_directory + "/data/world_to_local.npy"
+    l2w_transform_path = script_directory + "/data/local_to_world.npy"
+
+    pc_data = np.load(data_path)
     test_data = data[:, :, 15]
 
     detector = process_pointcloud_data(test_data, plot_process_results=True)
@@ -430,7 +435,7 @@ if __name__ == '__main__':
     print(detection)
 
     homo_mat = np.eye(4)
-    detection_homo =
+    # detection_homo =
 
     # centroid = find_centroid(test_data)
     #

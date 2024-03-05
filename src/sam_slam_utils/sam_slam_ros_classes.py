@@ -79,15 +79,20 @@ class sam_slam_listener:
 
         # ===== Real or simulated =====
         self.simulated_data = simulated_data
-        self.simulated_detections = rospy.get_param("simulated_detections", False)  # not used yet
+        self.simulated_detections = rospy.get_param("simulated_detections", False)
+
+        self.pipeline_scenario = rospy.get_param("pipeline_scenario", False)
 
         # This setting controls how buoy detections are handled
         # True to use all buoy detections, otherwise detector time limits apply
         self.prioritize_buoy_detections = rospy.get_param("prioritize_buoy_detections", False)
 
-        if self.simulated_data:
+        # DR correction
+        if self.pipeline_scenario:  # Simulated data for the pipeline scenario does not require correction
+            self.correct_dr = False
+        elif self.simulated_data:  # Simulated data for the stonefish algae scenario required correction
             self.correct_dr = True
-        else:
+        else:  # real data from the algae farm does not require correction
             self.correct_dr = False
 
         self.record_gt = record_gt
@@ -102,21 +107,30 @@ class sam_slam_listener:
         self.robot_name = robot_name
 
         # === Dead reckoning and ground truth ===
-        self.gt_topic = f'/{self.robot_name}/sim/odom'
-        self.dr_topic = f'/{self.robot_name}/dr/odom'
-        self.det_topic = f'/{self.robot_name}/payload/sidescan/detection_hypothesis'
-        if self.simulated_data:
+        # These values vary based on the scenario :(
+        if self.pipeline_scenario:
+            # TODO unify the naming convention of topics
+            self.buoy_topic = f'/{self.robot_name}/sim/marked_positions'
+            self.rope_topic = f'/{self.robot_name}/sim/rope_outer_marker'
+            self.gt_topic = f'/gt_odom'
+            self.dr_topic = f'/dr_odom'
+        elif self.simulated_data:
             self.buoy_topic = f'/{self.robot_name}/sim/marked_positions'
             self.rope_topic = f'/{self.robot_name}/sim/rope_outer_marker'
             self.gt_topic = f'/{self.robot_name}/sim/odom'
+            self.dr_topic = f'/{self.robot_name}/dr/odom'
         else:
             self.buoy_topic = f'/{self.robot_name}/real/marked_positions'
             self.rope_topic = f'/{self.robot_name}/real/rope_outer_marker'
             self.gt_topic = f'/{self.robot_name}/dr/gps_odom'
+            self.dr_topic = f'/{self.robot_name}/dr/odom'
 
         self.roll_topic = f'/{self.robot_name}/dr/roll'
         self.pitch_topic = f'/{self.robot_name}/dr/pitch'
         self.depth_topic = f'/{self.robot_name}/dr/depth'
+
+        # === Detector topic
+        self.det_topic = f'/{self.robot_name}/payload/sidescan/detection_hypothesis'
 
         # === Sonar ===
         self.sss_topic = f'/{self.robot_name}/payload/sidescan'

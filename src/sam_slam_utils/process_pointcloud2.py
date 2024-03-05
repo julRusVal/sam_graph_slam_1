@@ -221,7 +221,7 @@ class process_pointcloud_data:
         x_new = np.array([self.centroid[0, 0], 0, self.centroid[0, 2]])
         self.x_new_basis = x_new / np.linalg.norm(x_new)
 
-    def process_2d_points(self, ):
+    def process_2d_points(self):
         """
 
         """
@@ -242,7 +242,13 @@ class process_pointcloud_data:
         image_float = np.zeros((x_shape + 1, y_shape + 1))
 
         indices = np.stack([x - 1, y - 1], axis=1).astype(int)
-        image_float[indices[:, 0], indices[:, 1]] = 1
+        try:
+            image_float[indices[:, 0], indices[:, 1]] = 1
+        except IndexError as e:
+            # Catch the IndexError exception
+            print("IndexError:", e)
+            self.detection_coords_world = np.zeros([0, 0])
+            return
 
         # === (2) Range clipping ===
         # ==========================
@@ -292,7 +298,7 @@ class process_pointcloud_data:
             yc, xc, a, b, orientation = 0, 0, 0, 0, 0
 
         # === (7) Determine ====
-        print("Finding center")
+        # print("Finding center")
         if bool(h_circle_peaks):
             centers_y = h_circle_peaks[1].reshape(-1, 1)
             centers_x = h_circle_peaks[2].reshape(-1, 1)
@@ -307,6 +313,7 @@ class process_pointcloud_data:
             # Reproject
             self.detection_coords_world = np.dot(self.projection_matrix_3_2, self.detection_coords_basis.reshape(2, 1))
         else:
+            self.detection_coords_world = np.zeros([0, 0])
             avg_center = np.zeros([0, 0])
 
         # === (8) Plotting results ===

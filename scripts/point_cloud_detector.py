@@ -154,8 +154,8 @@ class PointCloudSaver:
 
         # self.publish_detection_marker(detector.detection_coords_world, self.robot_frame)
         self.publish_detection_marker(detection_world, self.data_frame)
-        print(f"Raw: {detector.detection_coords_world}")
-        print(f"Transformed: {detection_world}")
+        # print(f"Raw: {detector.detection_coords_world}")
+        # print(f"Transformed: {detection_world}")
 
         # # Store the point cloud data, original and transformed
         if self.save_data:
@@ -247,7 +247,7 @@ class PointCloudSaver:
         marker.color.a = 1.0
 
         self.detection_pub.publish(marker)
-        print("Published marker")
+        # print("Published marker")
 
 
 if __name__ == '__main__':
