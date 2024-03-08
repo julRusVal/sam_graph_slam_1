@@ -106,7 +106,7 @@
     <!-- gps and buoy node -->
     <node name="pipeline_marker_node" pkg="sam_slam" type="pipeline_map_markers.py" output="screen" />
 
-    <!-- Manual detector -->
+    <!-- detector -->
     <node name="detector_node" pkg="sam_slam" type="point_cloud_detector.py" output="screen" />
 
     <!-- dr and gt markers -->
