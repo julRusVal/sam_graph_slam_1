@@ -8,14 +8,17 @@ import open3d as o3d  # Used for processing point cloud data
 import rospy
 import sensor_msgs.point_cloud2 as pc2
 import tf2_ros
-from geometry_msgs.msg import TransformStamped, Quaternion
+from geometry_msgs.msg import TransformStamped, Quaternion, Pose
 from sam_slam_utils import process_pointcloud2
 from tf.transformations import (quaternion_matrix, compose_matrix, euler_from_quaternion, inverse_matrix,
                                 quaternion_from_euler)
 from visualization_msgs.msg import Marker
+from vision_msgs.msg import ObjectHypothesisWithPose, Detection2DArray, Detection2D
+from sss_object_detection.consts import ObjectID
 
 '''
-Basic detector with the ability to save point clouds for offline processing and analysis'''
+Basic detector with the ability to save point clouds for offline processing and analysis
+'''
 
 
 def stamped_transform_to_homogeneous_matrix(transform_stamped: TransformStamped):
@@ -58,6 +61,8 @@ class PointCloudSaver:
     def __init__(self, topic='/sam0/mbes/odom/bathy_points',
                  save_data=False,
                  save_location='', save_timeout=10):
+        self.robot_name = 'sam'
+
         # Data source setting
         self.point_cloud_topic = topic
 
@@ -96,7 +101,15 @@ class PointCloudSaver:
         # Set up a timer to check for data saving periodically
         rospy.Timer(self.save_timeout, self.save_timer_callback)
 
-        self.detection_pub = rospy.Publisher('/detection_marker', Marker, queue_size=10)
+        # Set up publishers for the detections
+        # 1) marker for visualization
+        # 2) message for the online sam slam listener
+        self.detection_marker_pub = rospy.Publisher('/detection_marker', Marker, queue_size=10)
+        self.detection_pub = rospy.Publisher(f'/{self.robot_name}/payload/sidescan/detection_hypothesis',
+                                             Detection2DArray,
+                                             queue_size=2)
+
+        self.confidence_dummy = 0.5  # Confidence is just a dummy value for now
 
     def point_cloud_callback(self, msg):
         time_now = rospy.Time.now()
@@ -143,20 +156,27 @@ class PointCloudSaver:
         # save both the original and transformed data
         pc_array_transformed = np.asarray(pc_o3d.points)
 
+        # Process pointcloud data
         detector = process_pointcloud2.process_pointcloud_data(pc_array_transformed)
+
         if detector.detection_coords_world.size != 3:
             print("No detection!!")
+        else:
+            # publish a marker indicating the position of the pipeline detection, world coords
+            detection_homo = np.vstack([detector.detection_coords_world.reshape(3, 1),
+                                        np.array([1])])
 
-        detection_homo = np.vstack([detector.detection_coords_world.reshape(3, 1),
-                                   np.array([1])])
+            detection_world = np.matmul(inverse_homogeneous_transform, detection_homo)
 
-        detection_world = np.matmul(inverse_homogeneous_transform, detection_homo)
+            # self.publish_detection_marker(detector.detection_coords_world, self.robot_frame)
+            self.publish_detection_marker(detection_world, self.data_frame)
 
-        # self.publish_detection_marker(detector.detection_coords_world, self.robot_frame)
-        self.publish_detection_marker(detection_world, self.data_frame)
-        # print(f"Raw: {detector.detection_coords_world}")
-        # print(f"Transformed: {detection_world}")
+            # Debugging print outs
+            # print(f"Raw: {detector.detection_coords_world}")
+            # print(f"Transformed: {detection_world}")
 
+            # Publish the message for SLAM
+            self.publish_mbes_pipe_detection(detector.detection_coords_world, self.confidence_dummy, msg.header.stamp)
         # # Store the point cloud data, original and transformed
         if self.save_data:
             # TODO can these get out of sync? check?
@@ -225,7 +245,7 @@ class PointCloudSaver:
         heading_quat = quaternion_from_euler(0, 0, 0)
         heading_quaternion_type = Quaternion(*heading_quat)
 
-        detection_flat = detection.reshape(-1,)
+        detection_flat = detection.reshape(-1, )
 
         # Estimated detection location
         marker = Marker()
@@ -246,8 +266,63 @@ class PointCloudSaver:
         marker.color.b = 0.0
         marker.color.a = 1.0
 
-        self.detection_pub.publish(marker)
+        self.detection_marker_pub.publish(marker)
         # print("Published marker")
+
+    def publish_mbes_pipe_detection(self, detection_coords,
+                                    detection_confidence,
+                                    stamp,
+                                    seq_id=None):
+
+        """
+        Publishes message for mbes detection given [x, y, z] coords.
+
+        :param detection_coords: numpy array of x, y, z coordinates
+        :param detection_confidence: float confidence, in some cases this is used for data association (but not here)
+        :param stamp: stamp of the message
+        :param seq_id: seq_id can be used for data association
+        :return:
+        """
+
+        # Convert detection coords into a Pose()
+        detection_flat = detection_coords.reshape(-1, )
+        detection_pose = Pose()
+        detection_pose.position.x = detection_flat[0]
+        detection_pose.position.y = detection_flat[1]
+        detection_pose.position.z = detection_flat[2]
+
+        # Form the message
+        # Detection2DArray()
+        # -> list of Detection2D()
+        # ---> list of ObjectHypothesisWithPose()
+        # -----> Contains: id, score, pose
+        # pose is PoseWithCovariance()
+
+        detection_array_msg = Detection2DArray()
+        detection_array_msg.header.frame_id = self.robot_frame
+        detection_array_msg.header.stamp = stamp
+
+        # Individual detection, Detection2D, currently only a single detection per call will be published
+        detection_msg = Detection2D()
+        detection_msg.header = detection_array_msg.header
+
+        # Define single ObjectHypothesisWithPose
+        object_hypothesis = ObjectHypothesisWithPose()
+        object_hypothesis.id = ObjectID.PIPE.value
+
+        if seq_id is not None:
+            object_hypothesis.score = seq_id
+        else:
+            object_hypothesis.score = detection_confidence
+        object_hypothesis.pose.pose = detection_pose
+
+        # Append the to form a complete message
+        detection_msg.results.append(object_hypothesis)
+        detection_array_msg.detections.append(detection_msg)
+
+        self.detection_pub.publish(detection_array_msg)
+        print("Published")
+        return
 
 
 if __name__ == '__main__':
