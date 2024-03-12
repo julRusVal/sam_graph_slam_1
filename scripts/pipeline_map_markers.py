@@ -6,6 +6,30 @@ import ast
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 
+def change_marker_depth(marker: Marker, depth: float):
+    """
+    Changes the marker z value to the specified depth
+    :param marker: Marker from visualization_msgs.msg
+    :param depth: new z value, float
+    :return:
+    """
+    modified_marker = marker
+    modified_marker.pose.position.z = depth
+    return modified_marker
+
+def change_marker_color(marker: Marker, color: [float, float, float]):
+    """
+    Changes the marker color to the specified value
+    :param marker: Marker from visualization_msgs.msg
+    :param color: [r, g, b] given in float values
+    :return:
+    """
+
+    modified_marker = marker
+    modified_marker.color.r = color[0]
+    modified_marker.color.g = color[1]
+    modified_marker.color.b = color[2]
+    return modified_marker
 
 class publish_pipeline_markers(object):
 
@@ -15,7 +39,8 @@ class publish_pipeline_markers(object):
                  simulated_data,  # adjust if the data is real or simulated
                  pipeline_end_coords,
                  pipeline_depth,
-                 pipeline_lines):
+                 pipeline_lines,
+                 pipeline_colors):
 
         self.robot_name = robot_name
         self.map_frame = map_frame
@@ -34,6 +59,8 @@ class publish_pipeline_markers(object):
         self.outer_marker_scale = 5
         self.inner_marker_scale = 2
 
+        self.buoy_marker_list = None
+
         self.end_coords = pipeline_end_coords
         # self.end_coords = [[-260, -829],
         #                    [-263, -930],
@@ -48,11 +75,22 @@ class publish_pipeline_markers(object):
         #               [1, 2],
         #               [2, 3]]
 
+        if len(pipeline_lines) == len(pipeline_colors):
+            self.pipeline_colors = pipeline_colors
+        else:
+            self.pipeline_colors = [[1.0, 1.0, 0.0] for i in range(len(pipeline_lines))]
+
+        # Visualization options
         self.n_buoys_per_rope = 8
+        self.rope_markers_on_z_plane = True  # Modifies rope markers to z=0, useful for 2d estimation
+
         # marker publishers
         # used to define buoys
+        # These buoys are used by the graph to initialize the buoy and rope priors
+        # Important to be accurate
         self.marker_pub = rospy.Publisher(f'/{self.robot_name}/{self.data_type}/marked_positions',
                                           MarkerArray, queue_size=10)
+
         # Used to define the extents of ropes
         self.rope_outer_marker_pub = rospy.Publisher(f'/{self.robot_name}/{self.data_type}/rope_outer_marker',
                                                      MarkerArray, queue_size=10)
@@ -94,8 +132,9 @@ class publish_pipeline_markers(object):
             marker.color.b = 0.0
             marker.color.a = 1.0
 
-            self.buoy_marker_list.append(marker)
             self.buoy_markers.markers.append(marker)
+
+            self.buoy_marker_list.append(marker)  # Record the markers for later use as the rope end
 
         # ===== Ropes =====
         if self.ropes is not None and len(self.ropes) > 0:
@@ -125,10 +164,20 @@ class publish_pipeline_markers(object):
                 self.rope_lines.markers.append(rope_line_marker)
 
                 # Rope as a line of buoys
-                rope_buoys = self.calculate_rope_buoys(point_start, point_end)
 
-                self.rope_outer_markers.markers.append(self.buoy_marker_list[rope[0]])
-                self.rope_outer_markers.markers.append(self.buoy_marker_list[rope[1]])
+                # markers representing the ends of the ropes
+                start_marker = change_marker_color(self.buoy_marker_list[rope[0]], self.pipeline_colors[rope_ind])
+                end_marker = change_marker_color(self.buoy_marker_list[rope[1]], self.pipeline_colors[rope_ind])
+
+                if self.rope_markers_on_z_plane:
+                    start_marker = change_marker_depth(start_marker, 0.0)
+                    end_marker = change_marker_depth(end_marker, 0.0)
+
+                self.rope_outer_markers.markers.append(start_marker)
+                self.rope_outer_markers.markers.append(end_marker)
+
+                # Intermediate rope markers
+                rope_buoys = self.calculate_rope_buoys(point_start, point_end)
 
                 for buoy_ind, rope_buoy in enumerate(rope_buoys):
                     marker_id = int(self.n_buoys_per_rope + 1) * rope_ind + buoy_ind + 1
@@ -138,19 +187,26 @@ class publish_pipeline_markers(object):
                     marker.action = Marker.ADD
                     marker.id = marker_id
                     marker.lifetime = rospy.Duration(0)
+
                     marker.pose.position.x = rope_buoy.x
                     marker.pose.position.y = rope_buoy.y
-                    marker.pose.position.z = self.depth
+                    if self.rope_markers_on_z_plane:
+                        marker.pose.position.z = 0.0
+                    else:
+                        marker.pose.position.z = self.depth
+
                     marker.pose.orientation.x = 0
                     marker.pose.orientation.y = 0
                     marker.pose.orientation.z = 0
                     marker.pose.orientation.w = 1
+
                     marker.scale.x = self.inner_marker_scale
                     marker.scale.y = self.inner_marker_scale
                     marker.scale.z = self.inner_marker_scale
-                    marker.color.r = 1.0
-                    marker.color.g = 1.0
-                    marker.color.b = 0.0
+
+                    marker.color.r = self.pipeline_colors[rope_ind][0]
+                    marker.color.g = self.pipeline_colors[rope_ind][1]
+                    marker.color.b = self.pipeline_colors[rope_ind][2]
                     marker.color.a = 1.0
 
                     # # Create the line segment points
@@ -239,11 +295,14 @@ if __name__ == "__main__":
         print("Pipeline marker node: Using default lines")
         pipeline_lines = default_lines
 
+    pipeline_colors = ast.literal_eval(rospy.get_param("pipeline_colors", "[]"))
+
     pipeline_marker_server = publish_pipeline_markers(robot_name=robot_name, map_frame=frame_name,
                                                       simulated_data=simulated_data,
                                                       pipeline_end_coords=pipeline_end_coords,
                                                       pipeline_depth=pipeline_depth,
-                                                      pipeline_lines=pipeline_lines)
+                                                      pipeline_lines=pipeline_lines,
+                                                      pipeline_colors=pipeline_colors)
 
     if None in [pipeline_marker_server.buoy_markers, pipeline_marker_server.rope_inner_markers]:
         pipeline_marker_server.construct_buoy_markers()

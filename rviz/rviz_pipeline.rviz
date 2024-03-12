@@ -13,6 +13,8 @@ Panels:
         - /Marker1/Namespaces1
         - /rope outer markers1
         - /rope inner markers1
+        - /Estimated detection positions1
+        - /Estimated detection positions1/Namespaces1
       Splitter Ratio: 0.5
     Tree Height: 2242
   - Class: rviz/Selection
@@ -65,6 +67,8 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: false
+        estimated/base_link:
+          Value: true
         map:
           Value: true
         odom:
@@ -116,6 +120,8 @@ Visualization Manager:
       Tree:
         map:
           odom:
+            estimated/base_link:
+              {}
             sam0:
               sam0_base_link:
                 sam0_battery_link:
@@ -304,7 +310,15 @@ Visualization Manager:
       Marker Topic: /sam_slam/est_positions
       Name: est Marker
       Namespaces:
-        {}
+        "": true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /sam_slam/est_detection_positions
+      Name: Estimated detection positions
+      Namespaces:
+        "": true
       Queue Size: 100
       Value: true
   Enabled: true
@@ -335,7 +349,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 96.04510498046875
+      Distance: 308.055419921875
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -351,9 +365,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.37539973855018616
+      Pitch: 0.32979658246040344
       Target Frame: sam0
-      Yaw: 5.728575229644775
+      Yaw: 0.427208811044693
     Saved: ~
 Window Geometry:
   Displays:

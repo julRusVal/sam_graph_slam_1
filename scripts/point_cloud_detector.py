@@ -93,7 +93,8 @@ class PointCloudSaver:
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         # Update time
-        self.min_update_time = 1  # rospy.get_param('min_update_time')
+        self.min_update_time = rospy.get_param('~detector_min_update_time', 1)
+        print(f"Detector min_update_time: {self.min_update_time}")
 
         # Set up subscriptions
         rospy.Subscriber(self.point_cloud_topic, pc2.PointCloud2, self.point_cloud_callback, queue_size=1)
@@ -321,7 +322,6 @@ class PointCloudSaver:
         detection_array_msg.detections.append(detection_msg)
 
         self.detection_pub.publish(detection_array_msg)
-        print("Published")
         return
 
 

@@ -62,6 +62,24 @@ def correct_dr(uncorrected_dr: gtsam.Pose2):
     return uncorrected_dr
 
 
+def calculate_angle(x1, y1, x2, y2):
+    dx = x2 - x1
+    dy = y2 - y1
+    angle = math.atan2(dy, dx)
+    return angle
+
+
+def calculate_distance(x1, y1, x2, y2):
+    distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    return distance
+
+
+def calculate_center(x1, y1, x2, y2):
+    x_center = (x1 + x2) / 2.0
+    y_center = (y1 + y2) / 2.0
+    return np.array((x_center, y_center), dtype=np.float64)
+
+
 # %% Classes
 
 class offline_slam_2d:
@@ -650,6 +668,10 @@ class online_slam_2d:
         else:
             self.file_path = path_name + '/'
 
+        # ===== Frames =====
+        self.map_frame = rospy.get_param("frame", "map")
+        self.robot_frame = rospy.get_param("robot_frame", "")
+
         # ===== Graph parameters =====
         self.graph = gtsam.NonlinearFactorGraph()
         self.parameters = gtsam.ISAM2Params()
@@ -810,8 +832,11 @@ class online_slam_2d:
         self.rope_priors = None
         self.rope_centers = None
         self.rope_noise_models = None
-        # TODO: find better way of getting rope layout into online slam
-        # currently ropes an buoys are sent as rviz markers
+        self.rope_infos = None  # Per line info, [[center_x, center_y, sig_xx, sig_xy, sig_yx, sig_yy], ...]
+        # currently ropes an buoys locations are sent as rviz markers
+        # The structure is defined in the sam_listener_online_slam_node.py
+        # Format: [[line_1_start_buoy_ind, line_1_end_buoy_ind], ... ,[line_n_start_buoy_ind, line_n_end_buoy_ind]]
+        # This can also be defined in the launch file as a parameter with the name 'pipeline_lines'
         self.rope_buoy_ind = ropes_by_buoy_ind
 
         # ===== Optimizer and values =====
@@ -851,7 +876,7 @@ class online_slam_2d:
         self.est_path_pub = rospy.Publisher('/sam_slam/est_path', Path, queue_size=10)
         # Rope detections
         self.est_rope_pub = rospy.Publisher('/sam_slam/est_rope', MarkerArray, queue_size=10)
-        self.rope_marker_scale = 0.5
+        self.rope_marker_scale = 10
         self.rope_marker_color = ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.75)
         # Buoy detections
         self.est_buoy_pub = rospy.Publisher('/sam_slam/est_buoys', MarkerArray, queue_size=10)
@@ -920,7 +945,7 @@ class online_slam_2d:
         Calculate relevant stuff for adding rope priors to the detections
 
         Assumptions:
-        - nominally horizontal rows, more checks need to handle vertical. This will effect the cross and along variances
+        - nominally horizontal rows, more checks need to handle vertical. This will affect the cross and along variances
         - along variance is not currently scaled to the length of the rope
             This is done in testing_covar.py
         :param ropes:
@@ -930,31 +955,83 @@ class online_slam_2d:
         # if self.b is None:
         #     return
 
-        # These are the spatial coords of the rope ends
-        self.rope_priors = ropes
+        print("Rope setup starting ")
+
+        if self.rope_map_present:
+            print(f"Rope(s) already set")
+            return
 
         # In general, we want to work with the ropes wrt to the b indices that make up the ropes
         # TODO bring into agreement with the update
-        n_ropes_spatial = len(ropes)
+        # Ropes are added via two methods
+        # 1) markers --> this was the original but its kind of weird and doesnt work with the pipeline scenario??
+        # 2) A list of buoy indices, [[start_ind, end_ind], ...]
+        if ropes is None:
+            n_ropes_spatial = 0
+        else:
+            n_ropes_spatial = len(ropes)
+
         n_ropes_inds = len(self.rope_buoy_ind)
 
-        if n_ropes_inds != n_ropes_spatial:
-            raise Exception("Rope layout mismatch: check node node script and rope marker publisher script")
+        # Change to using supplied indices by default
+        if n_ropes_inds > 0 and self.buoy_map_present is False:
+            print("Rope Setup is waiting for buoys to be defined")
+            return -1
 
-        self.n_ropes = n_ropes_inds
+        if n_ropes_inds > 0:
+            self.n_ropes = n_ropes_inds
+        else:
+            self.n_ropes = n_ropes_spatial
+
+        # if n_ropes_inds != n_ropes_spatial:
+        #     raise Exception("Rope layout mismatch: check node node script and rope marker publisher script")
 
         # Initialize the rope means and covariances
         self.rope_centers = {}
         self.rope_noise_models = {}
-        for rope_ind, rope in enumerate(self.rope_priors):
-            start_x, start_y = rope[0][0], rope[0][1]
-            end_x, end_y = rope[1][0], rope[1][1]
+        self.rope_infos = []  # Per line info for debugging, [[center_x, center_y, sig_xx, sig_xy, sig_yx, sig_yy], ...]
 
-            self.rope_centers[rope_ind] = online_slam_2d.calculate_center(start_x, start_y, end_x, end_y)
+        for rope_ind in range(self.n_ropes):
+            if n_ropes_inds:
+                start_buoy = self.rope_buoy_ind[rope_ind][0]
+                end_buoy = self.rope_buoy_ind[rope_ind][1]
+                start_x, start_y = self.buoy_priors[start_buoy, 0], self.buoy_priors[start_buoy, 1]
+                end_x, end_y = self.buoy_priors[end_buoy, 0], self.buoy_priors[end_buoy, 1]
+            else:
+                rope = ropes[rope_ind]
+                start_x, start_y = rope[0][0], rope[0][1]
+                end_x, end_y = rope[1][0], rope[1][1]
+
+            print(f"Rope {rope_ind}: ({start_x},{start_y}) ({end_x},{end_y})")
+
+            # Determines means
+            centers = online_slam_2d.calculate_center(start_x, start_y, end_x, end_y)
+            self.rope_centers[rope_ind] = centers
+
+            # === Determine covariances of rope priors ===
+            # These covariances are define with an along rope and cross rope components.
+            # Two methods are used to determine the along rope component.
+            # 1) Scaled: negative values indicate the along rope variance will be scaled
+            # 2) Fixed: The specified value is used, no scaling is applied
+            # Scaled covariance
+            # negative values indicate that the value, N, is to be scaled with the length of the line, L.
+            # Such that sigma = L/(2 * N).Default is 3.
+            if self.rope_along_sig_init <= 0:
+                if self.rope_along_sig_init == 0:
+                    n_sigmas = 3  # n_sigmas does not have to be a int
+                else:
+                    n_sigmas = abs(self.rope_along_sig_init)
+
+                rope_length = self.calculate_distance(start_x, start_y, end_x, end_y)
+                scaled_rope_along_sig_init = rope_length / (2 * n_sigmas)
+
+                cov_matrix = np.array([[scaled_rope_along_sig_init ** 2, 0.0],
+                                       [0.0, self.rope_cross_sig_init ** 2]])
 
             # This is the 'basic' covariance, it needs to be rotated to align with the rope
-            cov_matrix = np.array([[self.rope_along_sig_init ** 2, 0.0],
-                                   [0.0, self.rope_cross_sig_init ** 2]])
+            else:
+                cov_matrix = np.array([[self.rope_along_sig_init ** 2, 0.0],
+                                       [0.0, self.rope_cross_sig_init ** 2]])
 
             # Rotate the cov_matrix to align with the rope
             rope_angle = online_slam_2d.calculate_angle(start_x, start_y, end_x, end_y)
@@ -962,7 +1039,15 @@ class online_slam_2d:
                                         [np.sin(rope_angle), np.cos(rope_angle)]])
             rot_cov_matrix = rotation_matrix @ cov_matrix @ rotation_matrix.transpose()
 
+            # Record noise model, used for data and prior associations
             self.rope_noise_models[rope_ind] = gtsam.noiseModel.Gaussian.Covariance(rot_cov_matrix)
+
+            # Record rope info for debugging and post processing checks
+            rope_info = [centers[0], centers[1],
+                         rot_cov_matrix[0, 0], rot_cov_matrix[0, 1],
+                         rot_cov_matrix[1, 0], rot_cov_matrix[1, 1]]
+            print(f"Rope info:{rope_info}")
+            self.rope_infos.append(rope_info)
 
         # labels
         self.l = {k: gtsam.symbol('l', k) for k in range(self.n_ropes)}
@@ -983,8 +1068,13 @@ class online_slam_2d:
 
         # Indicate that the rope setup is complete
         self.rope_map_present = True
+
         print("Rope setup: Complete")
-        return
+
+        np.savetxt(self.file_path + 'rope_info.csv',
+                   np.array(self.rope_infos), delimiter=',', fmt='%.3f')
+        print(f"Rope info saved: {self.file_path + 'rope_info.csv'}")
+        return 1
 
     def rope_update(self, debug=False):
         """
@@ -1004,6 +1094,7 @@ class online_slam_2d:
 
         self.rope_centers = {}
         self.rope_noise_models = {}
+
         for rope_ind, rope in enumerate(self.rope_buoy_ind):
             start_buoy_ind = rope[0]
             end_buoy_ind = rope[1]
@@ -1262,8 +1353,16 @@ class online_slam_2d:
 
     def online_update_queued(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None, seq_id=None):
         """
-        Pose format [x, y, z, q_w, q_x, q_y, q_z]
+
+        :param dr_pose: Pose format [x, y, z, q_w, q_x, q_y, q_z]
+        :param gt_pose: Pose format [x, y, z, q_w, q_x, q_y, q_z]
+        :param relative_detection:
+        :param id_string: string used to identify if new node corresponds
+        :param da_id:
+        :param seq_id:
+        :return:
         """
+
         if not self.initial_pose_set:
             print("Attempting to update before initial pose")
             self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
@@ -1358,7 +1457,7 @@ class online_slam_2d:
                 relative_detection_state = 0
 
                 # === Buoy ===
-                if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+                if relative_detection is not None and da_id != -ObjectID.ROPE.value and da_id != -ObjectID.PIPE.value:
                     # Detection state info
                     relative_detection_state = 1  # perfomance metrics
 
@@ -1467,7 +1566,7 @@ class online_slam_2d:
                             self.graph.add(x_b_range_bearing_factor)
 
                 # === Rope ===
-                if relative_detection is not None and da_id == -ObjectID.ROPE.value:
+                if relative_detection is not None and (da_id == -ObjectID.ROPE.value or da_id == -ObjectID.PIPE.value):
                     # Detection state info
                     relative_detection_state = 2  # performance metrics
                     valid_rope = True
@@ -1487,8 +1586,14 @@ class online_slam_2d:
                     detect_range = computed_est.range(self.est_detect_loc)
 
                     if self.verbose_graph_rope_detections:
-                        print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
-                              f' Seq id: {seq_id}')
+                        # Verbose rope
+                        if da_id == -ObjectID.ROPE.value:
+                            print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
+                                  f' Seq id: {seq_id}')
+                        # Verbose pipe
+                        if da_id == -ObjectID.PIPE.value:
+                            print(f'Pipe detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
+                                  f' Seq id: {seq_id}')
 
                     # ===== Add detection to graph =====
                     # Add the rope landmark
@@ -1515,6 +1620,8 @@ class online_slam_2d:
                     # This will allow for plotting/mapping of rope detections but doesn't make them very useful for
                     # localization.
                     if self.rope_priors is None:
+                        if self.verbose_graph_rope_associations:
+                            print("Data Association: Naive")
                         avg_rope_position = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
                         if self.individual_rope_detections:
                             # Swath Updating
@@ -1546,12 +1653,20 @@ class online_slam_2d:
                     else:
                         # Manual associations based on seq
                         if self.batch_by_swath_manual_rope_da and self.current_swath_ind > -1:
+                            if self.verbose_graph_rope_associations:
+                                print("Data Association: Manual")
                             rope_association_ind = self.swath_line_inds[self.current_swath_ind]
+
                         # Data association based on Euclidean distance
                         elif current_covariance is None:
+                            if self.verbose_graph_rope_associations:
+                                print("Data Association: Euclidean")
                             rope_association_ind = self.associate_rope_detection(self.est_detect_loc)
+
                         # Data association based on max likelihood, requires marginal computation by GTSAM
                         else:
+                            if self.verbose_graph_rope_associations:
+                                print("Data Association: Likelihood")
                             rope_association_ind, _, _ = self.associate_rope_detection_likelihood(self.est_detect_loc,
                                                                                                   current_covariance)
                         self.r_associations[self.current_r_ind] = rope_association_ind
@@ -2067,10 +2182,10 @@ class online_slam_2d:
         Publishes some markers for debugging estimated detection location and the DA location
         """
 
-        ### Estimated detection location
+        # === Estimated detection location ===
         # Form detection marker message
         detection_marker = Marker()
-        detection_marker.header.frame_id = 'map'
+        detection_marker.header.frame_id = self.map_frame
         detection_marker.type = Marker.SPHERE
         detection_marker.action = Marker.ADD
         detection_marker.id = 0
@@ -2099,7 +2214,7 @@ class online_slam_2d:
         if da_id > 0:
             # Form DA marker message
             da_marker = Marker()
-            da_marker.header.frame_id = 'map'
+            da_marker.header.frame_id = self.map_frame
             da_marker.type = Marker.CYLINDER
             da_marker.action = Marker.ADD
             da_marker.id = 0
@@ -2131,7 +2246,7 @@ class online_slam_2d:
 
         # Estimated detection location
         marker = Marker()
-        marker.header.frame_id = 'map'
+        marker.header.frame_id = self.map_frame
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
         marker.id = 0
@@ -2160,14 +2275,14 @@ class online_slam_2d:
                               heading_quaternion_type.w),
                              rospy.Time.now(),
                              "estimated/base_link",
-                             "map")
+                             self.map_frame)
         except rospy.ROSException as e:
             rospy.logerr('Error broadcasting tf transform: {}'.format(str(e)))
 
     def publish_est_path(self):
 
         poses_path = Path()
-        poses_path.header.frame_id = 'map'
+        poses_path.header.frame_id = self.map_frame
 
         # Copy as elements can be added to the graph will looping over the elements
         key_dict_copy = self.x.copy()
@@ -2185,7 +2300,7 @@ class online_slam_2d:
             heading_quaternion_type = Quaternion(*heading_quat)
             pose_stamped.pose.orientation = heading_quaternion_type
 
-            pose_stamped.header.frame_id = 'map'
+            pose_stamped.header.frame_id = self.map_frame
             pose_stamped.header.stamp = rospy.Time.now()
 
             poses_path.poses.append(pose_stamped)
@@ -2218,7 +2333,7 @@ class online_slam_2d:
             valid_detection_count += 1
             detection_point = self.current_estimate.atPoint2(key)
             marker = Marker()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = self.map_frame
             marker.header.stamp = rospy.Time.now()
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
@@ -2268,7 +2383,7 @@ class online_slam_2d:
             valid_detection_count += 1
             detection_point = self.current_estimate.atPoint2(key)
             marker = Marker()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = self.map_frame
             marker.header.stamp = rospy.Time.now()
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
@@ -2321,7 +2436,7 @@ class online_slam_2d:
             valid_detection_count += 1
             detection_point = self.current_estimate.atPoint2(key)
             marker = Marker()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = self.map_frame
             marker.header.stamp = rospy.Time.now()
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
@@ -2377,7 +2492,7 @@ class online_slam_2d:
 
         msg = PoseWithCovarianceStamped()
         msg.header.stamp = rospy.Time.now()
-        msg.header.frame_id = 'map'
+        msg.header.frame_id = self.map_frame
         msg.pose.pose.position.x = landmark_point[0]
         msg.pose.pose.position.y = landmark_point[1]
         msg.pose.pose.position.z = 0.0
@@ -2635,6 +2750,11 @@ class analyze_slam:
         else:
             self.performance_metrics = None
 
+        if hasattr(slam_object, 'rope_infos'):
+            self.rope_infos = np.array(slam_object.rope_infos)
+        else:
+            self.rope_infos = None
+
         # ===== Visualization parameters =====
         self.dr_color = 'r'
         self.gt_color = 'b'
@@ -2794,7 +2914,6 @@ class analyze_slam:
             # X, Y, and yaw are estimated using the factor graph
             est_x, est_y, est_yaw = self.posterior_poses[x_ind, :3]
 
-
             online_x, online_y, online_yaw = self.online_poses[x_ind, :3]
 
             # Estimated 3D pose (final)
@@ -2842,8 +2961,8 @@ class analyze_slam:
                            est_quats_xyzw[0], est_quats_xyzw[1], est_quats_xyzw[2], est_quats_xyzw[3]]
 
             online_3d_pose = [x_ind,
-                           online_x, online_y, -depth,
-                           online_quats_xyzw[0], online_quats_xyzw[1], online_quats_xyzw[2], online_quats_xyzw[3]]
+                              online_x, online_y, -depth,
+                              online_quats_xyzw[0], online_quats_xyzw[1], online_quats_xyzw[2], online_quats_xyzw[3]]
 
             dr_3d_poses.append(dr_3d_pose)
             est_3d_poses.append(est_3d_pose)
@@ -2888,10 +3007,28 @@ class analyze_slam:
             return
 
         if self.performance_metrics is None:
-            print("Performance metrics no defined")
+            print("Performance metrics are not defined")
             return
 
         write_array_to_csv(self.file_path + 'performance_metrics.csv', self.performance_metrics)
+
+    def save_rope_info(self):
+        """
+        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        format: [[update time, factor count]]
+
+        :return:
+        """
+
+        if self.file_path is None:
+            print("Analysis output path not specified")
+            return
+
+        if self.rope_infos is None:
+            print("Rope info is not defined")
+            return
+
+        write_array_to_csv(self.file_path + 'rope_infos.csv', self.rope_infos)
 
     # Plotting methods
     def find_plot_limits(self):
@@ -3384,6 +3521,10 @@ class analyze_slam:
         :return:
         """
         if self.buoy_detection_info is None:
+            return
+
+        if self.buoy_detection_info.size == 0:
+            print("Buoy detection info unpopulated!")
             return
 
         associations = self.buoy_detection_info[:, 0]

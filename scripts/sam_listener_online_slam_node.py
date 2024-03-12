@@ -48,7 +48,8 @@ def main():
           f'Simulated data: {simulated_data}')
 
     print('Initializing online graph')
-    online_graph = online_slam_2d(ropes_by_buoy_ind=ropes_by_buoy_ind)
+    online_graph = online_slam_2d(path_name=path_name,  # only used for saving some things, rope_info
+                                  ropes_by_buoy_ind=ropes_by_buoy_ind)
 
     print('initializing listener')
     listener = sam_slam_listener(robot_name=robot_name,

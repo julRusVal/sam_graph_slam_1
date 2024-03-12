@@ -83,16 +83,17 @@ class pipeline_sim_dr_gt_publisher:
         # DR noise parameters
         self.add_noise = True
         self.bound_depth = True
+        self.bound_pitch_roll = True
 
         # Initialization noise
         self.init_position_sigmas = np.array([1.0, 1.0, 1.0])  # x, y, z
-        self.init_rotation_sigmas = np.array([np.pi / 10.0, np.pi / 10.0, np.pi / 4.0])  # roll, pitch, yaw
+        self.init_rotation_sigmas = np.array([np.pi / 1e3, np.pi / 1e3, np.pi / 50])  # roll, pitch, yaw
 
         # Step noise
         self.delta_position_sigmas = np.array([0.001, 0.001, 0.001])  # x, y, z - per second
-        self.delta_rotation_sigmas = np.array([np.pi / 1e4, np.pi / 1e4, np.pi / 1e3])  # roll, pitch, yaw - per second
+        self.delta_rotation_sigmas = np.array([np.pi / 1e5, np.pi / 1e5, np.pi / 1e2])  # roll, pitch, yaw - per second
 
-        self.depth_sigma = 0.25
+        self.depth_sigma = 0.1
 
         # ===== logging settings =====
 
@@ -157,7 +158,8 @@ class pipeline_sim_dr_gt_publisher:
 
         # Rotational noise
         roll_noise, pitch_noise, yaw_noise = np.random.normal(0, self.init_rotation_sigmas)
-        rotation_noise = gtsam.Rot3.RzRyRx(yaw_noise, pitch_noise, roll_noise)
+        # Still confused by ypr vs rpy :)
+        rotation_noise = gtsam.Rot3.Ypr(yaw_noise, pitch_noise, roll_noise)
 
         noise_pose3 = gtsam.Pose3(rotation_noise, position_noise)
 
@@ -183,15 +185,30 @@ class pipeline_sim_dr_gt_publisher:
         if self.bound_depth:
             # Determine depth values
             depth_noise = np.random.normal(0, self.depth_sigma)
-            bounded_noisey_depth = init_pose3.z() + depth_noise
+            bounded_noisey_depth = final_pose3.z() + depth_noise
 
             # Update the depth, z, value
             new_translation = new_dr_pose.translation()
             new_translation[2] = bounded_noisey_depth
-            
+
             # Reform Pose3
             rotation = new_dr_pose.rotation()
             new_dr_pose = gtsam.Pose3(rotation, new_translation)
+
+        if self.bound_pitch_roll:
+            # determine pitch and roll values
+            roll_noise, pitch_noise, _ = np.random.normal(0, self.init_rotation_sigmas)  # roll, pitch, yaw
+            _, pitch_current, roll_current = final_pose3.rotation().ypr()
+            bounded_pitch = pitch_current + pitch_noise
+            bounded_roll = roll_current + roll_noise
+            additive_yaw = new_dr_pose.rotation().yaw()
+
+            # form the newly bounded Rot3
+            bounded_rotation = gtsam.Rot3.Ypr(additive_yaw, bounded_pitch, bounded_roll)
+
+            # Reform Pose3
+            translation = new_dr_pose.translation()
+            new_dr_pose = gtsam.Pose3(bounded_rotation, translation)
 
         self.dr_pose3 = new_dr_pose
         self.dr_stamp = final_time
@@ -201,7 +218,7 @@ class pipeline_sim_dr_gt_publisher:
         roll_noise, pitch_noise, yaw_noise = np.random.normal(0, self.delta_rotation_sigmas * np.sqrt(dt))  # r, p, y
         x_noise, y_noise, z_noise = np.random.normal(0, self.delta_position_sigmas * np.sqrt(dt))
 
-        rotation_noise = gtsam.Rot3.RzRyRx(yaw_noise, pitch_noise, roll_noise)  # yaw, pitch, roll
+        rotation_noise = gtsam.Rot3.Ypr(yaw_noise, pitch_noise, roll_noise)  # yaw, pitch, roll
         translation_noise = gtsam.Point3(x_noise, y_noise, z_noise)
         pose_noise = gtsam.Pose3(rotation_noise, translation_noise)
 
