@@ -11,13 +11,16 @@ def main():
     rospy.init_node('slam_listener', anonymous=True)
     rate = rospy.Rate(5)
 
-    # Topic parameters
+    # === Topic and frame parameters ===
     robot_name = rospy.get_param('robot_name', 'sam')
     frame_name = rospy.get_param('frame', 'map')
+
+    # === Scenario Settings ===
     simulated_data = rospy.get_param('simulated_data', False)
+    pipeline_scenario = rospy.get_param('pipeline_scenario', 'False')
     record_gt = rospy.get_param('record_ground_truth', False)
 
-    # Define rope structure for analyis visualizatiions
+    # === Define rope structure for analysis and visualizations ===
     pipeline_lines = ast.literal_eval(rospy.get_param("pipeline_lines", "[]"))
     if len(pipeline_lines) > 0:  # If pipeline is defined
         ropes_by_buoy_ind = pipeline_lines
@@ -35,6 +38,11 @@ def main():
         ropes_by_buoy_ind = [[0, 5],
                              [1, 4],
                              [2, 3]]
+
+    if pipeline_scenario:
+        line_colors = ast.literal_eval(rospy.get_param("pipeline_colors"))
+    else:
+        line_colors = None
 
     # Output parameters
     path_name = rospy.get_param('path_name',
@@ -65,13 +73,31 @@ def main():
             print("Processing data")
             # listener.analysis.calculate_corresponding_points(debug=True)
 
-            listener.analysis.visualize_final(plot_gt=False,
-                                              plot_dr=False)
+            if pipeline_scenario:
+                listener.analysis.visualize_final(plot_gt=True,
+                                                  plot_dr=True,
+                                                  plot_buoy=False,
+                                                  rope_colors=line_colors)
 
-            listener.analysis.visualize_online(plot_final=True, plot_correspondence=True)
-            listener.analysis.plot_error_positions()
+                listener.analysis.visualize_online(plot_final=True,
+                                                   plot_correspondence=True,
+                                                   plot_buoy=False)
 
-            listener.analysis.show_buoy_info()
+                listener.analysis.plot_error_positions(gt_baseline=True,
+                                                       plot_dr=True,
+                                                       plot_online=True,
+                                                       plot_final=True)
+
+                listener.analysis.show_error()
+
+            else:
+                listener.analysis.visualize_final(plot_gt=False,
+                                                  plot_dr=False)
+
+                listener.analysis.visualize_online(plot_final=True, plot_correspondence=True)
+                listener.analysis.plot_error_positions()
+
+                listener.analysis.show_buoy_info()
 
             data_processed = True
             # rospy.signal_shutdown("Shutting down gracefully")

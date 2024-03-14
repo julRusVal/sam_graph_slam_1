@@ -56,15 +56,15 @@
     <!-- Buoy -->
     <param name="buoy_dist_sig" value="1"/>
     <!-- Odometry -->
-    <param name="odo_ang_sig_deg" value="0.05"/>
-    <param name="odo_dist_sig" value="0.001"/>
+    <param name="odo_ang_sig_deg" value="0.5"/>   <!-- ICRA: 0.05 > 0.1 -->
+    <param name="odo_dist_sig" value="0.1"/>   <!-- ICRA: 0.001 -->
 
     <!-- Detection sigmas -->
     <!-- buoys -->
     <param name="buoy_detect_ang_sig_deg" value="0.5"/>
     <param name="buoy_detect_dist_sig" value=".25"/>
     <!-- ropes -->
-    <param name="detect_ang_sig_deg" value="2.5"/>  <!-- ICRA: 25.0 > 0.5 -->
+    <param name="detect_ang_sig_deg" value=".5"/>  <!-- ICRA: 25.0 > 0.5 -->
     <param name="detect_dist_sig" value="0.25"/>  <!-- ICRA: 15.0 -->
 
     <!-- Detection sigmas -->
@@ -84,6 +84,8 @@
     <param name="verbose_graph_rope_associations" value="True"/>
     <param name="verbose_graph_buoy_associations" value="False"/>
 
+    <arg name="verbose_detector" default="True"
+
     <!-- Map parameters -->
     <param name="pipeline_end_coords" value="[[-260, -829],
                                               [-263, -930],
@@ -98,7 +100,7 @@
 
     <param name="pipeline_colors" value="[[1.0, 1.0, 0.0],
                                           [0.0, 1.0, 1.0],
-                                          [1.1, 0.0, 1.1]]" />
+                                          [1.0, 0.0, 1.0]]" />
 
     <!-- NODES -->
     <!-- start rviz -->
@@ -115,7 +117,8 @@
 
     <!-- detector -->
     <node name="detector_node" pkg="sam_slam" type="point_cloud_detector.py" output="screen">
-          <param name="~detector_min_update_time" value="$(arg detector_min_update_time)" />
+        <param name="~detector_min_update_time" value="$(arg detector_min_update_time)" />
+        <param name="~verbose_detector" value="$(arg verbose_detector)" />
     </node>
 
     <!-- dr and gt markers -->
