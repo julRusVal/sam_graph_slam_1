@@ -153,6 +153,20 @@ def plot_points_and_lines(points, k):
     plt.show()
 
 
+def find_non_zero_indices(array):
+    """
+    Returns the indices of the min and max indices of non-zero elements for both axes
+    :param array: np array
+    :return: min_row, max_row, min_col, max_col
+    """
+    non_zero_indices = np.nonzero(array)
+    min_row = np.min(non_zero_indices[0])
+    max_row = np.max(non_zero_indices[0])
+    min_col = np.min(non_zero_indices[1])
+    max_col = np.max(non_zero_indices[1])
+    return min_row, max_row, min_col, max_col
+
+
 class process_pointcloud_data:
     def __init__(self, points_3d, plot_process_results=False):
         """
@@ -184,9 +198,14 @@ class process_pointcloud_data:
         # (2) Range clipping
         self.perform_range_clipping = False  # Removes the most distant returns
         self.range_clipping_range = int(0.5 * self.scale)  # provide in units of meters
+        # (2a) truncating - The hope is to make hough run a little faster
+        self.perform_truncation = True
+        self.truncating_margin = 5
+        self.truncated_ind = 0
         # (3) Dilation
         self.dilation_radius = 3  # The detections are a little sparce so to thicken stuff up
         # (4) Hough lines
+        self.perform_h_lines = False
         self.angle_bins = 360
         self.max_line_count = 2
         # (5) Hough circles
@@ -240,7 +259,6 @@ class process_pointcloud_data:
         y_shape = int(np.max(y) - np.min(y))
 
         image_float = np.zeros((x_shape + 1, y_shape + 1))
-
         indices = np.stack([x - 1, y - 1], axis=1).astype(int)
         try:
             image_float[indices[:, 0], indices[:, 1]] = 1
@@ -250,10 +268,23 @@ class process_pointcloud_data:
             self.detection_coords_world = np.zeros([0, 0])
             return
 
+        image_float[indices[:, 0], indices[:, 1]] = 1
+        image_float_original = np.copy(image_float)
+
         # === (2) Range clipping ===
         # ==========================
         if self.perform_range_clipping:
             image_float[-self.range_clipping_range:, :] = 0
+
+        # === (2a) truncating ===
+        # ========================
+        # Only truncate in the down range direction, dimension 0
+        if self.perform_truncation:
+            min_ind, _, _, _ = find_non_zero_indices(image_float)
+            new_min_ind = min_ind - self.truncating_margin
+            if new_min_ind > 0:
+                self.truncated_ind = new_min_ind
+                image_float = image_float[self.truncated_ind:, :]
 
         # === (3) Dilation ===
         # ====================
@@ -266,9 +297,10 @@ class process_pointcloud_data:
 
         # === (4) Hough Line ===
         # ======================
-        tested_angles = np.linspace(-np.pi / 2, np.pi / 2, self.angle_bins, endpoint=False)  # Generate bins
-        h, theta, d = hough_line(image_bool, theta=tested_angles)  # Perform Hough line transform
-        h_line_peaks = hough_line_peaks(h, theta, d, num_peaks=self.max_line_count)  # Select
+        if self.perform_h_lines:
+            tested_angles = np.linspace(-np.pi / 2, np.pi / 2, self.angle_bins, endpoint=False)  # Generate bins
+            h, theta, d = hough_line(image_bool, theta=tested_angles)  # Perform Hough line transform
+            h_line_peaks = hough_line_peaks(h, theta, d, num_peaks=self.max_line_count)  # Select
 
         # === (5) Hough circle ===
         # ========================
@@ -307,6 +339,7 @@ class process_pointcloud_data:
 
             # Return to the orignal basis - undo scaling and offsetting
             self.detection_coords_basis = np.copy(avg_center)
+            self.detection_coords_basis[0] += self.truncated_ind
             self.detection_coords_basis[1] -= self.y_offset
             self.detection_coords_basis /= self.scale
 
@@ -322,8 +355,9 @@ class process_pointcloud_data:
             # === Convert original images to rgb ===
             # ======================================
             # images are stored as floats: [0,1]
-            image_original = color.gray2rgb(image_float)
-            image_marked = color.gray2rgb(image_float)
+            image_original = color.gray2rgb(image_float_original)  # original sized image, raw
+            image_original_marked = np.copy(image_original)  # original sized image, marked
+            image_marked = color.gray2rgb(image_float)  # truncated image
 
             # === Draw Hough lines ===
             # ========================
@@ -340,6 +374,8 @@ class process_pointcloud_data:
                     # Use skimage.draw to draw the line on the image
                     rr, cc = skimage.draw.line(r0=(round(y0)), c0=0,
                                                r1=int(round(y1)), c1=image_marked.shape[1] - 1)
+
+                    # draw onto the truncated image
                     image_marked[rr, cc] = (0, 0, 1.0)
 
             # === Draw Hough circles ===
@@ -374,6 +410,9 @@ class process_pointcloud_data:
                     rr, cc = skimage.draw.disk((yc, xc), 10, shape=image_marked.shape[:2])
                     image_marked[rr, cc] = (0, 1.0, 0)
 
+            # Apply the image_marked to its its original counterpart
+            image_original_marked[self.truncated_ind:, :] = image_marked
+
             # === Plotting ===
             # ================
             fig2, (ax1, ax2) = plt.subplots(ncols=2, nrows=1, figsize=(8, 4), sharey=True)
@@ -388,8 +427,8 @@ class process_pointcloud_data:
             #     ax2.axline((x0, y0), slope=np.tan(angle + np.pi / 2))
 
             ax2.set_xlabel("Y")
-            ax2.set_title(f'Hough Results center: {xc}, {yc}')
-            ax2.imshow(image_marked)
+            ax2.set_title(f'Hough Results center: {avg_center[0]}, {avg_center[1]}')
+            ax2.imshow(image_original_marked)
 
             plt.show()
 

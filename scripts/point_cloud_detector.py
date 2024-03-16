@@ -57,7 +57,7 @@ def stamped_transform_to_rotation_matrix(transform_stamped: TransformStamped):
     return rotation_matrix
 
 
-class PointCloudSaver:
+class PointCloudDetector:
     def __init__(self, topic='/sam0/mbes/odom/bathy_points',
                  save_data=False,
                  save_location='', save_timeout=10):
@@ -67,8 +67,12 @@ class PointCloudSaver:
         self.point_cloud_topic = topic
 
         # Data frame setting
-        self.data_frame = 'odom'  # 'map' from of given mbes data
+        self.data_frame = 'odom'  # 'map' from given mbes data
         self.robot_frame = 'sam0'  # 'sam0_base_link' transform into robot frame
+        self.dr_tf_frame = 'dr_frame'  # frame of dr, used to transform mbes pointcloud
+
+        # Verbose
+        self.verbose_detector = rospy.get_param('~verbose_detector', "False")
 
         # Data recording setting
         self.save_data = save_data
@@ -158,7 +162,13 @@ class PointCloudSaver:
         pc_array_transformed = np.asarray(pc_o3d.points)
 
         # Process pointcloud data
+        process_start_time = rospy.Time.now()
         detector = process_pointcloud2.process_pointcloud_data(pc_array_transformed)
+        process_end_time = rospy.Time.now()
+
+        if self.verbose_detector:
+            secs = (process_end_time - process_start_time).to_sec()
+            print(f"Detector - Processing time {secs:.3f} secs")
 
         if detector.detection_coords_world.size != 3:
             print("No detection!!")
@@ -327,10 +337,10 @@ class PointCloudSaver:
 
 if __name__ == '__main__':
     try:
-        point_cloud_subscriber = PointCloudSaver(topic='/sam0/mbes/odom/bathy_points',
-                                                 save_data=True,
-                                                 save_location='/home/julian/catkin_ws/src/sam_slam/processing scripts/data',
-                                                 save_timeout=5)
+        point_cloud_subscriber = PointCloudDetector(topic='/sam0/mbes/odom/bathy_points',
+                                                    save_data=True,
+                                                    save_location='/home/julian/catkin_ws/src/sam_slam/processing scripts/data',
+                                                    save_timeout=5)
 
         # Run the ROS node
         rospy.spin()

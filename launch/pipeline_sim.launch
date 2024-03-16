@@ -84,7 +84,7 @@
     <param name="verbose_graph_rope_associations" value="True"/>
     <param name="verbose_graph_buoy_associations" value="False"/>
 
-    <arg name="verbose_detector" default="True"
+    <arg name="verbose_detector" default="True" />
 
     <!-- Map parameters -->
     <param name="pipeline_end_coords" value="[[-260, -829],

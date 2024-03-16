@@ -671,6 +671,10 @@ class online_slam_2d:
         # ===== Frames =====
         self.map_frame = rospy.get_param("frame", "map")
         self.robot_frame = rospy.get_param("robot_frame", "")
+        self.est_frame = rospy.get_param("est_frame", "estimated/base_link")
+
+        # TF broadcaster
+        self.tf_br = tf.TransformBroadcaster()
 
         # ===== Graph parameters =====
         self.graph = gtsam.NonlinearFactorGraph()
@@ -1062,7 +1066,8 @@ class online_slam_2d:
         # self.l are the 'line' objects
         for id_rope in range(self.n_ropes):
             # Prior
-            prior = np.array((self.rope_prior_centers[id_rope][0], self.rope_prior_centers[id_rope][1]), dtype=np.float64)
+            prior = np.array((self.rope_prior_centers[id_rope][0], self.rope_prior_centers[id_rope][1]),
+                             dtype=np.float64)
 
             # Add prior factor
             self.graph.addPriorPoint2(self.l[id_rope], prior, self.rope_noise_models[rope_ind])
@@ -2217,7 +2222,6 @@ class online_slam_2d:
 
         return likelihood_max_ind, distances_2_norm[likelihood_max_ind], distances_m[likelihood_max_ind]
 
-
     def update_rope_priors(self, debug=False):
         """
         The rope priors are currently based on the buoy positions. As the estimate of the buoy position is updated
@@ -2352,17 +2356,17 @@ class online_slam_2d:
 
         self.est_pos_pub.publish(marker)
 
-        # publish transform of estimate
-        br = tf.TransformBroadcaster()
+        # print(f"Transform broadcaster: estimated pose {self.map_frame} -> {self.est_frame}")
         try:
-            br.sendTransform((est_pos.x(), est_pos.y(), 0),
-                             (heading_quaternion_type.x,
-                              heading_quaternion_type.y,
-                              heading_quaternion_type.z,
-                              heading_quaternion_type.w),
-                             rospy.Time.now(),
-                             "estimated/base_link",
-                             self.map_frame)
+            self.tf_br.sendTransform(translation=(est_pos.x(), est_pos.y(), 0),
+                                     rotation=(heading_quaternion_type.x,
+                                               heading_quaternion_type.y,
+                                               heading_quaternion_type.z,
+                                               heading_quaternion_type.w),
+                                     time=rospy.Time.now(),
+                                     child=self.est_frame,
+                                     parent=self.map_frame)
+
         except rospy.ROSException as e:
             rospy.logerr('Error broadcasting tf transform: {}'.format(str(e)))
 
@@ -3282,7 +3286,8 @@ class analyze_slam:
             # form color array
             normal_rope_color = [0.5, 0.5, 0.5]
             if rope_colors is None:
-                ax.scatter(self.posterior_rope_detects[:, 0], self.posterior_rope_detects[:, 1], color=normal_rope_color,
+                ax.scatter(self.posterior_rope_detects[:, 0], self.posterior_rope_detects[:, 1],
+                           color=normal_rope_color,
                            label='Rope detections')
             else:
                 # form detection colors
@@ -3588,8 +3593,9 @@ class analyze_slam:
 
     def visualize_clustering(self):
         """
-        This method is for visualizing the clustering of detections. This is only relevant for the offline SLAM.
+        !OFFLINE SLAM ONLY!
 
+        This method is for visualizing the clustering of detections. This is only relevant for the offline SLAM.
         :return:
         """
         # ===== Plot detected clusters =====
@@ -3637,6 +3643,14 @@ class analyze_slam:
 
     # Error metric methods
     def show_error(self):
+        """
+        !CURRENTLY BROKEN!
+        Plots the errors for x,y and yaw with the ground truth as a baseline
+        :return:
+        """
+
+        # TODO make a nice little error graph function for x, y, yaw
+
         # Find the errors between gt<->dr and gt<->post
         dr_error = calc_pose_error(self.dr_poses, self.gt_poses)
         post_error = calc_pose_error(self.posterior_poses, self.gt_poses)
@@ -3781,11 +3795,13 @@ class analyze_slam:
     @staticmethod
     def closest_point_distance_to_line_segment(A, B, P):
         """
+        Calculates the closest point, Q, on a line, defined by A and B, with point P.
+        Also returns the the distance between P and Q.
 
         :param A: [x, y] start of line segment
         :param B: [x, y] end of line segment
         :param P: [x, y] point of interest
-        :return:
+        :return: [Qx, Qy], distance
         """
         ABx = B[0] - A[0]
         ABy = B[1] - A[1]

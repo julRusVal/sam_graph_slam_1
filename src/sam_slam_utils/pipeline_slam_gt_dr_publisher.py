@@ -4,8 +4,9 @@ import gtsam
 import numpy as np
 
 import rospy
+import tf
 import tf2_ros
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 
@@ -57,21 +58,26 @@ class pipeline_sim_dr_gt_publisher:
         self.pub_gt_topic = '/gt_odom'
 
         # ===== Frame and tf stuff =====
-        self.map_frame = 'map'
+        self.map_frame = 'odom'  # 'map'
         self.robot_frame = 'sam0_base_link'
+        self.dr_tf_frame = 'dr_frame'  # Currently intended for the detector saving dr poses with pointcloud data
+
+        # Set up TF broadcaster
+        # self.tf_br = tf2_ros.TransformBroadcaster()  # was having problems!!! tuple has no attribute x
+        self.tf_br = tf.TransformBroadcaster()  # Feels bad to mix tf ans tf2
 
         # Set up TF listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        # Initialize variables
+        # ===== Initialize variables =====
         self.current_gt_pose = None  # PoseStamped()
         self.last_gt_pose = None  # PoseStamped()
 
         self.gt_between = None
         self.dr_pose3 = None
         self.dr_stamp = None
-        self.dr_frame = None
+        self.dr_frame = None  # parent frame of the dr odometry
 
         # Subscribe to simulated IMU topic
         self.imu_subscriber = rospy.Subscriber(self.imu_topic, Imu, self.imu_callback)
@@ -111,7 +117,6 @@ class pipeline_sim_dr_gt_publisher:
                 self.add_noise_to_initial_pose()
 
             # Publish dr and gt
-            print("initial")
             self.publish_dr_pose()
             self.publish_gt_pose()
 
@@ -242,6 +247,44 @@ class pipeline_sim_dr_gt_publisher:
 
         # Publish the Dead Reckoning pose
         self.dr_publisher.publish(dr_pose_msg)
+        self.publish_dr_transform(dr_pose_msg=dr_pose_msg)
+
+    def publish_dr_transform(self, dr_pose_msg: Odometry):
+        """
+        Publish the transform of the dr pose
+        :param dr_pose_msg: Odometry of the dr pose
+        :return:
+        """
+        # Generate content for transform
+        dr_timestamp = dr_pose_msg.header.stamp
+        dr_frame = dr_pose_msg.header.frame_id
+        dr_trans = (dr_pose_msg.pose.pose.position.x,
+                    dr_pose_msg.pose.pose.position.y,
+                    dr_pose_msg.pose.pose.position.z)
+        dr_rot = (dr_pose_msg.pose.pose.orientation.x,
+                  dr_pose_msg.pose.pose.orientation.y,
+                  dr_pose_msg.pose.pose.orientation.z,
+                  dr_pose_msg.pose.pose.orientation.w)
+
+        # Form transform for the tf2_ros broadcaster
+        # dr_t = TransformStamped()
+        # dr_t.header.stamp = dr_timestamp
+        # dr_t.header.frame_id = dr_frame
+        # dr_t.child_frame_id = self.dr_tf_frame
+        # dr_t.transform.translation = dr_trans
+        # dr_t.transform.rotation = dr_rot
+
+        # Attempt to broadcast
+        try:
+            # self.tf_br.sendTransform(transform=dr_t)  # tf2_ros broadcaster accepts a TransformStamped
+            self.tf_br.sendTransform(translation=dr_trans,
+                                     rotation=dr_rot,
+                                     time=dr_timestamp,
+                                     child=self.dr_tf_frame,
+                                     parent=dr_frame)
+
+        except rospy.ROSException as e:
+            rospy.logerr('Error broadcasting tf transform: {}'.format(str(e)))
 
 
 if __name__ == '__main__':
