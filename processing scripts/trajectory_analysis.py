@@ -65,7 +65,7 @@ class TrajectoryAnalysis:
     def __init__(self, ground_truth_trajectory_path, comparison_trajectory_path,
                  data_labels=[],
                  output_directory_path=None,
-                 plot_trajectory_name = None,
+                 plot_trajectory_name=None,
                  offset=0,
                  max_difference=0.0001,
                  scale=1.0,

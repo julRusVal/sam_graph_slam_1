@@ -8,7 +8,7 @@
     <param name="robot_name" value="$(arg robot_name)"/>
     <param name="frame" value="odom"/>
     <param name="robot_frame" value="sam0"/>
-    <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/pipeline"/>
+    <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/pipeline_2"/>
 
     <!-- Scenario parameters -->
     <param name="pipeline_scenario" value="True" />
@@ -110,7 +110,7 @@
     <node name="sam_slam_listener" pkg="sam_slam" type="sam_listener_online_slam_node.py" output="screen"/>
 
     <!-- Play the ROS bag -->
-    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 1 --clock /home/julian/filtered.bag"/>
+    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 5 --clock /home/julian/filtered.bag"/>
 
     <!-- scenario map and visualization -->
     <node name="pipeline_marker_node" pkg="sam_slam" type="pipeline_map_markers.py" output="screen" />

@@ -2990,10 +2990,12 @@ class analyze_slam:
 
     def save_3d_poses(self):
         """
-        Saves three files of the 3d poses of dr, estimate or final, online
+        Saves four files of the 3d poses of gt, dr, estimate or final, online
         format: [[timestamp, x, y, z, q_x, q_y, q_z, q_w]]
 
         Currently, the timestamp is just the index to allow for association between dr and estimation
+
+        NOTE: The GT isn't the true GT because only the pose2 is passed to the analyzer
 
         :return:
         """
@@ -3007,12 +3009,16 @@ class analyze_slam:
             print("Analysis output path not specified")
             return
 
+        gt_3d_poses = []
         dr_3d_poses = []
         est_3d_poses = []
         online_3d_poses = []
 
         # form the required list of lists
         for x_ind in range(len(self.x)):
+            # GT
+            gt_x, gt_y, gt_yaw = self.gt_poses[x_ind, :3]
+
             # DR
             dr_x, dr_y, dr_yaw = self.dr_poses[x_ind, :3]
 
@@ -3051,11 +3057,16 @@ class analyze_slam:
             pitch = dr_rpy[1]
             depth = self.slam.dr_pose_rpd[x_ind][2]
 
+            gt_quats_xyzw = quaternion_from_euler(roll, pitch, gt_yaw)  # output: [x, y, z, w]
             est_quats_xyzw = quaternion_from_euler(roll, pitch, est_yaw)  # output: [x, y, z, w]
             online_quats_xyzw = quaternion_from_euler(roll, pitch, online_yaw)  # output: [x, y, z, w]
 
             # Format: [timestamp, x, y, z, q_x, q_y, q_z, q_w]
             # NOTE: the order of of the quaternions, I'm sorry GTSAM is w,x,y,z while ROS is x,y,z,w
+
+            gt_3d_pose = [x_ind,
+                          gt_x, gt_y, -depth,
+                          gt_quats_xyzw[0], gt_quats_xyzw[1], gt_quats_xyzw[2], gt_quats_xyzw[3]]
 
             dr_3d_pose = [x_ind,
                           dr_x, dr_y, -depth,
@@ -3069,6 +3080,7 @@ class analyze_slam:
                               online_x, online_y, -depth,
                               online_quats_xyzw[0], online_quats_xyzw[1], online_quats_xyzw[2], online_quats_xyzw[3]]
 
+            gt_3d_poses.append(gt_3d_pose)
             dr_3d_poses.append(dr_3d_pose)
             est_3d_poses.append(est_3d_pose)
             online_3d_poses.append(online_3d_pose)
@@ -3076,6 +3088,7 @@ class analyze_slam:
         if yaw_error_flag:
             print("Error: save_3d_poses(), yaw_threshold exceeding")
 
+        write_array_to_csv(self.file_path + 'analysis_gt_3d.csv', gt_3d_poses)
         write_array_to_csv(self.file_path + 'analysis_dr_3d.csv', dr_3d_poses)
         write_array_to_csv(self.file_path + 'analysis_final_3d.csv', est_3d_poses)
         write_array_to_csv(self.file_path + 'analysis_online_3d.csv', online_3d_poses)
@@ -3476,9 +3489,12 @@ class analyze_slam:
         plt.ylabel('Error [m]', fontsize=self.label_size)
         plt.title('Error Comparison', fontsize=self.title_size)
         plt.legend(fontsize=self.legend_size)
+        plt.grid(True)
+
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-position-error.png", dpi=300)
 
         # Show the plot
-        plt.grid(True)
         plt.show()
 
         if gt_baseline:
@@ -3656,26 +3672,29 @@ class analyze_slam:
         post_error = calc_pose_error(self.posterior_poses, self.gt_poses)
 
         # Calculate MSE
-        dr_rmse_error = np.sqrt(np.mean(dr_error ** 2))
-        post_rmse_error = np.sqrt(np.mean(post_error ** 2))
+        dr_rmse_error = np.sqrt(np.sum(np.square(dr_error), axis=0))
+        post_rmse_error = np.sqrt(np.sum(np.square(post_error), axis=0))
 
         # ===== Plot =====
         fig, (ax_x, ax_y, ax_t) = plt.subplots(1, 3)
         # X error
         ax_x.plot(dr_error[:, 0], self.dr_color, label='Dead reckoning')
         ax_x.plot(post_error[:, 0], self.post_color, label='Posterior')
-        ax_x.title.set_text(f'X Error\nD.R. RMSE: {dr_rmse_error[0]:.4f}\n Posterior MSE: {post_rmse_error[0]:.4f}')
+        ax_x.title.set_text(f'X Error\nD.R. RMSE: {dr_rmse_error[0]:.4f}\n Posterior RMSE: {post_rmse_error[0]:.4f}')
         ax_x.legend()
         # Y error
         ax_y.plot(dr_error[:, 1], self.dr_color, label='Dead reckoning')
         ax_y.plot(post_error[:, 1], self.post_color, label='Posterior')
-        ax_y.title.set_text(f'Y Error\nD.R. MSE: {dr_rmse_error[1]:.4f}\n Posterior MSE: {post_rmse_error[1]:.4f}')
+        ax_y.title.set_text(f'Y Error\nD.R. RMSE: {dr_rmse_error[1]:.4f}\n Posterior RMSE: {post_rmse_error[1]:.4f}')
         ax_y.legend()
         # Theta error
         ax_t.plot(dr_error[:, 2], self.dr_color, label='Dead reckoning')
         ax_t.plot(post_error[:, 2], self.post_color, label='Posterior')
-        ax_t.title.set_text(f'Theta Error\nD.R. MSE: {dr_rmse_error[2]:.4f}\n Posterior MSE: {post_rmse_error[2]:.4f}')
+        ax_t.title.set_text(f'Theta Error\nD.R. RMSE: {dr_rmse_error[2]:.4f}\n Posterior RMSE: {post_rmse_error[2]:.4f}')
         ax_t.legend()
+
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-pose-error.png", dpi=300)
 
         plt.show()
 

@@ -88,6 +88,8 @@ def main():
                                                        plot_online=True,
                                                        plot_final=True)
 
+                listener.analysis.show_error()
+
             else:
                 listener.analysis.visualize_final(plot_gt=False,
                                                   plot_dr=False)
