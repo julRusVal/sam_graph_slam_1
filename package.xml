@@ -62,6 +62,7 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <depend>python-skimage-pip</depend>
+  <!-- <depend>python3-sklearn</depend> -->
 
 
   <!-- The export tag contains other, unspecified, tags -->

@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<!-- Launch file for Method 3, no rope landmarks, for IROS-->
+<!-- Source: run_sam_slam_real_no_rope.launch -->
+<launch>
+    <arg name="robot_name" default="sam"/>
+    
+    <!-- Node parameters -->
+    <param name="robot_name" value="$(arg robot_name)"/>
+    <param name="frame" value="map"/>
+    <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/icra_2024_baseline_1"/>
+
+    <!-- Data parameters -->
+    <param name="dr_update_time" value="2.0"/>
+    <param name="detect_update_time" value="0.5"/>
+
+    <param name="camera_update_time" value="5.0"/>
+    <param name="sss_update_time" value="1.0"/>
+    <param name="sss_buffer_len" value="10"/>
+
+    <!-- Detection and association parameters -->
+    <param name="simulated_data" value="False"/>
+    <param name="record_ground_truth" value="True"/>
+    <param name="manual_associations" value="False"/>
+    <param name="simulated_detections" value="True"/>
+    <param name="rope_associations" value="True"/>
+    <param name="prioritize_buoy_detections" value="True"/>
+    <param name="da_distance_threshold" value="7.5"/>
+    <param name="da_m_distance_threshold" value="-1.0"/>
+    <param name="individual_rope_detections" value="True"/>
+    <param name="update_priors" value="False"/>
+
+    <param name="use_rope_detections" value="False"/>
+    <param name="rope_batch_size" value="0"/>
+    <param name="rope_batch_by_line" value="False"/>
+    <param name="rope_batch_by_line_timeout" value="3"/>
+    <param name="batch_by_swath" value="False"/>
+
+    <!-- Detector data -->
+    <param name= "buoy_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_buoys.csv"/>
+    <param name= "rope_port_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_ropes_port.csv"/>
+    <param name= "rope_star_detections_path" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/image_process_ropes_star.csv"/>
+
+    <!-- Graph parameters -->
+    <!-- Currently using default ISAM2 parameters -->
+    <!-- Angles are in units of degrees, which are then converted to rads -->
+    <!-- Prior sigmas -->
+    <param name="prior_ang_sig_deg" value="10.0"/>
+    <param name="prior_dist_sig" value="10.0"/>
+    <!-- Buoy -->
+    <param name="buoy_dist_sig" value="1"/>
+    <!-- Odometry -->
+    <param name="odo_ang_sig_deg" value="0.5"/>
+    <param name="odo_dist_sig" value="0.1"/>
+
+    <!-- Detection sigmas -->
+    <!-- buoys -->
+    <param name="buoy_detect_ang_sig_deg" value="0.5"/>
+    <param name="buoy_detect_dist_sig" value=".25"/>
+    <!-- ropes -->
+    <param name="detect_ang_sig_deg" value="25.0"/>
+    <param name="detect_dist_sig" value="15.0"/>
+
+    <!-- Detection sigmas -->
+    <param name="rope_along_sig" value="15.0"/>
+    <param name="rope_cross_sig" value="1.0"/>
+
+    <!-- Output parameters -->
+    <param name="verbose_listener_DRs" value="false"/>
+    <param name="verbose_listener_detections" value="false"/>
+    <param name="verbose_listener_sonars" value="false"/>
+    <param name="verbose_listener_buoys" value="true"/>
+    <param name="verbose_listener_cameras" value="false"/>
+
+    <param name="verbose_graph_update" value="false"/>
+    <param name="verbose_graph_rope_detections" value="True"/>
+    <param name="verbose_graph_buoy_detections" value="True"/>
+    <param name="verbose_graph_rope_associations" value="False"/>
+    <param name="verbose_graph_buoy_associations" value="False"/>
+
+    <!-- NODES -->
+    <!-- start rviz -->
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find sam_slam)/rviz/rviz_real.rviz"/>
+
+    <!-- Sam SLAM -->
+    <node name="sam_slam_listener" pkg="sam_slam" type="sam_listener_online_slam_node.py" output="screen"/>
+
+    <!-- Play the ROS bag -->
+    <node name="rosbag_player" pkg="rosbag" type="play" args="-r 4 --clock /home/julian/sam_real_algae_2.bag"/>
+
+    <!-- gps and buoy node -->
+    <node name="gps_buoy_node" pkg="sam_dead_reckoning" type="algae_map_markers.py" output="screen" />
+
+    <!-- Manual detector -->
+    <node name="img_proc_detection_node" pkg="sss_object_detection" type="sss_detection_img_proc_publisher.py" output="screen" />
+
+    <!-- dr and gt markers -->
+    <node name="dr_gt_markers" pkg="sam_slam" type="odom_marker_republisher.py" output="screen" />
+
+</launch>

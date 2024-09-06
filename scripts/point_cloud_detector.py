@@ -67,8 +67,9 @@ class PointCloudDetector:
         self.point_cloud_topic = topic
 
         # Data frame setting
-        self.data_frame = 'odom'  # 'map' from of given mbes data
+        self.data_frame = 'odom'  # 'map' from given mbes data
         self.robot_frame = 'sam0'  # 'sam0_base_link' transform into robot frame
+        self.dr_tf_frame = 'dr_frame'  # frame of dr, used to transform mbes pointcloud
 
         # Verbose
         self.verbose_detector = rospy.get_param('~verbose_detector', "False")
@@ -89,6 +90,13 @@ class PointCloudDetector:
         else:
             self.save_location = ''
 
+        # Detector setting
+        self.add_noise = True
+        # Currently the noise is to the x, y, z coordinates provided by the detector
+        # It might be better to add some range and bearing noise
+        self.noise_sigmas = np.array((0.0, 0.1, 0.1))  # x, y, z noise added to
+        self.confidence_dummy = 0.5  # Confidence is just a dummy value for now
+
         # Initialize the saver node and tf
         print("Initializing point cloud saver")
         rospy.init_node('point_cloud_saver', anonymous=True)
@@ -96,7 +104,8 @@ class PointCloudDetector:
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         # Update time
-        self.min_update_time = 1  # rospy.get_param('min_update_time')
+        self.min_update_time = rospy.get_param('~detector_min_update_time', 1)
+        print(f"Detector min_update_time: {self.min_update_time}")
 
         # Set up subscriptions
         rospy.Subscriber(self.point_cloud_topic, pc2.PointCloud2, self.point_cloud_callback, queue_size=1)
@@ -111,8 +120,6 @@ class PointCloudDetector:
         self.detection_pub = rospy.Publisher(f'/{self.robot_name}/payload/sidescan/detection_hypothesis',
                                              Detection2DArray,
                                              queue_size=2)
-
-        self.confidence_dummy = 0.5  # Confidence is just a dummy value for now
 
     def point_cloud_callback(self, msg):
         time_now = rospy.Time.now()
@@ -166,14 +173,21 @@ class PointCloudDetector:
 
         if self.verbose_detector:
             secs = (process_end_time - process_start_time).to_sec()
-            nsecs = (process_end_time - process_start_time).to_nsec()
-            print(f"Detector - Processing time {secs:.2f} : {nsecs:.2f} nsecs")
+            print(f"Detector - Processing time {secs:.3f} secs")
 
         if detector.detection_coords_world.size != 3:
             print("No detection!!")
         else:
+
+            detection_coords_local = detector.detection_coords_world.reshape(3, 1)
+
+            # Corrupt detector output
+            if self.add_noise:
+                noise = np.random.normal(0, self.noise_sigmas).reshape(3,1)
+                detection_coords_local = detection_coords_local + noise
+
             # publish a marker indicating the position of the pipeline detection, world coords
-            detection_homo = np.vstack([detector.detection_coords_world.reshape(3, 1),
+            detection_homo = np.vstack([detection_coords_local,
                                         np.array([1])])
 
             detection_world = np.matmul(inverse_homogeneous_transform, detection_homo)
@@ -186,7 +200,8 @@ class PointCloudDetector:
             # print(f"Transformed: {detection_world}")
 
             # Publish the message for SLAM
-            self.publish_mbes_pipe_detection(detector.detection_coords_world, self.confidence_dummy, msg.header.stamp)
+            self.publish_mbes_pipe_detection(detection_coords_local, self.confidence_dummy, msg.header.stamp)
+
         # # Store the point cloud data, original and transformed
         if self.save_data:
             # TODO can these get out of sync? check?
@@ -331,7 +346,6 @@ class PointCloudDetector:
         detection_array_msg.detections.append(detection_msg)
 
         self.detection_pub.publish(detection_array_msg)
-        print("Published")
         return
 
 

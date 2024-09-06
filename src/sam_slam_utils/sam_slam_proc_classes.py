@@ -18,7 +18,7 @@ import math
 import matplotlib.pyplot as plt
 
 # Clustering
-from sklearn.mixture import GaussianMixture
+# from sklearn.mixture import GaussianMixture  # Remove for jetson compatibility
 
 # Graphing graphs
 import networkx as nx
@@ -60,6 +60,24 @@ def correct_dr(uncorrected_dr: gtsam.Pose2):
     #                    theta=np.pi - uncorrected_dr.theta())
 
     return uncorrected_dr
+
+
+def calculate_angle(x1, y1, x2, y2):
+    dx = x2 - x1
+    dy = y2 - y1
+    angle = math.atan2(dy, dx)
+    return angle
+
+
+def calculate_distance(x1, y1, x2, y2):
+    distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    return distance
+
+
+def calculate_center(x1, y1, x2, y2):
+    x_center = (x1 + x2) / 2.0
+    y_center = (y1 + y2) / 2.0
+    return np.array((x_center, y_center), dtype=np.float64)
 
 
 # %% Classes
@@ -650,6 +668,14 @@ class online_slam_2d:
         else:
             self.file_path = path_name + '/'
 
+        # ===== Frames =====
+        self.map_frame = rospy.get_param("frame", "map")
+        self.robot_frame = rospy.get_param("robot_frame", "")
+        self.est_frame = rospy.get_param("est_frame", "estimated/base_link")
+
+        # TF broadcaster
+        self.tf_br = tf.TransformBroadcaster()
+
         # ===== Graph parameters =====
         self.graph = gtsam.NonlinearFactorGraph()
         self.parameters = gtsam.ISAM2Params()
@@ -807,11 +833,14 @@ class online_slam_2d:
 
         # ===== rope prior map =====
         self.n_ropes = None
-        self.rope_priors = None
-        self.rope_centers = None
+        self.rope_prior_ends = None  # [[[start_x, start_y],[end_x, end_y]], ...]
+        self.rope_prior_centers = None
         self.rope_noise_models = None
-        # TODO: find better way of getting rope layout into online slam
-        # currently ropes an buoys are sent as rviz markers
+        self.rope_infos = None  # Per line info, [[center_x, center_y, sig_xx, sig_xy, sig_yx, sig_yy], ...]
+        # currently ropes an buoys locations are sent as rviz markers
+        # The structure is defined in the sam_listener_online_slam_node.py
+        # Format: [[line_1_start_buoy_ind, line_1_end_buoy_ind], ... ,[line_n_start_buoy_ind, line_n_end_buoy_ind]]
+        # This can also be defined in the launch file as a parameter with the name 'pipeline_lines'
         self.rope_buoy_ind = ropes_by_buoy_ind
 
         # ===== Optimizer and values =====
@@ -851,7 +880,7 @@ class online_slam_2d:
         self.est_path_pub = rospy.Publisher('/sam_slam/est_path', Path, queue_size=10)
         # Rope detections
         self.est_rope_pub = rospy.Publisher('/sam_slam/est_rope', MarkerArray, queue_size=10)
-        self.rope_marker_scale = 0.5
+        self.rope_marker_scale = 10
         self.rope_marker_color = ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.75)
         # Buoy detections
         self.est_buoy_pub = rospy.Publisher('/sam_slam/est_buoys', MarkerArray, queue_size=10)
@@ -920,7 +949,7 @@ class online_slam_2d:
         Calculate relevant stuff for adding rope priors to the detections
 
         Assumptions:
-        - nominally horizontal rows, more checks need to handle vertical. This will effect the cross and along variances
+        - nominally horizontal rows, more checks need to handle vertical. This will affect the cross and along variances
         - along variance is not currently scaled to the length of the rope
             This is done in testing_covar.py
         :param ropes:
@@ -930,31 +959,87 @@ class online_slam_2d:
         # if self.b is None:
         #     return
 
-        # These are the spatial coords of the rope ends
-        self.rope_priors = ropes
+        print("Rope setup starting ")
+
+        if self.rope_map_present:
+            print(f"Rope(s) already set")
+            return
 
         # In general, we want to work with the ropes wrt to the b indices that make up the ropes
         # TODO bring into agreement with the update
-        n_ropes_spatial = len(ropes)
+        # Ropes are added via two methods
+        # 1) markers --> this was the original but its kind of weird and doesnt work with the pipeline scenario??
+        # 2) A list of buoy indices, [[start_ind, end_ind], ...]
+        if ropes is None:
+            n_ropes_spatial = 0
+        else:
+            n_ropes_spatial = len(ropes)
+
         n_ropes_inds = len(self.rope_buoy_ind)
 
-        if n_ropes_inds != n_ropes_spatial:
-            raise Exception("Rope layout mismatch: check node node script and rope marker publisher script")
+        # Change to using supplied indices by default
+        if n_ropes_inds > 0 and self.buoy_map_present is False:
+            print("Rope Setup is waiting for buoys to be defined")
+            return -1
 
-        self.n_ropes = n_ropes_inds
+        if n_ropes_inds > 0:
+            self.n_ropes = n_ropes_inds
+        else:
+            self.n_ropes = n_ropes_spatial
+
+        # if n_ropes_inds != n_ropes_spatial:
+        #     raise Exception("Rope layout mismatch: check node node script and rope marker publisher script")
 
         # Initialize the rope means and covariances
-        self.rope_centers = {}
+        self.rope_prior_ends = []  # List of rope end points, each rope in the form: [start_x, start_y],[end_x, ]]
+        self.rope_prior_centers = {}
         self.rope_noise_models = {}
-        for rope_ind, rope in enumerate(self.rope_priors):
-            start_x, start_y = rope[0][0], rope[0][1]
-            end_x, end_y = rope[1][0], rope[1][1]
+        self.rope_infos = []  # Per line info for debugging, [[center_x, center_y, sig_xx, sig_xy, sig_yx, sig_yy], ...]
 
-            self.rope_centers[rope_ind] = online_slam_2d.calculate_center(start_x, start_y, end_x, end_y)
+        for rope_ind in range(self.n_ropes):
+            if n_ropes_inds:
+                start_buoy = self.rope_buoy_ind[rope_ind][0]
+                end_buoy = self.rope_buoy_ind[rope_ind][1]
+                start_x, start_y = self.buoy_priors[start_buoy, 0], self.buoy_priors[start_buoy, 1]
+                end_x, end_y = self.buoy_priors[end_buoy, 0], self.buoy_priors[end_buoy, 1]
+            else:
+                rope = ropes[rope_ind]
+                start_x, start_y = rope[0][0], rope[0][1]
+                end_x, end_y = rope[1][0], rope[1][1]
+
+            print(f"Rope {rope_ind}: ({start_x},{start_y}) ({end_x},{end_y})")
+
+            # Record the rope prior end points
+            self.rope_prior_ends.append([[start_x, start_y], [end_x, end_y]])
+
+            # Determines and record rope prior mean
+            centers = online_slam_2d.calculate_center(start_x, start_y, end_x, end_y)
+            self.rope_prior_centers[rope_ind] = centers
+
+            # === Determine covariances of rope priors ===
+            # These covariances are define with an along rope and cross rope components.
+            # Two methods are used to determine the along rope component.
+            # 1) Scaled: negative values indicate the along rope variance will be scaled
+            # 2) Fixed: The specified value is used, no scaling is applied
+            # Scaled covariance
+            # negative values indicate that the value, N, is to be scaled with the length of the line, L.
+            # Such that sigma = L/(2 * N).Default is 3.
+            if self.rope_along_sig_init <= 0:
+                if self.rope_along_sig_init == 0:
+                    n_sigmas = 3  # n_sigmas does not have to be a int
+                else:
+                    n_sigmas = abs(self.rope_along_sig_init)
+
+                rope_length = self.calculate_distance(start_x, start_y, end_x, end_y)
+                scaled_rope_along_sig_init = rope_length / (2 * n_sigmas)
+
+                cov_matrix = np.array([[scaled_rope_along_sig_init ** 2, 0.0],
+                                       [0.0, self.rope_cross_sig_init ** 2]])
 
             # This is the 'basic' covariance, it needs to be rotated to align with the rope
-            cov_matrix = np.array([[self.rope_along_sig_init ** 2, 0.0],
-                                   [0.0, self.rope_cross_sig_init ** 2]])
+            else:
+                cov_matrix = np.array([[self.rope_along_sig_init ** 2, 0.0],
+                                       [0.0, self.rope_cross_sig_init ** 2]])
 
             # Rotate the cov_matrix to align with the rope
             rope_angle = online_slam_2d.calculate_angle(start_x, start_y, end_x, end_y)
@@ -962,7 +1047,15 @@ class online_slam_2d:
                                         [np.sin(rope_angle), np.cos(rope_angle)]])
             rot_cov_matrix = rotation_matrix @ cov_matrix @ rotation_matrix.transpose()
 
+            # Record noise model, used for data and prior associations
             self.rope_noise_models[rope_ind] = gtsam.noiseModel.Gaussian.Covariance(rot_cov_matrix)
+
+            # Record rope info for debugging and post processing checks
+            rope_info = [centers[0], centers[1],
+                         rot_cov_matrix[0, 0], rot_cov_matrix[0, 1],
+                         rot_cov_matrix[1, 0], rot_cov_matrix[1, 1]]
+            print(f"Rope info:{rope_info}")
+            self.rope_infos.append(rope_info)
 
         # labels
         self.l = {k: gtsam.symbol('l', k) for k in range(self.n_ropes)}
@@ -973,7 +1066,8 @@ class online_slam_2d:
         # self.l are the 'line' objects
         for id_rope in range(self.n_ropes):
             # Prior
-            prior = np.array((self.rope_centers[id_rope][0], self.rope_centers[id_rope][1]), dtype=np.float64)
+            prior = np.array((self.rope_prior_centers[id_rope][0], self.rope_prior_centers[id_rope][1]),
+                             dtype=np.float64)
 
             # Add prior factor
             self.graph.addPriorPoint2(self.l[id_rope], prior, self.rope_noise_models[rope_ind])
@@ -983,8 +1077,13 @@ class online_slam_2d:
 
         # Indicate that the rope setup is complete
         self.rope_map_present = True
+
         print("Rope setup: Complete")
-        return
+
+        np.savetxt(self.file_path + 'rope_info.csv',
+                   np.array(self.rope_infos), delimiter=',', fmt='%.3f')
+        print(f"Rope info saved: {self.file_path + 'rope_info.csv'}")
+        return 1
 
     def rope_update(self, debug=False):
         """
@@ -999,11 +1098,13 @@ class online_slam_2d:
         """
         # TODO rope_setup() and rope_update() should both use the index of buoys to define ropes
 
-        if self.rope_centers is None or self.rope_noise_models is None:
+        if self.rope_prior_centers is None or self.rope_noise_models is None:
             return
 
-        self.rope_centers = {}
+        self.rope_prior_ends = []
+        self.rope_prior_centers = {}
         self.rope_noise_models = {}
+
         for rope_ind, rope in enumerate(self.rope_buoy_ind):
             start_buoy_ind = rope[0]
             end_buoy_ind = rope[1]
@@ -1011,13 +1112,15 @@ class online_slam_2d:
             start_x, start_y = self.current_estimate.atPoint2(self.b[start_buoy_ind])
             end_x, end_y = self.current_estimate.atPoint2(self.b[end_buoy_ind])
 
+            self.rope_prior_ends.append([[start_x, start_y], [end_x, end_y]])
+
             if debug:
-                original = self.rope_priors[rope_ind]
+                original = self.rope_prior_ends[rope_ind]
                 print(f"old rope {rope_ind}: "
                       f"({original[0][0]:.2f}, {original[0][1]:.2f}) ({original[1][0]:.2f}, {original[1][1]:.2f})")
                 print(f"New rope {rope_ind}: ({start_x:.2f},{start_y:.2f}) ({end_x:.2f},{end_y:.2f})")
 
-            self.rope_centers[rope_ind] = online_slam_2d.calculate_center(start_x, start_y, end_x, end_y)
+            self.rope_prior_centers[rope_ind] = online_slam_2d.calculate_center(start_x, start_y, end_x, end_y)
 
             # This is the 'basic' covariance, it needs to be rotated to align with the rope
             cov_matrix = np.array([[self.rope_along_sig_init ** 2, 0.0],
@@ -1262,8 +1365,16 @@ class online_slam_2d:
 
     def online_update_queued(self, dr_pose, gt_pose, relative_detection=None, id_string=None, da_id=None, seq_id=None):
         """
-        Pose format [x, y, z, q_w, q_x, q_y, q_z]
+
+        :param dr_pose: Pose format [x, y, z, q_w, q_x, q_y, q_z]
+        :param gt_pose: Pose format [x, y, z, q_w, q_x, q_y, q_z]
+        :param relative_detection:
+        :param id_string: string used to identify if new node corresponds
+        :param da_id:
+        :param seq_id:
+        :return:
         """
+
         if not self.initial_pose_set:
             print("Attempting to update before initial pose")
             self.add_first_pose(dr_pose=dr_pose, gt_pose=gt_pose, id_string=id_string)
@@ -1358,7 +1469,7 @@ class online_slam_2d:
                 relative_detection_state = 0
 
                 # === Buoy ===
-                if relative_detection is not None and da_id != -ObjectID.ROPE.value:
+                if relative_detection is not None and da_id != -ObjectID.ROPE.value and da_id != -ObjectID.PIPE.value:
                     # Detection state info
                     relative_detection_state = 1  # perfomance metrics
 
@@ -1467,7 +1578,7 @@ class online_slam_2d:
                             self.graph.add(x_b_range_bearing_factor)
 
                 # === Rope ===
-                if relative_detection is not None and da_id == -ObjectID.ROPE.value:
+                if relative_detection is not None and (da_id == -ObjectID.ROPE.value or da_id == -ObjectID.PIPE.value):
                     # Detection state info
                     relative_detection_state = 2  # performance metrics
                     valid_rope = True
@@ -1487,8 +1598,14 @@ class online_slam_2d:
                     detect_range = computed_est.range(self.est_detect_loc)
 
                     if self.verbose_graph_rope_detections:
-                        print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
-                              f' Seq id: {seq_id}')
+                        # Verbose rope
+                        if da_id == -ObjectID.ROPE.value:
+                            print(f'Rope detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
+                                  f' Seq id: {seq_id}')
+                        # Verbose pipe
+                        if da_id == -ObjectID.PIPE.value:
+                            print(f'Pipe detection - range: {detect_range:.2f}  bearing: {detect_bearing.theta():.2f}' +
+                                  f' Seq id: {seq_id}')
 
                     # ===== Add detection to graph =====
                     # Add the rope landmark
@@ -1514,7 +1631,9 @@ class online_slam_2d:
                     # Sets rope prior bases on average of buoy positions
                     # This will allow for plotting/mapping of rope detections but doesn't make them very useful for
                     # localization.
-                    if self.rope_priors is None:
+                    if self.rope_prior_ends is None:
+                        if self.verbose_graph_rope_associations:
+                            print("Data Association: Naive")
                         avg_rope_position = np.array((self.buoy_average[0], self.buoy_average[1]), dtype=np.float64)
                         if self.individual_rope_detections:
                             # Swath Updating
@@ -1546,12 +1665,20 @@ class online_slam_2d:
                     else:
                         # Manual associations based on seq
                         if self.batch_by_swath_manual_rope_da and self.current_swath_ind > -1:
+                            if self.verbose_graph_rope_associations:
+                                print("Data Association: Manual")
                             rope_association_ind = self.swath_line_inds[self.current_swath_ind]
+
                         # Data association based on Euclidean distance
-                        elif current_covariance is None:
+                        elif current_covariance is None or True:
+                            if self.verbose_graph_rope_associations:
+                                print("Data Association: Euclidean")
                             rope_association_ind = self.associate_rope_detection(self.est_detect_loc)
+
                         # Data association based on max likelihood, requires marginal computation by GTSAM
                         else:
+                            if self.verbose_graph_rope_associations:
+                                print("Data Association: Likelihood")
                             rope_association_ind, _, _ = self.associate_rope_detection_likelihood(self.est_detect_loc,
                                                                                                   current_covariance)
                         self.r_associations[self.current_r_ind] = rope_association_ind
@@ -1567,19 +1694,19 @@ class online_slam_2d:
                                     if self.current_swath_ind > -1:
                                         self.batch_swath_priors[self.current_swath_ind].append(
                                             [self.r[self.current_r_ind],
-                                             self.rope_centers[
+                                             self.rope_prior_centers[
                                                  rope_association_ind],
                                              self.rope_noise_models[
                                                  rope_association_ind]])
                                 # Batch updating of rope detections
                                 elif self.rope_batch_size >= 0:
                                     self.rope_batch_priors.append([self.r[self.current_r_ind],
-                                                                   self.rope_centers[rope_association_ind],
+                                                                   self.rope_prior_centers[rope_association_ind],
                                                                    self.rope_noise_models[rope_association_ind]])
                                 # Individual updating of rope detections
                                 else:
                                     self.graph.addPriorPoint2(self.r[self.current_r_ind],
-                                                              self.rope_centers[rope_association_ind],
+                                                              self.rope_prior_centers[rope_association_ind],
                                                               self.rope_noise_models[rope_association_ind])
 
                         # The Nacho method is used when the individual_rope_detections is set to False
@@ -1824,8 +1951,8 @@ class online_slam_2d:
                     print(f"Done with update - x{self.current_x_ind}: {update_time} s")
 
                 # === Debug publishing ===
-                self.publish_estimated_pos_marker_and_transform(computed_est)
-                self.publish_est_path()
+                self.publish_estimated_pos_marker_and_transform(computed_est, plot_full_state=True)
+                self.publish_est_path(plot_full_state=True)
                 self.publish_rope_detections()
                 self.publish_est_buoys()
                 if not self.individual_rope_detections:
@@ -1941,7 +2068,7 @@ class online_slam_2d:
         # Find the correspondence between detection and rope prior, closest for now
         min_distance = np.inf
         min_ind = -1
-        for rope_ind, rope in enumerate(self.rope_priors):
+        for rope_ind, rope in enumerate(self.rope_prior_ends):
             start_x, start_y = rope[0][0], rope[0][1]
             end_x, end_y = rope[1][0], rope[1][1]
 
@@ -1981,13 +2108,84 @@ class online_slam_2d:
         # Find the correspondence between detection and rope prior, closest for now
         min_distance = np.inf
         min_ind = -1
-        for rope_ind, rope in enumerate(self.rope_priors):
+        for rope_ind, rope in enumerate(self.rope_prior_ends):
             # Rope start and end coords
             start_x, start_y = rope[0][0], rope[0][1]
             end_x, end_y = rope[1][0], rope[1][1]
 
             # rope mean and covariance
-            rope_mean = np.array(self.rope_centers[rope_ind])
+            rope_mean = np.array(self.rope_prior_centers[rope_ind])
+            rope_covar = self.rope_noise_models[rope_ind].covariance()
+
+            # Total covariance, assuming they are independent
+            total_covar = detection_covariance + rope_covar
+
+            # Calculate likelihood
+            likelihood = scipy.stats.multivariate_normal.pdf(detection_map_location,
+                                                             mean=rope_mean,
+                                                             cov=total_covar)
+
+            likelihoods.append(likelihood)
+
+            # Calculate distance, 2-norm
+            distance = online_slam_2d.calculate_line_point_distance(start_x, start_y, end_x, end_y,
+                                                                    detection_map_location[0],
+                                                                    detection_map_location[1])
+            distances_2_norm.append(distance)
+
+            # calculate distances, mahalanobis
+            total_covar_inv = scipy.linalg.inv(total_covar)
+            distance_m = scipy.spatial.distance.mahalanobis(detection_map_location, rope_mean, total_covar_inv)
+
+            distances_m.append(distance_m)
+
+        # Analysis
+        likelihood_max_ind = np.argmax(likelihoods)
+        # distance_min_ind = np.argmin(distances_2_norm)
+
+        if self.verbose_graph_rope_associations:
+            print("Rope detection - stats")
+            print(f"Likelihood: {likelihoods[likelihood_max_ind]:.2e} ({likelihood_max_ind})")
+            print(f"Distance, Mahalanobis: {distances_m[likelihood_max_ind]:.2e} ({likelihood_max_ind})")
+            print(f"Distance, 2-norm: {distances_2_norm[likelihood_max_ind]:.2e} ({likelihood_max_ind})")
+
+        return likelihood_max_ind, distances_2_norm[likelihood_max_ind], distances_m[likelihood_max_ind]
+
+    def associate_rope_detection_likelihood_2(self, detection_map_location, detection_covariance):
+        """
+        This is an updated version of the updated association of rope detections to rope priors.
+        Follows the form of associate_detection_likelihood.
+
+        See test_covar.py for
+
+        # TODO figure out a beter method
+
+        :param detection_map_location:
+        :param detection_covariance:
+        :return:
+        """
+
+        likelihoods = []
+        distances_2_norm = []
+        distances_m = []
+
+        # check detection covariance shape
+        # The raw covariance is x,y,theta in this implementation the non-linear aspects are ignored.
+        # The uncertainty of the measurement is taken to be the positional uncertainty of the agent
+        # The mean value of the measurement is the mean value of the agent with the relative detection applied.
+        if detection_covariance.shape[0] == 3:
+            detection_covariance = detection_covariance[0:2, 0:2]
+
+        # Find the correspondence between detection and rope prior, closest for now
+        min_distance = np.inf
+        min_ind = -1
+        for rope_ind, rope in enumerate(self.rope_prior_ends):
+            # Rope start and end coords
+            start_x, start_y = rope[0][0], rope[0][1]
+            end_x, end_y = rope[1][0], rope[1][1]
+
+            # rope mean and covariance
+            rope_mean = np.array(self.rope_prior_centers[rope_ind])
             rope_covar = self.rope_noise_models[rope_ind].covariance()
 
             # Total covariance, assuming they are independent
@@ -2052,7 +2250,7 @@ class online_slam_2d:
                     print(factor)
 
                 new_prior = gtsam.PriorFactorPoint2(factor_key,
-                                                    self.rope_centers[self.r_associations[key_idx]],
+                                                    self.rope_prior_centers[self.r_associations[key_idx]],
                                                     self.rope_noise_models[self.r_associations[key_idx]])
                 self.graph.replace(factor_idx, new_prior)
 
@@ -2067,10 +2265,10 @@ class online_slam_2d:
         Publishes some markers for debugging estimated detection location and the DA location
         """
 
-        ### Estimated detection location
+        # === Estimated detection location ===
         # Form detection marker message
         detection_marker = Marker()
-        detection_marker.header.frame_id = 'map'
+        detection_marker.header.frame_id = self.map_frame
         detection_marker.type = Marker.SPHERE
         detection_marker.action = Marker.ADD
         detection_marker.id = 0
@@ -2099,7 +2297,7 @@ class online_slam_2d:
         if da_id > 0:
             # Form DA marker message
             da_marker = Marker()
-            da_marker.header.frame_id = 'map'
+            da_marker.header.frame_id = self.map_frame
             da_marker.type = Marker.CYLINDER
             da_marker.action = Marker.ADD
             da_marker.id = 0
@@ -2122,70 +2320,88 @@ class online_slam_2d:
             # Publish DA marker message
             self.da_pub.publish(da_marker)
 
-    def publish_estimated_pos_marker_and_transform(self, est_pos):
+    def publish_estimated_pos_marker_and_transform(self, est_pos, plot_full_state=False):
         """
         Publishes some markers for debugging estimated detection location and the DA location
         """
-        heading_quat = quaternion_from_euler(0, 0, est_pos.theta())
-        heading_quaternion_type = Quaternion(*heading_quat)
+        if plot_full_state:
+            # TODO explicitly look up correct roll, pitch, depth
+            # Currently assuming the most recent corresponds to the correct values
+            heading_quat = quaternion_from_euler(self.dr_pose_rpd[-1][0], self.dr_pose_rpd[-1][1], est_pos.theta())
+            heading_quaternion_type = Quaternion(*heading_quat)
+            est_z = self.dr_pose_rpd[-1][2]  # depth
+        else:
+            heading_quat = quaternion_from_euler(0, 0, est_pos.theta())
+            heading_quaternion_type = Quaternion(*heading_quat)
+            est_z = 0.0
 
         # Estimated detection location
         marker = Marker()
-        marker.header.frame_id = 'map'
+        marker.header.frame_id = self.map_frame
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
         marker.id = 0
         marker.lifetime = rospy.Duration(0)
         marker.pose.position.x = est_pos.x()
         marker.pose.position.y = est_pos.y()
-        marker.pose.position.z = 0.0
+        marker.pose.position.z = est_z
         marker.pose.orientation = heading_quaternion_type
         marker.scale.x = self.est_marker_x
         marker.scale.y = self.est_marker_y
         marker.scale.z = self.est_marker_z
-        marker.color.r = 0.0
-        marker.color.g = 0.6
-        marker.color.b = 0.0
+        marker.color.r = 0.1
+        marker.color.g = 0.1
+        marker.color.b = 1.0
         marker.color.a = 1.0
 
         self.est_pos_pub.publish(marker)
 
-        # publish transform of estimate
-        br = tf.TransformBroadcaster()
+        # print(f"Transform broadcaster: estimated pose {self.map_frame} -> {self.est_frame}")
         try:
-            br.sendTransform((est_pos.x(), est_pos.y(), 0),
-                             (heading_quaternion_type.x,
-                              heading_quaternion_type.y,
-                              heading_quaternion_type.z,
-                              heading_quaternion_type.w),
-                             rospy.Time.now(),
-                             "estimated/base_link",
-                             "map")
+            self.tf_br.sendTransform(translation=(est_pos.x(), est_pos.y(), 0),
+                                     rotation=(heading_quaternion_type.x,
+                                               heading_quaternion_type.y,
+                                               heading_quaternion_type.z,
+                                               heading_quaternion_type.w),
+                                     time=rospy.Time.now(),
+                                     child=self.est_frame,
+                                     parent=self.map_frame)
+
         except rospy.ROSException as e:
             rospy.logerr('Error broadcasting tf transform: {}'.format(str(e)))
 
-    def publish_est_path(self):
+    def publish_est_path(self, plot_full_state=False):
 
         poses_path = Path()
-        poses_path.header.frame_id = 'map'
+        poses_path.header.frame_id = self.map_frame
 
-        # Copy as elements can be added to the graph will looping over the elements
-        key_dict_copy = self.x.copy()
+        # Copy so elements can be added to the graph will looping over the elements
+        key_dict_copy = self.x.copy()  # {x index: gtsam key}
 
-        for key in key_dict_copy.values():
-            if not self.current_estimate.exists(key):
+        for x_index, gtsam_key in key_dict_copy.items():
+            if not self.current_estimate.exists(gtsam_key):
                 print('publish_est_path: Key not found!')
                 continue
-            pose = self.current_estimate.atPose2(key)
+            if plot_full_state and 0 <= x_index < len(self.dr_pose_rpd):
+                roll = self.dr_pose_rpd[x_index][0]
+                pitch = self.dr_pose_rpd[x_index][1]
+                depth = self.dr_pose_rpd[x_index][2]
+            else:
+                roll = 0
+                pitch = 0
+                depth = 0
+
+            pose = self.current_estimate.atPose2(gtsam_key)
             pose_stamped = PoseStamped()
             pose_stamped.pose.position.x = pose.x()
             pose_stamped.pose.position.y = pose.y()
+            pose_stamped.pose.position.z = depth
 
-            heading_quat = quaternion_from_euler(0, 0, pose.theta())
+            heading_quat = quaternion_from_euler(roll, pitch, pose.theta())
             heading_quaternion_type = Quaternion(*heading_quat)
             pose_stamped.pose.orientation = heading_quaternion_type
 
-            pose_stamped.header.frame_id = 'map'
+            pose_stamped.header.frame_id = self.map_frame
             pose_stamped.header.stamp = rospy.Time.now()
 
             poses_path.poses.append(pose_stamped)
@@ -2218,7 +2434,7 @@ class online_slam_2d:
             valid_detection_count += 1
             detection_point = self.current_estimate.atPoint2(key)
             marker = Marker()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = self.map_frame
             marker.header.stamp = rospy.Time.now()
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
@@ -2268,7 +2484,7 @@ class online_slam_2d:
             valid_detection_count += 1
             detection_point = self.current_estimate.atPoint2(key)
             marker = Marker()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = self.map_frame
             marker.header.stamp = rospy.Time.now()
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
@@ -2321,7 +2537,7 @@ class online_slam_2d:
             valid_detection_count += 1
             detection_point = self.current_estimate.atPoint2(key)
             marker = Marker()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = self.map_frame
             marker.header.stamp = rospy.Time.now()
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
@@ -2377,7 +2593,7 @@ class online_slam_2d:
 
         msg = PoseWithCovarianceStamped()
         msg.header.stamp = rospy.Time.now()
-        msg.header.frame_id = 'map'
+        msg.header.frame_id = self.map_frame
         msg.pose.pose.position.x = landmark_point[0]
         msg.pose.pose.position.y = landmark_point[1]
         msg.pose.pose.position.z = 0.0
@@ -2520,6 +2736,7 @@ class analyze_slam:
         self.x = slam_object.x  # pose keys
         self.b = slam_object.b  # point keys
         self.r = slam_object.r  # rope keys (not found in offline processing)
+        self.r_associations = slam_object.r_associations
 
         # Dead reckoning poses and the between poses, ground truth poses
         self.dr_poses = pose2_list_to_nparray(slam_object.dr_Pose2s)
@@ -2566,9 +2783,12 @@ class analyze_slam:
 
         if self.n_rope_detects > 0:
             self.posterior_rope_detects = np.zeros((self.n_rope_detects, 2))
+            self.posterior_rope_associations = np.zeros((self.n_rope_detects,))
             for i in range(self.n_rope_detects):
                 self.posterior_rope_detects[i, 0] = self.current_estimate.atPoint2(self.r[i])[0]
                 self.posterior_rope_detects[i, 1] = self.current_estimate.atPoint2(self.r[i])[1]
+
+                self.posterior_rope_associations[i] = self.r_associations.get(i, -1)
 
         # ===== Unpack more relevant data from the slam object =====
         """
@@ -2634,6 +2854,11 @@ class analyze_slam:
             self.performance_metrics = np.array(slam_object.performance_metrics)
         else:
             self.performance_metrics = None
+
+        if hasattr(slam_object, 'rope_infos'):
+            self.rope_infos = np.array(slam_object.rope_infos)
+        else:
+            self.rope_infos = None
 
         # ===== Visualization parameters =====
         self.dr_color = 'r'
@@ -2765,10 +2990,12 @@ class analyze_slam:
 
     def save_3d_poses(self):
         """
-        Saves three files of the 3d poses of dr, estimate or final, online
+        Saves four files of the 3d poses of gt, dr, estimate or final, online
         format: [[timestamp, x, y, z, q_x, q_y, q_z, q_w]]
 
         Currently, the timestamp is just the index to allow for association between dr and estimation
+
+        NOTE: The GT isn't the true GT because only the pose2 is passed to the analyzer
 
         :return:
         """
@@ -2782,18 +3009,21 @@ class analyze_slam:
             print("Analysis output path not specified")
             return
 
+        gt_3d_poses = []
         dr_3d_poses = []
         est_3d_poses = []
         online_3d_poses = []
 
         # form the required list of lists
         for x_ind in range(len(self.x)):
+            # GT
+            gt_x, gt_y, gt_yaw = self.gt_poses[x_ind, :3]
+
             # DR
             dr_x, dr_y, dr_yaw = self.dr_poses[x_ind, :3]
 
             # X, Y, and yaw are estimated using the factor graph
             est_x, est_y, est_yaw = self.posterior_poses[x_ind, :3]
-
 
             online_x, online_y, online_yaw = self.online_poses[x_ind, :3]
 
@@ -2827,11 +3057,16 @@ class analyze_slam:
             pitch = dr_rpy[1]
             depth = self.slam.dr_pose_rpd[x_ind][2]
 
+            gt_quats_xyzw = quaternion_from_euler(roll, pitch, gt_yaw)  # output: [x, y, z, w]
             est_quats_xyzw = quaternion_from_euler(roll, pitch, est_yaw)  # output: [x, y, z, w]
             online_quats_xyzw = quaternion_from_euler(roll, pitch, online_yaw)  # output: [x, y, z, w]
 
             # Format: [timestamp, x, y, z, q_x, q_y, q_z, q_w]
             # NOTE: the order of of the quaternions, I'm sorry GTSAM is w,x,y,z while ROS is x,y,z,w
+
+            gt_3d_pose = [x_ind,
+                          gt_x, gt_y, -depth,
+                          gt_quats_xyzw[0], gt_quats_xyzw[1], gt_quats_xyzw[2], gt_quats_xyzw[3]]
 
             dr_3d_pose = [x_ind,
                           dr_x, dr_y, -depth,
@@ -2842,9 +3077,10 @@ class analyze_slam:
                            est_quats_xyzw[0], est_quats_xyzw[1], est_quats_xyzw[2], est_quats_xyzw[3]]
 
             online_3d_pose = [x_ind,
-                           online_x, online_y, -depth,
-                           online_quats_xyzw[0], online_quats_xyzw[1], online_quats_xyzw[2], online_quats_xyzw[3]]
+                              online_x, online_y, -depth,
+                              online_quats_xyzw[0], online_quats_xyzw[1], online_quats_xyzw[2], online_quats_xyzw[3]]
 
+            gt_3d_poses.append(gt_3d_pose)
             dr_3d_poses.append(dr_3d_pose)
             est_3d_poses.append(est_3d_pose)
             online_3d_poses.append(online_3d_pose)
@@ -2852,6 +3088,7 @@ class analyze_slam:
         if yaw_error_flag:
             print("Error: save_3d_poses(), yaw_threshold exceeding")
 
+        write_array_to_csv(self.file_path + 'analysis_gt_3d.csv', gt_3d_poses)
         write_array_to_csv(self.file_path + 'analysis_dr_3d.csv', dr_3d_poses)
         write_array_to_csv(self.file_path + 'analysis_final_3d.csv', est_3d_poses)
         write_array_to_csv(self.file_path + 'analysis_online_3d.csv', online_3d_poses)
@@ -2888,10 +3125,28 @@ class analyze_slam:
             return
 
         if self.performance_metrics is None:
-            print("Performance metrics no defined")
+            print("Performance metrics are not defined")
             return
 
         write_array_to_csv(self.file_path + 'performance_metrics.csv', self.performance_metrics)
+
+    def save_rope_info(self):
+        """
+        Saves three thing: camera_gt.csv, camera_dr.csv, camera_est.csv
+        format: [[update time, factor count]]
+
+        :return:
+        """
+
+        if self.file_path is None:
+            print("Analysis output path not specified")
+            return
+
+        if self.rope_infos is None:
+            print("Rope info is not defined")
+            return
+
+        write_array_to_csv(self.file_path + 'rope_infos.csv', self.rope_infos)
 
     # Plotting methods
     def find_plot_limits(self):
@@ -2934,7 +3189,8 @@ class analyze_slam:
         return
 
     def visualize_final(self, plot_gt=True, plot_dr=True, plot_buoy=True,
-                        plot_rope_lines=True, plot_rope_detects=True):
+                        plot_rope_lines=True, plot_rope_detects=True,
+                        rope_colors=None):
         """
         Visualize The Posterior
         """
@@ -3020,7 +3276,7 @@ class analyze_slam:
 
         # ===== Plot ropes =====
         if self.rope_buoy_ind is not None and len(self.rope_buoy_ind) > 0 and plot_rope_lines:
-            for rope in self.rope_buoy_ind:
+            for rope_ind, rope in enumerate(self.rope_buoy_ind):
                 if len(rope) != 2:
                     continue
                 rope_start_ind = int(rope[0])
@@ -3029,14 +3285,35 @@ class analyze_slam:
                 x1, y1 = self.posterior_buoys[rope_start_ind, :2]
                 x2, y2 = self.posterior_buoys[rope_end_ind, :2]
 
-                ax.plot([x1, x2], [y1, y2], color=self.rope_color)
+                if rope_colors is None:
+                    current_color = self.rope_color
+                else:
+                    current_color = np.array(rope_colors[rope_ind])
+
+                ax.plot([x1, x2], [y1, y2], color=current_color)
 
         # Plot the posterior poses
         ax.scatter(self.posterior_poses[:, 0], self.posterior_poses[:, 1], color='g', label='Final estimated poses')
 
         if plot_rope_detects and self.n_rope_detects > 0:
-            ax.scatter(self.posterior_rope_detects[:, 0], self.posterior_rope_detects[:, 1], color='gray',
-                       label='Rope detections')
+            # form color array
+            normal_rope_color = [0.5, 0.5, 0.5]
+            if rope_colors is None:
+                ax.scatter(self.posterior_rope_detects[:, 0], self.posterior_rope_detects[:, 1],
+                           color=normal_rope_color,
+                           label='Rope detections')
+            else:
+                # form detection colors
+                colors_array = np.zeros((self.n_rope_detects, 3))
+                for i in range(self.n_rope_detects):
+                    if 0 <= self.posterior_rope_associations[i] < len(rope_colors):
+                        colors_array[i, :] = rope_colors[int(self.posterior_rope_associations[i])]
+                    else:
+                        colors_array[i, :] = normal_rope_color
+
+                ax.scatter(self.posterior_rope_detects[:, 0], self.posterior_rope_detects[:, 1],
+                           color=colors_array,
+                           label='Rope detections')
 
         if self.corresponding_detections is not None:
             rope_errors = analyze_slam.calculate_distances(self.corresponding_detections[:, :2],
@@ -3164,40 +3441,66 @@ class analyze_slam:
 
         plt.show()
 
-    def plot_error_positions(self):
+    def plot_error_positions(self, gt_baseline=False, plot_dr=True, plot_online=True, plot_final=True):
         """
-        Plots the error between:
-        - dr and final
-        - online and final
+        Plots the error between the dr and baseline and the online estimate and the baseline.
+        The baseline is set by the gt_baseline argument.
+        - dr and final or gt
+        - online and final or gt
+
+        :param plot_final:
+        :param plot_online:
+        :param plot_dr:
+        :param gt_baseline: Bool, true specifies that the gt will be used
         :return:
         """
 
-        print("Analysis: plot_error_positions")
+        if gt_baseline:
+            print("Analysis: plot_error_positions - Ground truth baseline")
+            dr_error = analyze_slam.calculate_distances(self.dr_poses[:, :2], self.gt_poses[:, :2])
+            online_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.gt_poses[:, :2])
+            final_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.gt_poses[:, :2])
 
-        dr_error = analyze_slam.calculate_distances(self.dr_poses[:, :2], self.posterior_poses[:, :2])
-        online_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.posterior_poses[:, :2])
+            dr_rmse = np.sqrt(np.mean(dr_error ** 2))
+            online_rmse = np.sqrt(np.mean(online_error ** 2))
+            final_rmse = np.sqrt(np.mean(final_error ** 2))
 
-        dr_rmse = np.sqrt(np.mean(dr_error ** 2))
-        online_rmse = np.sqrt(np.mean(online_error ** 2))
+        else:
+            print("Analysis: plot_error_positions - Posterior baseline")
+            dr_error = analyze_slam.calculate_distances(self.dr_poses[:, :2], self.posterior_poses[:, :2])
+            online_error = analyze_slam.calculate_distances(self.online_poses[:, :2], self.posterior_poses[:, :2])
+
+            dr_rmse = np.sqrt(np.mean(dr_error ** 2))
+            online_rmse = np.sqrt(np.mean(online_error ** 2))
 
         # Create a plot
         plt.figure()
 
         # Plot squared error
-        plt.plot(dr_error, label=f'DR error, RMSE: {dr_rmse:.2f}', color=self.dr_color)
-        plt.plot(online_error, label=f'Online error, RMSE: {online_rmse:.2f}', color=self.online_color)
+        if plot_dr:
+            plt.plot(dr_error, label=f'DR error, RMSE: {dr_rmse:.2f}', color=self.dr_color)
+        if plot_online:
+            plt.plot(online_error, label=f'Online error, RMSE: {online_rmse:.2f}', color=self.online_color)
+        if gt_baseline and plot_final:
+            plt.plot(final_error, label=f'final error, RMSE: {final_rmse:.2f}', color=self.post_color)
 
         # Add labels and title
         plt.xlabel('Poses', fontsize=self.label_size)
         plt.ylabel('Error [m]', fontsize=self.label_size)
         plt.title('Error Comparison', fontsize=self.title_size)
         plt.legend(fontsize=self.legend_size)
+        plt.grid(True)
+
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-position-error.png", dpi=300)
 
         # Show the plot
-        plt.grid(True)
         plt.show()
 
-        data = np.vstack((dr_error, online_error))
+        if gt_baseline:
+            data = np.vstack((dr_error, online_error, final_error))
+        else:
+            data = np.vstack((dr_error, online_error))
         np.savetxt(self.file_path + 'dr_online_error.csv', data, delimiter=',')
 
     def show_graph_2d(self, label, show_final=True, show_dr=True):
@@ -3305,6 +3608,12 @@ class analyze_slam:
         plt.show()
 
     def visualize_clustering(self):
+        """
+        !OFFLINE SLAM ONLY!
+
+        This method is for visualizing the clustering of detections. This is only relevant for the offline SLAM.
+        :return:
+        """
         # ===== Plot detected clusters =====
         fig, ax = plt.subplots()
         plt.title(f'Clusters\n{self.n_clusters} Detected')
@@ -3350,31 +3659,42 @@ class analyze_slam:
 
     # Error metric methods
     def show_error(self):
+        """
+        !CURRENTLY BROKEN!
+        Plots the errors for x,y and yaw with the ground truth as a baseline
+        :return:
+        """
+
+        # TODO make a nice little error graph function for x, y, yaw
+
         # Find the errors between gt<->dr and gt<->post
         dr_error = calc_pose_error(self.dr_poses, self.gt_poses)
         post_error = calc_pose_error(self.posterior_poses, self.gt_poses)
 
         # Calculate MSE
-        dr_mse_error = np.square(dr_error).mean(0)
-        post_mse_error = np.square(post_error).mean(0)
+        dr_rmse_error = np.sqrt(np.sum(np.square(dr_error), axis=0))
+        post_rmse_error = np.sqrt(np.sum(np.square(post_error), axis=0))
 
         # ===== Plot =====
         fig, (ax_x, ax_y, ax_t) = plt.subplots(1, 3)
         # X error
         ax_x.plot(dr_error[:, 0], self.dr_color, label='Dead reckoning')
         ax_x.plot(post_error[:, 0], self.post_color, label='Posterior')
-        ax_x.title.set_text(f'X Error\nD.R. MSE: {dr_mse_error[0]:.4f}\n Posterior MSE: {post_mse_error[0]:.4f}')
+        ax_x.title.set_text(f'X Error\nD.R. RMSE: {dr_rmse_error[0]:.4f}\n Posterior RMSE: {post_rmse_error[0]:.4f}')
         ax_x.legend()
         # Y error
         ax_y.plot(dr_error[:, 1], self.dr_color, label='Dead reckoning')
         ax_y.plot(post_error[:, 1], self.post_color, label='Posterior')
-        ax_y.title.set_text(f'Y Error\nD.R. MSE: {dr_mse_error[1]:.4f}\n Posterior MSE: {post_mse_error[1]:.4f}')
+        ax_y.title.set_text(f'Y Error\nD.R. RMSE: {dr_rmse_error[1]:.4f}\n Posterior RMSE: {post_rmse_error[1]:.4f}')
         ax_y.legend()
         # Theta error
         ax_t.plot(dr_error[:, 2], self.dr_color, label='Dead reckoning')
         ax_t.plot(post_error[:, 2], self.post_color, label='Posterior')
-        ax_t.title.set_text(f'Theta Error\nD.R. MSE: {dr_mse_error[2]:.4f}\n Posterior MSE: {post_mse_error[2]:.4f}')
+        ax_t.title.set_text(f'Theta Error\nD.R. RMSE: {dr_rmse_error[2]:.4f}\n Posterior RMSE: {post_rmse_error[2]:.4f}')
         ax_t.legend()
+
+        if self.file_path is not None:
+            plt.savefig(self.file_path + "fig-pose-error.png", dpi=300)
 
         plt.show()
 
@@ -3384,6 +3704,10 @@ class analyze_slam:
         :return:
         """
         if self.buoy_detection_info is None:
+            return
+
+        if self.buoy_detection_info.size == 0:
+            print("Buoy detection info unpopulated!")
             return
 
         associations = self.buoy_detection_info[:, 0]
@@ -3490,11 +3814,13 @@ class analyze_slam:
     @staticmethod
     def closest_point_distance_to_line_segment(A, B, P):
         """
+        Calculates the closest point, Q, on a line, defined by A and B, with point P.
+        Also returns the the distance between P and Q.
 
         :param A: [x, y] start of line segment
         :param B: [x, y] end of line segment
         :param P: [x, y] point of interest
-        :return:
+        :return: [Qx, Qy], distance
         """
         ABx = B[0] - A[0]
         ABy = B[1] - A[1]

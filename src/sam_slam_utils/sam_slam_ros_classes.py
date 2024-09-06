@@ -215,6 +215,10 @@ class sam_slam_listener:
         self.dr_poses = []
         self.detections = []
 
+        # TODO figure out how to handle this scenario
+        # Originally roll, pitch, and depth were informed by the corresponding topics
+        # These topics are not available for the simulated pipeline data
+        self.use_raw_rpd = False
         self.rolls = []
         self.pitches = []
         self.depths = []
@@ -412,8 +416,13 @@ class sam_slam_listener:
         NOW: The data is saved in a list w/ format [x, y, z, q_w, q_x, q_y, q_z, roll, pitch, depth].
         Note the position of q_w, this is for compatibility with gtsam and matlab
         """
+        # wait for raw roll, pitch, depth
+        if self.use_raw_rpd:
+            if False in [self.roll_updated, self.pitch_updated, self.depth_updated]:
+                return
+
         # wait for gt (if this real)
-        if False in [self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+        if not self.gt_updated:
             return
 
         # transform odom to the map frame
@@ -424,9 +433,14 @@ class sam_slam_listener:
         dr_position = transformed_dr_pose.pose.position
         dr_quaternion = transformed_dr_pose.pose.orientation
 
-        curr_roll = self.rolls[-1]
-        curr_pitch = self.pitches[-1]
-        curr_depth = self.depths[-1]
+        if self.use_raw_rpd:
+            curr_roll = self.rolls[-1]
+            curr_pitch = self.pitches[-1]
+            curr_depth = self.depths[-1]
+        else:
+            (curr_roll, curr_pitch, _) = euler_from_quaternion([dr_quaternion.x, dr_quaternion.y,
+                                                                dr_quaternion.z, dr_quaternion.w])
+            curr_depth = dr_position.z
 
         # Record dr poses in format compatible with GTSAM
         if correct_dr:
@@ -502,25 +516,42 @@ class sam_slam_listener:
 
     def roll_callback(self, msg):
         """
+        update the list of rolls. These values are used for saving the complete dr pose.
+        The complete pose info is needed as the estimate is only 2D for now!
+        if self.use_raw_rpd is set to false this is done within the dead reckoning callback
         """
-        self.rolls.append(msg.data)
-        self.roll_updated = True
+        if self.use_raw_rpd:
+            self.rolls.append(msg.data)
+            self.roll_updated = True
 
     def pitch_callback(self, msg):
         """
+        update the list of pitches. These values are used for saving the complete dr pose.
+        The complete pose info is needed as the estimate is only 2D for now!
+        if self.use_raw_rpd is set to false this is done within the dead reckoning callback
         """
-        self.pitches.append(msg.data)
-        self.pitch_updated = True
+        if self.use_raw_rpd:
+            self.pitches.append(msg.data)
+            self.pitch_updated = True
 
     def depth_callback(self, msg):
         """
+        update the list of depths. These values are used for saving the complete dr pose.
+        The complete pose info is needed as the estimate is only 2D for now!
+        if self.use_raw_rpd is set to false this is done within the dead reckoning callback
         """
-        self.depths.append(msg.data)
-        self.depth_updated = True
+        if self.use_raw_rpd:
+            self.depths.append(msg.data)
+            self.depth_updated = True
 
     def det_callback(self, msg):
-        # Check that topics have received messages
-        if False in [self.dr_updated, self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+        # wait for raw roll, pitch, depth
+        if self.use_raw_rpd:
+            if False in [self.roll_updated, self.pitch_updated, self.depth_updated]:
+                return
+
+        # Check that dr and gt topics have received messages
+        if False in [self.dr_updated, self.gt_updated]:
             return
 
         # check elapsed time
@@ -657,12 +688,49 @@ class sam_slam_listener:
                     else:
                         print('Busy condition found - Detection - Rope')
 
+                # ===== Handle pipe detections =====
+                """
+                Pipe updates should be handled in the same manner as ropes
+                """
+                if detection_type == ObjectID.PIPE.value:
+                    # Log detection position
+                    # Append [x_map,y_map,z_map, x_rel, y_rel, z_vel, id,score, index of dr_pose_graph]
+                    self.rope_detections_graph.append([det_pos_map.pose.position.x,
+                                                       det_pos_map.pose.position.y,
+                                                       det_pos_map.pose.position.z,
+                                                       det_pose_base.pose.position.x,
+                                                       det_pose_base.pose.position.y,
+                                                       det_pose_base.pose.position.z,
+                                                       index])
+
+                    det_da = - ObjectID.PIPE.value  # -3
+
+                    # ===== Online detection update =====
+                    if self.online_graph is None:
+                        return
+                    if not self.online_graph.busy:
+                        if self.verbose_detections:
+                            print(f"Detection update - Pipe - x{self.online_graph.current_x_ind + 1}")
+                        self.online_graph.online_update_queued(dr_pose=dr_pose, gt_pose=gt_pose,
+                                                               relative_detection=np.array(
+                                                                   (det_pose_base.pose.position.x,
+                                                                    det_pose_base.pose.position.y),
+                                                                   dtype=np.float64),
+                                                               da_id=det_da,
+                                                               seq_id=detection_seq_id)
+                    else:
+                        print('Busy condition found - Detection - Rope')
     def sss_callback(self, msg):
         """
         The sss callback is responsible for filling the sss_buffer.
         """
-        # Check that topics have received messages
-        if False in [self.dr_updated, self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+        # wait for raw roll, pitch, depth
+        if self.use_raw_rpd:
+            if False in [self.roll_updated, self.pitch_updated, self.depth_updated]:
+                return
+
+        # Check that dr and gt topics have received messages
+        if False in [self.dr_updated, self.gt_updated]:
             return
 
         # Record start time
@@ -752,8 +820,13 @@ class sam_slam_listener:
         simulator in which the three images were mostly synchronized. The hope was to record all the desired images and
         only add one node in the graph for each set. Not sure if this holds for the actual AUV.
         """
-        # Check that topics have received messages
-        if False in [self.dr_updated, self.gt_updated, self.roll_updated, self.pitch_updated, self.depth_updated]:
+        # wait for raw roll, pitch, depth
+        if self.use_raw_rpd:
+            if False in [self.roll_updated, self.pitch_updated, self.depth_updated]:
+                return
+
+        # Check that dr and gt topics have received messages
+        if False in [self.dr_updated, self.gt_updated]:
             return
 
         # Identifies frames
@@ -902,9 +975,8 @@ class sam_slam_listener:
 
             if self.online_graph is not None and self.rope_associations:
                 print("Online: rope update")
-                self.online_graph.rope_setup(self.ropes)
-
-            self.rope_updated = True
+                if self.online_graph.rope_setup(self.ropes) == 1:
+                    self.rope_updated = True
 
     def buoy_callback(self, msg):
         # NOTE: The buoy publisher did not give each buoy a unique id.
@@ -919,7 +991,10 @@ class sam_slam_listener:
 
             for marker in msg.markers:
                 # See note above about buoy IDs
-                if self.simulated_data:
+                if self.pipeline_scenario:
+                    marker_id = int(marker.id)
+
+                elif self.simulated_data:
                     marker_id = int(marker_id_current)
                     marker_id_current += 1
                 else:
@@ -955,14 +1030,13 @@ class sam_slam_listener:
             if self.online_graph is not None:
                 # TODO Save final results
                 print("Initializing analysis")
-
                 self.analysis = analyze_slam(self.online_graph, self.file_path)
                 self.analysis.save_for_sensor_processing()
                 self.analysis.save_2d_poses()
                 self.analysis.save_3d_poses()
                 self.analysis.save_performance_metrics()
+                self.analysis.save_rope_info()
                 self.analysis.calculate_corresponding_points(debug=False)
-
                 print("Analysis initialized")
 
                 # All other analysis methods should most likely be called by sam_listener_online_slam_node.py
