@@ -16,6 +16,11 @@ title_size = 16
 legend_size = 12
 label_size = 12
 
+"""
+Check that the data provided matches the newest nomenclature. We have changed what the methods are reffered to as
+is the different revisions... 
+"""
+
 r_online_path = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_rope/analysis_online.csv'
 nr_online_path = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_no_rope/analysis_online.csv'
 new_online_path = '/home/julian/catkin_ws/src/sam_slam/processing scripts/data/real_testing_new/analysis_online.csv'
