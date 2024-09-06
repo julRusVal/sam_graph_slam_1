@@ -17,7 +17,7 @@ def main():
 
     # === Scenario Settings ===
     simulated_data = rospy.get_param('simulated_data', False)
-    pipeline_scenario = rospy.get_param('pipeline_scenario', 'False')
+    pipeline_scenario = rospy.get_param('pipeline_scenario', False)
     record_gt = rospy.get_param('record_ground_truth', False)
 
     # === Define rope structure for analysis and visualizations ===
