@@ -1362,7 +1362,7 @@ class process_sss:
             port_leading_windows[i] = leading_median
             port_trailing_windows[i] = trailing_median
 
-        # TODO More work to use the rope detections to determine the buoy offset
+        # TODO work to use the rope detections to determine the buoy offset
 
         if plot:
             # Form plot
@@ -1444,14 +1444,14 @@ class process_sss:
         port_valid_inds = np.nonzero(self.post_rope_inds_port[:])[0]
         if len(port_valid_inds) > 0:
             port_seq_ids = self.seq_ids[port_valid_inds]
-            port_valid = self.post_rope_inds_port[port_valid_inds]
+            port_range_ids = self.post_rope_inds_port[port_valid_inds]
 
             port_length = port_valid_inds.shape[0]
             self.final_ropes_port = np.zeros((port_length, 3))
 
             self.final_ropes_port[:, 0] = port_valid_inds[:]
             self.final_ropes_port[:, 1] = port_seq_ids[:]
-            self.final_ropes_port[:, 2] = port_valid[:]
+            self.final_ropes_port[:, 2] = port_range_ids[:]
 
             np.savetxt("data/image_process_ropes_port.csv", self.final_ropes_port, delimiter=",")
 
@@ -1459,14 +1459,14 @@ class process_sss:
         star_valid_inds = np.nonzero(self.post_rope_inds_star[:])[0]
         if len(star_valid_inds) > 0:
             star_seq_ids = self.seq_ids[star_valid_inds]
-            star_valid = self.post_rope_inds_star[star_valid_inds]
+            star_range_ids = self.post_rope_inds_star[star_valid_inds]
 
             star_length = star_valid_inds.shape[0]
             self.final_ropes_star = np.zeros((star_length, 3))
 
             self.final_ropes_star[:, 0] = star_valid_inds[:]
             self.final_ropes_star[:, 1] = star_seq_ids[:]
-            self.final_ropes_star[:, 2] = star_valid[:]
+            self.final_ropes_star[:, 2] = star_range_ids[:]
 
             np.savetxt("data/image_process_ropes_star.csv", self.final_ropes_star, delimiter=",")
 

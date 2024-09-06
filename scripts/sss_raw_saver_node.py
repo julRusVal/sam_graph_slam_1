@@ -10,7 +10,9 @@ from sam_slam_utils.sam_slam_helpers import write_array_to_csv
 Utility for viewing and saving the raw sidescan imagery produced by the sss_detector.
 This is based on the view_sidescan.py found in smarc_utils/sss_viewer
 
-Will save the all raw measurements and continue to show a buffers worth at all times. 
+Will save the all raw measurements and continue to show a buffers worth at all times.
+Will also save the sequence ID so that individual sss returns can be associated with the offline processing outputs.
+Note: Sequence IDs are not available in ROS 2
 """
 
 
