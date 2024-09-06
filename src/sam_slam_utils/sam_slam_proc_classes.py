@@ -18,7 +18,7 @@ import math
 import matplotlib.pyplot as plt
 
 # Clustering
-from sklearn.mixture import GaussianMixture
+# from sklearn.mixture import GaussianMixture  # Remove for jetson compatibility
 
 # Graphing graphs
 import networkx as nx

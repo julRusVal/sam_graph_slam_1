@@ -29,7 +29,7 @@ import collections
 import sys
 import argparse
 import numpy as np
-import sklearn as sk
+# import sklearn as sk
 import scipy as sp
 import scipy.optimize
 import scipy.stats

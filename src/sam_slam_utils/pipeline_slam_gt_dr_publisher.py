@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+from gtsam import Pose3
 import gtsam
+import math
 import numpy as np
 
 import rospy
@@ -87,18 +89,28 @@ class pipeline_sim_dr_gt_publisher:
         self.gt_publisher = rospy.Publisher(self.pub_gt_topic, Odometry, queue_size=10)
 
         # DR noise parameters
-        self.add_noise = True
-        self.bound_depth = True
-        self.bound_pitch_roll = True
+        self.add_noise = True  # See Initialization noise and Step noise for details
+        self.bound_depth = True  # See Depth noise for details, bounds DR depth w.r.t the ground truth values
+        self.bound_pitch_roll = True  # Bounds Dr roll and pitch using the values from initialization noise
+        self.sine_noise = True  # See Sine noise, Oscillatory noise added to the heading
 
-        # Initialization noise
+        # === Initialization noise ===
         self.init_position_sigmas = np.array([1.0, 1.0, 1.0])  # x, y, z
-        self.init_rotation_sigmas = np.array([np.pi / 1e3, np.pi / 1e3, np.pi / 50])  # roll, pitch, yaw
+        self.init_rotation_sigmas = np.array([np.pi / 1e3, np.pi / 1e3, np.pi / 1e2])  # roll, pitch, yaw
 
-        # Step noise
+        # === Step noise ===
+        # Step noise is given per second
+        # return_step_noise_pose3() is used to calculate the random noise added to the true step displacement
         self.delta_position_sigmas = np.array([0.001, 0.001, 0.001])  # x, y, z - per second
         self.delta_rotation_sigmas = np.array([np.pi / 1e5, np.pi / 1e5, np.pi / 1e2])  # roll, pitch, yaw - per second
 
+        # === Sine noise ===
+        # Add oscillatory heading noise
+        self.sine_noise_period = 10.0  # seconds
+        self.sine_noise_mag = np.pi/200  # rads
+        self.start_time = None  # seconds, float of start time
+
+        # === Depth noise ===
         self.depth_sigma = 0.1
 
         # ===== logging settings =====
@@ -115,6 +127,9 @@ class pipeline_sim_dr_gt_publisher:
 
             if self.add_noise:
                 self.add_noise_to_initial_pose()
+
+            # Record start time for sine noise
+            self.start_time = rospy.Time.now().to_sec()
 
             # Publish dr and gt
             self.publish_dr_pose()
@@ -184,8 +199,8 @@ class pipeline_sim_dr_gt_publisher:
         new_dr_pose = self.dr_pose3.compose(between_pose3)
 
         if self.add_noise:
-            noise_pose3 = self.return_step_noise_pose3(dt)
-            new_dr_pose = new_dr_pose.compose(noise_pose3)
+            noise_pose = self.return_step_noise_pose3(dt)
+            new_dr_pose = new_dr_pose.compose(noise_pose)
 
         if self.bound_depth:
             # Determine depth values
@@ -215,19 +230,38 @@ class pipeline_sim_dr_gt_publisher:
             translation = new_dr_pose.translation()
             new_dr_pose = gtsam.Pose3(bounded_rotation, translation)
 
+        if self.sine_noise:
+            sine_noise_pose = self.return_sine_noise_pose3()
+            new_dr_pose = new_dr_pose.compose(sine_noise_pose)
+
         self.dr_pose3 = new_dr_pose
         self.dr_stamp = final_time
 
-    def return_step_noise_pose3(self, dt):
+    def return_step_noise_pose3(self, dt: float) -> gtsam.Pose3:
 
         roll_noise, pitch_noise, yaw_noise = np.random.normal(0, self.delta_rotation_sigmas * np.sqrt(dt))  # r, p, y
         x_noise, y_noise, z_noise = np.random.normal(0, self.delta_position_sigmas * np.sqrt(dt))
 
-        rotation_noise = gtsam.Rot3.Ypr(yaw_noise, pitch_noise, roll_noise)  # yaw, pitch, roll
-        translation_noise = gtsam.Point3(x_noise, y_noise, z_noise)
+        rotation_noise = gtsam.Rot3.Ypr(y=yaw_noise, p=pitch_noise, r=roll_noise)  # yaw, pitch, roll
+        translation_noise = np.array((x_noise, y_noise, z_noise))  # OLD GTSAM: gtsam.Point3(x_noise, y_noise, z_noise)
         pose_noise = gtsam.Pose3(rotation_noise, translation_noise)
 
         return pose_noise
+
+    def return_sine_noise_pose3(self) -> gtsam.Pose3:
+
+        current_time = rospy.Time.now().to_sec()
+        delta_time = (current_time - self.start_time)
+        mod_time = math.fmod(delta_time, self.sine_noise_period)
+        phase = (mod_time/self.sine_noise_period) * 2 * math.pi
+
+        current_sine_noise = self.sine_noise_mag * math.sin(phase)
+
+        rotation_noise = gtsam.Rot3.Ypr(y=current_sine_noise, p=0, r=0)  # sine noise is applied only to yaw
+        translation_noise = np.array((0, 0, 0))  # no translational noise, OLD GTSAM: gtsam.Point3(0, 0, 0)
+        sine_pose_noise = gtsam.Pose3(rotation_noise, translation_noise)
+
+        return sine_pose_noise
 
     def publish_gt_pose(self):
 
