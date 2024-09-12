@@ -89,7 +89,7 @@
     <node name="rosbag_player" pkg="rosbag" type="play" args="-r 4 --clock /home/julian/sam_real_algae_2.bag"/>
 
     <!-- gps and buoy node -->
-    <node name="gps_buoy_node" pkg="sam_dead_reckoning" type="algae_map_markers.py" output="screen" />
+    <node name="gps_buoy_node" pkg="sam_slam" type="algae_map_markers.py" output="screen" />
 
     <!-- Manual detector -->
     <node name="img_proc_detection_node" pkg="sss_object_detection" type="sss_detection_img_proc_publisher.py" output="screen" />
