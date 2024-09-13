@@ -165,6 +165,7 @@ catkin_install_python(PROGRAMS
   scripts/sam_listener_saver_node.py
   scripts/sam_listener_solver_node.py
   scripts/sss_raw_viewer_node.py
+  scripts/algae_map_markers.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

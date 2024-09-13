@@ -10,7 +10,7 @@
     <param name="path_name" value="/home/julian/catkin_ws/src/sam_slam/processing scripts/data/icra_2024_baseline_1"/>
 
     <!-- Data parameters -->
-    <param name="dr_update_time" value="2.0"/>
+    <param name="dr_update_time" value="1.5"/>
     <param name="detect_update_time" value="0.5"/>
 
     <param name="camera_update_time" value="5.0"/>
@@ -26,11 +26,13 @@
     <param name="prioritize_buoy_detections" value="True"/>
     <param name="da_distance_threshold" value="7.5"/>
     <param name="da_m_distance_threshold" value="-1.0"/>
-    <param name="individual_rope_detections" value="True"/>
     <param name="update_priors" value="False"/>
 
-    <param name="use_rope_detections" value="False"/>
-    <param name="rope_batch_size" value="0"/>
+    <param name="individual_rope_detections" value="True"/>
+    <param name="use_rope_detections" value="True"/>
+    <param name="use_naive_rope_priors" value="True"/>
+
+    <param name="rope_batch_size" value="-1"/>
     <param name="rope_batch_by_line" value="False"/>
     <param name="rope_batch_by_line_timeout" value="3"/>
     <param name="batch_by_swath" value="False"/>
@@ -51,18 +53,20 @@
     <!-- Odometry -->
     <param name="odo_ang_sig_deg" value="0.5"/>
     <param name="odo_dist_sig" value="0.1"/>
+    <!-- ropes -->
+    <param name="rope_along_sig" value="15.0"/>
+    <param name="rope_cross_sig" value="1.0"/>
+    <!-- ropes, naive. Set -->
+    <param name="rope_dist_sig" value="30.0"/>
 
     <!-- Detection sigmas -->
     <!-- buoys -->
     <param name="buoy_detect_ang_sig_deg" value="0.5"/>
     <param name="buoy_detect_dist_sig" value=".25"/>
     <!-- ropes -->
-    <param name="detect_ang_sig_deg" value="25.0"/>
-    <param name="detect_dist_sig" value="15.0"/>
+    <param name="detect_ang_sig_deg" value="25.0"/>  <!-- ICRA: 25.0 -->
+    <param name="detect_dist_sig" value="15.0"/>  <!-- ICRA: 15.0 -->
 
-    <!-- Detection sigmas -->
-    <param name="rope_along_sig" value="15.0"/>
-    <param name="rope_cross_sig" value="1.0"/>
 
     <!-- Output parameters -->
     <param name="verbose_listener_DRs" value="false"/>

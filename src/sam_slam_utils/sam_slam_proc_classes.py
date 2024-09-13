@@ -14,6 +14,7 @@ import ast
 # Maths
 import numpy as np
 import scipy
+from scipy import stats
 import math
 import matplotlib.pyplot as plt
 
@@ -733,6 +734,7 @@ class online_slam_2d:
         # === Rope detection parameters ===
         self.individual_rope_detections = rospy.get_param("individual_rope_detections", True)
         self.use_rope_detections = rospy.get_param("use_rope_detections", True)
+        self.use_naive_rope_priors = rospy.get_param("use_naive_rope_priors", False)
         self.rope_batch_size = rospy.get_param("rope_batch_size", 0)
 
         # = Rope update by count =
@@ -880,7 +882,7 @@ class online_slam_2d:
         self.est_path_pub = rospy.Publisher('/sam_slam/est_path', Path, queue_size=10)
         # Rope detections
         self.est_rope_pub = rospy.Publisher('/sam_slam/est_rope', MarkerArray, queue_size=10)
-        self.rope_marker_scale = 10
+        self.rope_marker_scale = 1.0
         self.rope_marker_color = ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.75)
         # Buoy detections
         self.est_buoy_pub = rospy.Publisher('/sam_slam/est_buoys', MarkerArray, queue_size=10)
@@ -1684,8 +1686,8 @@ class online_slam_2d:
                         self.r_associations[self.current_r_ind] = rope_association_ind
                         self.rope_current_line = rope_association_ind  # this is used for the line batching
 
-                        # Here individual_rope_detection refers to the assignment of landmarks to detections. If true,
-                        # detection is assigned a unique landmark.
+                        # Here individual_rope_detection refers to the assignment of landmarks to detections.
+                        # If true, detection is assigned a unique landmark.
                         if self.individual_rope_detections:
                             if self.use_rope_detections:
                                 # Handling the prior associated with the current rope detection
@@ -1698,16 +1700,23 @@ class online_slam_2d:
                                                  rope_association_ind],
                                              self.rope_noise_models[
                                                  rope_association_ind]])
+                                        print("Adding to swatch prior")
                                 # Batch updating of rope detections
                                 elif self.rope_batch_size >= 0:
                                     self.rope_batch_priors.append([self.r[self.current_r_ind],
                                                                    self.rope_prior_centers[rope_association_ind],
                                                                    self.rope_noise_models[rope_association_ind]])
-                                # Individual updating of rope detections
+                                    print("Adding batch proir")
+                                # Not adding prior, detection not used for localization
+                                elif self.use_naive_rope_priors:
+                                    pass
+                                    print("not adding prior!!")
+                                # Individual updating of rope detection
                                 else:
                                     self.graph.addPriorPoint2(self.r[self.current_r_ind],
                                                               self.rope_prior_centers[rope_association_ind],
                                                               self.rope_noise_models[rope_association_ind])
+                                    print("Adding 'normal' prior!!")
 
                         # The Nacho method is used when the individual_rope_detections is set to False
                         else:
@@ -2027,7 +2036,7 @@ class online_slam_2d:
 
             # Calculate likelihood
             total_covar = detection_covariance + buoy_covar  # Assuming they are independent
-            likelihood = scipy.stats.multivariate_normal.pdf(detection_mean,
+            likelihood = stats.multivariate_normal.pdf(detection_mean,
                                                              mean=buoy_mean,
                                                              cov=total_covar)
 
@@ -2121,7 +2130,7 @@ class online_slam_2d:
             total_covar = detection_covariance + rope_covar
 
             # Calculate likelihood
-            likelihood = scipy.stats.multivariate_normal.pdf(detection_map_location,
+            likelihood = stats.multivariate_normal.pdf(detection_map_location,
                                                              mean=rope_mean,
                                                              cov=total_covar)
 
@@ -2192,7 +2201,7 @@ class online_slam_2d:
             total_covar = detection_covariance + rope_covar
 
             # Calculate likelihood
-            likelihood = scipy.stats.multivariate_normal.pdf(detection_map_location,
+            likelihood = stats.multivariate_normal.pdf(detection_map_location,
                                                              mean=rope_mean,
                                                              cov=total_covar)
 
@@ -2771,22 +2780,34 @@ class analyze_slam:
         # These arrays might make it easier to plot stuff
         self.posterior_poses = np.zeros((len(self.x), 3))
         for i in range(len(self.x)):
-            self.posterior_poses[i, 0] = self.current_estimate.atPose2(self.x[i]).x()
-            self.posterior_poses[i, 1] = self.current_estimate.atPose2(self.x[i]).y()
-            self.posterior_poses[i, 2] = self.current_estimate.atPose2(self.x[i]).theta()
+            x_key_i = self.x[i]
+            if self.current_estimate.exists(x_key_i):
+                self.posterior_poses[i, 0] = self.current_estimate.atPose2(x_key_i).x()
+                self.posterior_poses[i, 1] = self.current_estimate.atPose2(x_key_i).y()
+                self.posterior_poses[i, 2] = self.current_estimate.atPose2(x_key_i).theta()
+            else:
+                rospy.logwarn(f"X key {x_key_i} does not exist in the current estimate.")
 
         if self.n_buoys > 0:
             self.posterior_buoys = np.zeros((self.n_buoys, 2))
             for i in range(self.n_buoys):
-                self.posterior_buoys[i, 0] = self.current_estimate.atPoint2(self.b[i])[0]
-                self.posterior_buoys[i, 1] = self.current_estimate.atPoint2(self.b[i])[1]
+                b_key_i = self.b[i]
+                if self.current_estimate.exists(b_key_i):
+                    self.posterior_buoys[i, 0] = self.current_estimate.atPoint2(b_key_i)[0]
+                    self.posterior_buoys[i, 1] = self.current_estimate.atPoint2(b_key_i)[1]
+                else:
+                    rospy.logwarn(f"B key {b_key_i} does not exist in the current estimate.")
 
         if self.n_rope_detects > 0:
             self.posterior_rope_detects = np.zeros((self.n_rope_detects, 2))
             self.posterior_rope_associations = np.zeros((self.n_rope_detects,))
             for i in range(self.n_rope_detects):
-                self.posterior_rope_detects[i, 0] = self.current_estimate.atPoint2(self.r[i])[0]
-                self.posterior_rope_detects[i, 1] = self.current_estimate.atPoint2(self.r[i])[1]
+                r_key_i = self.r[i]
+                if self.current_estimate.exists(r_key_i):
+                    self.posterior_rope_detects[i, 0] = self.current_estimate.atPoint2(self.r[i])[0]
+                    self.posterior_rope_detects[i, 1] = self.current_estimate.atPoint2(self.r[i])[1]
+                else:
+                    rospy.logwarn(f"R key {r_key_i} does not exist in the current estimate.")
 
                 self.posterior_rope_associations[i] = self.r_associations.get(i, -1)
 
@@ -3015,17 +3036,23 @@ class analyze_slam:
         online_3d_poses = []
 
         # form the required list of lists
+        # There is some sort of mismatch between the length of self.x and self.gt_poses
+        pose_count = len(self.gt_poses)  # All the below poses should have the same
         for x_ind in range(len(self.x)):
-            # GT
-            gt_x, gt_y, gt_yaw = self.gt_poses[x_ind, :3]
+            try:
+                # GT
+                gt_x, gt_y, gt_yaw = self.gt_poses[x_ind, :3]
 
-            # DR
-            dr_x, dr_y, dr_yaw = self.dr_poses[x_ind, :3]
+                # DR
+                dr_x, dr_y, dr_yaw = self.dr_poses[x_ind, :3]
 
-            # X, Y, and yaw are estimated using the factor graph
-            est_x, est_y, est_yaw = self.posterior_poses[x_ind, :3]
+                # X, Y, and yaw are estimated using the factor graph
+                est_x, est_y, est_yaw = self.posterior_poses[x_ind, :3]
 
-            online_x, online_y, online_yaw = self.online_poses[x_ind, :3]
+                online_x, online_y, online_yaw = self.online_poses[x_ind, :3]
+            except IndexError:
+                print("save_3d_pose(): Mismatch in pose count")
+                break
 
             # Estimated 3D pose (final)
             """
