@@ -2,20 +2,5 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../cola2_msgs" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../flexxros" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../imc_ros_bridge" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../rviz_satellite" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../sam_common" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../sam_stonefish_sim" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../sbs_ros_driver" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../smarc_missions" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../smarc_msgs" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../smarc_navigation" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../smarc_perception" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../stonefish_ros" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../stonefish_ros/external/bullet3" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../stonefish_ros/external/glm" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../stonefish_ros/external/stonefish" vcs="Git" />
   </component>
 </project>
