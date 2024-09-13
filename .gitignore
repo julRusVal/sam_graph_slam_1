@@ -49,3 +49,5 @@ qtcreator-*
 
 # Catkin custom files
 CATKIN_IGNORE
+/processing scripts/data/online_testing/
+/processing scripts/data/sim_testing/ranges/
