@@ -83,6 +83,12 @@ for i in range(0, n_plots):
     max_time = np.max(update_times)
     max_factors = np.max(factor_counts)
 
+    # factor type
+    type_0 = np.sum(data[i][:, 2] == 0.0)
+    type_1 = np.sum(data[i][:, 2] == 1.0)
+    type_2 = np.sum(data[i][:, 2] == 2.0)
+    type_tot = type_0 + type_1 + 2 * type_2
+
     # Create the first subplot with the left y-axis
     # ax1 = fig.add_subplot(111)
     ax[i].plot(update_times, color=dr_color, label=f'update_times')
@@ -91,15 +97,20 @@ for i in range(0, n_plots):
         ax[i].set_ylabel('Update times [s]', fontsize=label_size, color='k')
     ax[i].tick_params('y', color='k')
 
-    # Create the second subplot with the right y-axis
-    # ax2 = ax1.twinx()
-    # x = [i for i in range(len(update_type))]
-    # ax2.bar(x, update_type, alpha=0.5, color=data_colors[i], label='update_type')
-    # ax2.set_ylabel('Update type', color=data_colors[i])
-    # ax2.tick_params('y', colors='k')
-
+    # Manual factor counting
+    manual_factor_count = None
     ax_2.append(ax[i].twinx())
-    ax_2[i].plot(factor_counts, color=data_colors[i], label='factor_counts')
+    try:
+        factor_counter = data[i][:, 3]
+        prioe_counter = data[i][:, 4]
+        manual_factor_count = np.sum(factor_counter) + np.sum(prioe_counter)
+        # DEBUGGING
+        ax_2[i].plot(factor_counter, color='g', label='factor counter')
+        ax_2[i].plot(prioe_counter, color='m', label='prior counter')
+    except IndexError:
+        print(f"Incomplete performance {titles[i]}")
+        ax_2[i].plot(factor_counts, color=data_colors[i], label='factor_counts')
+
     if i == n_plots // 2:
         ax_2[i].set_ylabel('Factor counts', fontsize=label_size, color='k')
     ax_2[i].tick_params('y', colors='k')
@@ -112,7 +123,8 @@ for i in range(0, n_plots):
     lines2, labels2 = ax_2[i].get_legend_handles_labels()
     ax_2[i].legend(lines + lines2, labels + labels2, loc='upper left', fontsize=legend_size)
 
-    title = titles[i] + f" - Max time: {max_time:.3g}s Total time: {update_time_total:.3g}s   " + f" Max factors: {int(max_factors)}"
+    title = (titles[i] + f" - Max time: {max_time:.3g}s Total time: {update_time_total:.3g}s   " +
+             f" Max factors: {int(max_factors)} ({type_0}, {type_1}, {type_2}: {type_tot}) man_count: {manual_factor_count}")
     ax[i].set_title(title, fontsize=int(label_size * .8))
 
     ax[i].grid(True)

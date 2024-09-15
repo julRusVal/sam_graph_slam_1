@@ -1435,11 +1435,17 @@ class online_slam_2d:
                 else:
                     self.current_marginals = None
 
+                # record detection type for performance metrics
+                relative_detection_state = 0
+                factor_counter = 0  # keep track of added factors
+                prior_counter = 0
+
                 # ===== Add the between factor =====
                 self.graph.add(gtsam.BetweenFactorPose2(self.x[self.current_x_ind - 1],
                                                         self.x[self.current_x_ind],
                                                         between_odometry,
                                                         self.odometry_model))
+                factor_counter += 1
 
                 # Compute initialization value from the current estimate and odometry
                 computed_est = self.current_estimate.atPose2(self.x[self.current_x_ind - 1]).compose(between_odometry)
@@ -1466,9 +1472,6 @@ class online_slam_2d:
                     current_covariance = self.current_marginals.marginalCovariance(current_key)
                 else:
                     current_covariance = None
-
-                # record detection type for performance metrics
-                relative_detection_state = 0
 
                 # === Buoy ===
                 if relative_detection is not None and da_id != -ObjectID.ROPE.value and da_id != -ObjectID.PIPE.value:
@@ -1578,6 +1581,7 @@ class online_slam_2d:
                                 self.batch_swath_factors[self.current_swath_ind].append(x_b_range_bearing_factor)
                         else:
                             self.graph.add(x_b_range_bearing_factor)
+                            factor_counter += 1
 
                 # === Rope ===
                 if relative_detection is not None and (da_id == -ObjectID.ROPE.value or da_id == -ObjectID.PIPE.value):
@@ -1644,6 +1648,7 @@ class online_slam_2d:
                                     self.batch_swath_priors[self.current_swath_ind].append([self.r[self.current_r_ind],
                                                                                             avg_rope_position,
                                                                                             self.prior_model_rope])
+
                             # Batch updating of rope detections
                             elif self.rope_batch_size >= 0:
                                 self.rope_batch_priors.append([self.r[self.current_r_ind],
@@ -1655,6 +1660,7 @@ class online_slam_2d:
                                 self.graph.addPriorPoint2(self.r[self.current_r_ind],
                                                           avg_rope_position,
                                                           self.prior_model_rope)
+                                prior_counter += 1
 
                             self.rope_current_line = -1
 
@@ -1706,7 +1712,7 @@ class online_slam_2d:
                                     self.rope_batch_priors.append([self.r[self.current_r_ind],
                                                                    self.rope_prior_centers[rope_association_ind],
                                                                    self.rope_noise_models[rope_association_ind]])
-                                    print("Adding batch proir")
+                                    print("Adding batch prior")
                                 # Not adding prior, detection not used for localization
                                 elif self.use_naive_rope_priors:
                                     pass
@@ -1716,6 +1722,7 @@ class online_slam_2d:
                                     self.graph.addPriorPoint2(self.r[self.current_r_ind],
                                                               self.rope_prior_centers[rope_association_ind],
                                                               self.rope_noise_models[rope_association_ind])
+                                    prior_counter += 1
                                     print("Adding 'normal' prior!!")
 
                         # The Nacho method is used when the individual_rope_detections is set to False
@@ -1731,12 +1738,18 @@ class online_slam_2d:
                             if self.batch_by_swath:
                                 if self.current_swath_ind > -1:
                                     self.batch_swath_factors[self.current_swath_ind].append(x_l_range_bearing_factor)
-                            # Batch updating of rope detections
+                                    print(f"Appending swath factor: {self.l[rope_association_ind]}")
+
+
                             elif self.rope_batch_size >= 0:
                                 self.rope_batch_factors.append(x_l_range_bearing_factor)
+                                print(f"appending batch factor: {self.l[rope_association_ind]}")
+
                             # Individual updating of rope detections
                             else:
                                 self.graph.add(x_l_range_bearing_factor)
+                                factor_counter += 1
+                                print(f"Adding 'normal' factor: {self.l[rope_association_ind]}")
 
                     # === Add factor between current x and current r ===
                     if self.use_rope_detections:
@@ -1752,9 +1765,14 @@ class online_slam_2d:
                                 self.batch_swath_factors[self.current_swath_ind].append(x_r_range_bearing_factor)
 
                         if self.rope_batch_size >= 0:
-                            self.rope_batch_factors.append(x_r_range_bearing_factor)
+                            # TODO I disabled adding r
+                            # self.rope_batch_factors.append(x_r_range_bearing_factor)
+                            pass
                         else:
-                            self.graph.add(x_r_range_bearing_factor)
+                            # TODO TESTING: disabled adding x-r constraints for the 'normal' method
+                            # self.graph.add(x_r_range_bearing_factor)
+                            # factor_counter += 1
+                            pass
 
                 # Rope detections are added Using three methods
                 # (1) Individually -> self.rope_batch_size <= 0
@@ -1770,8 +1788,8 @@ class online_slam_2d:
                         if self.verbose_graph_rope_batching:
                             print(f'Starting swath Batch Update - {self.current_swath_ind}')
                             print(f"Initial estimates: {len(self.rope_batch_initial_estimates)}")
-                            print(f"Priors: {len(self.rope_batch_priors)}")
-                            print(f"Factors: {len(self.rope_batch_factors)}")
+                            print(f"Priors: {len(self.batch_swath_priors)}")
+                            print(f"Factors: {len(self.batch_swath_factors)}")
 
                         # # Initial value
                         # for rope_initial in self.rope_batch_initial_estimates:
@@ -1785,6 +1803,11 @@ class online_slam_2d:
                         #     print("Priors:")
                         for rope_prior in self.batch_swath_priors[self.current_swath_ind]:
                             self.graph.addPriorPoint2(*rope_prior)
+                            prior_counter += 1
+                            print(" adding swath priors")
+                            # TODO check this out!!!
+                            print("skipping some priors")
+                            break
 
                             # if self.verbose_graph_rope_batching:
                             #     print(rope_prior)
@@ -1793,12 +1816,19 @@ class online_slam_2d:
                         # Factors
                         # if self.verbose_graph_rope_batching:
                         #     print("Factors:")
+                        added_factor_count = 0
                         for rope_factor in self.batch_swath_factors[self.current_swath_ind]:
                             self.graph.add(rope_factor)
+                            factor_counter += 1
+                            added_factor_count += 1
+                            print("adding swath factors")
+                        print(f"Added {added_factor_count} factors")
 
                             # if self.verbose_graph_rope_batching:
                             #     print(rope_factor)
-                        # self.batch_swath_factors[self.current_swath_ind] = []
+
+                        # TODO figure out why this was commented out, feels like emptying would be required
+                        self.batch_swath_factors[self.current_swath_ind] = []
 
                         # Reset optimization status
                         self.current_optimize = False
@@ -1822,8 +1852,7 @@ class online_slam_2d:
                         if self.rope_last_time is None:
                             timeout_condition = False
                         else:
-                            timeout_condition = (
-                                                        rospy.Time.now() - self.rope_last_time).to_sec() >= self.rope_last_line_timeout
+                            timeout_condition = (rospy.Time.now() - self.rope_last_time).to_sec() >= self.rope_last_line_timeout
 
                         # Update and reset
                         self.rope_current_lines.append(self.rope_current_line)
@@ -1854,14 +1883,17 @@ class online_slam_2d:
                             # Priors
                             for rope_prior in self.rope_batch_priors[:-1]:
                                 self.graph.addPriorPoint2(*rope_prior)
+                                prior_counter += 1
                             self.rope_batch_priors = self.rope_batch_priors[-1:]
 
                             # Factors
                             for rope_factor in self.rope_batch_factors[:-1]:
                                 self.graph.add(rope_factor)
+                                factor_counter += 1
                             self.rope_batch_factors = self.rope_batch_factors[-1:]
                             self.rope_batch_current_size = len(self.rope_batch_factors)
 
+                        # What is this time out for, forces detections to be added based on timeout
                         elif timeout_condition:
                             if self.verbose_graph_rope_batching:
                                 print('Starting Rope Batch Update - Method 3 - Timeout')
@@ -1881,11 +1913,13 @@ class online_slam_2d:
                             # Priors
                             for rope_prior in self.rope_batch_priors:
                                 self.graph.addPriorPoint2(*rope_prior)
+                                prior_counter += 1
                             self.rope_batch_priors = []
 
                             # Factors
                             for rope_factor in self.rope_batch_factors:
                                 self.graph.add(rope_factor)
+                                factor_counter += 1
                             self.rope_batch_factors = []
                             self.rope_batch_current_size = 0
 
@@ -1909,7 +1943,7 @@ class online_slam_2d:
                         print("Priors:")
                     for rope_prior in self.rope_batch_priors:
                         self.graph.addPriorPoint2(*rope_prior)
-
+                        prior_counter += 1
                         if self.verbose_graph_rope_batching:
                             print(rope_prior)
                     self.rope_batch_priors = []
@@ -1919,6 +1953,7 @@ class online_slam_2d:
                         print("Factors:")
                     for rope_factor in self.rope_batch_factors:
                         self.graph.add(rope_factor)
+                        factor_counter += 1
 
                         if self.verbose_graph_rope_batching:
                             print(rope_factor)
@@ -1947,7 +1982,8 @@ class online_slam_2d:
                 # [time(s), factor count, detection state]
                 factor_count = self.graph.nrFactors()
                 # detection state: 0 = odometry only, 1 = Buoy detection, 2 = rope detection
-                self.performance_metrics.append([update_time, factor_count, relative_detection_state])
+                self.performance_metrics.append([update_time, factor_count, relative_detection_state, factor_counter,
+                                                 prior_counter])
 
                 # === Update inferred priors ===
                 if self.update_priors:

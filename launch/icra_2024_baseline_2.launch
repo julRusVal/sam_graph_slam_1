@@ -44,10 +44,10 @@
     <param name="use_rope_detections" value="True"/>
     <param name="individual_rope_detections" value="False"/>
 
-    <param name="rope_batch_size" value="10"/>
-    <param name="rope_batch_by_line" value="True"/>
+    <param name="rope_batch_size" value="1"/>  <!-- icra: 10 -->
+    <param name="rope_batch_by_line" value="False"/>  <!-- icra: True -->
     <param name="rope_batch_by_line_timeout" value="3"/>
-    <param name="batch_by_swath" value="True"/>
+    <param name="batch_by_swath" value="False"/>  <!-- icra: True -->
     <param name="batch_by_swath_manual_rope_da" value="True"/>
     <!--
     <param name="swath_seq_ids" value= "[[[78109, 78750], [84177, 84831]],
